@@ -25,6 +25,27 @@ pub fn join_url(base: &str, path: &str) -> String {
     format!("{}/{}", base.trim_end_matches('/'), path.trim_start_matches('/'))
 }
 
+/// Extract assistant text from a buffered chat response. Errors only when there
+/// are no choices; a present-but-null/absent content yields "" (tool-call turns).
+pub fn extract_content(resp: &Value) -> Result<String, BoxErr> {
+    let choices = resp
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .filter(|a| !a.is_empty())
+        .ok_or("no choices in response")?;
+    Ok(choices[0]["message"]["content"].as_str().unwrap_or("").to_string())
+}
+
+/// Parse one SSE `data:` payload into its `choices[0].delta` object.
+/// Returns None for `[DONE]`, unparseable JSON, or a chunk without a delta.
+pub(crate) fn parse_sse_delta(data: &str) -> Option<Value> {
+    if data == "[DONE]" {
+        return None;
+    }
+    let chunk: Value = serde_json::from_str(data).ok()?;
+    chunk.get("choices")?.get(0)?.get("delta").cloned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,5 +74,39 @@ mod tests {
         assert_eq!(join_url("http://x/v1", "chat/completions"), "http://x/v1/chat/completions");
         assert_eq!(join_url("http://x/v1/", "chat/completions"), "http://x/v1/chat/completions");
         assert_eq!(join_url("http://x/v1", "/chat/completions"), "http://x/v1/chat/completions");
+    }
+
+    #[test]
+    fn extract_content_ok() {
+        let r = json!({"choices":[{"message":{"content":"hello"}}]});
+        assert_eq!(extract_content(&r).unwrap(), "hello");
+    }
+
+    #[test]
+    fn extract_content_null_is_empty() {
+        let r = json!({"choices":[{"message":{"tool_calls":[]}}]});
+        assert_eq!(extract_content(&r).unwrap(), "");
+    }
+
+    #[test]
+    fn extract_content_no_choices_errs() {
+        let r = json!({"error":"x"});
+        assert!(extract_content(&r).is_err());
+    }
+
+    #[test]
+    fn parse_sse_delta_content() {
+        let d = parse_sse_delta(r#"{"choices":[{"delta":{"content":"hi"}}]}"#).unwrap();
+        assert_eq!(d["content"], "hi");
+    }
+
+    #[test]
+    fn parse_sse_delta_done_none() {
+        assert!(parse_sse_delta("[DONE]").is_none());
+    }
+
+    #[test]
+    fn parse_sse_delta_bad_json_none() {
+        assert!(parse_sse_delta("not json").is_none());
     }
 }
