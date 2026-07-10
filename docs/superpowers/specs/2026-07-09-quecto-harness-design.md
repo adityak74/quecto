@@ -57,11 +57,14 @@ pub fn quecto_to(
 pub fn quecto(prompt: &str) -> Result<String, Box<dyn std::error::Error>>
 ```
 
-- `quecto()` — reads `QUECTO_BASE_URL`, `QUECTO_API_KEY`, and `QUECTO_MODEL` from the
-  environment, then calls `quecto_to()`.
+- `quecto()` — reads `QUECTO_BASE_URL`, `QUECTO_API_KEY`, `QUECTO_MODEL`, and the optional
+  `QUECTO_SYSTEM` from the environment. With no system prompt it delegates to `quecto_to()`;
+  with one set it builds a `[system, user]` body itself and calls `quecto_raw()`.
 - `quecto_to()` — builds `{"model": …, "messages": [{"role": "user", "content": prompt}]}`,
-  calls `quecto_raw()`, and extracts `choices[0].message.content`. This is the primary path
-  for local models (point `base_url` at `http://localhost:11434/v1`, pass `None` for the key).
+  calls `quecto_raw()`, and extracts `choices[0].message.content`. Deliberately user-message
+  only — the system prompt lives in `quecto()`/the body, not in this signature. This is the
+  primary path for local models (point `base_url` at `http://localhost:11434/v1`, pass `None`
+  for the key).
 - `quecto_raw()` — the buffered primitive. Sends whatever JSON body you give it and returns
   the whole response as a `Value`. Because it neither shapes the request nor discards the
   response, a caller can include a `tools` array and read back `tool_calls` — this is the
@@ -88,6 +91,18 @@ Scope note: streaming carries **text content only**. Tool-calling turns should u
 the final user-facing answer benefits from streaming. This keeps `quecto_stream` tiny — it
 never has to reassemble partial `tool_calls` deltas.
 
+### System prompt
+
+A system prompt is just a `{role:"system"}` message. Because `quecto_raw`/`quecto_stream`
+accept an arbitrary body, **system-prompt support is already in the core** — no dedicated
+API is needed. The agent layer always builds its own messages array (system prompt assembled
+from `AGENTS.md`/instructions) and calls `quecto_raw`.
+
+For standalone CLI use, `quecto()` and the binary read the optional `QUECTO_SYSTEM` env var:
+when set, they prepend `{"role":"system","content": <QUECTO_SYSTEM>}` before the user turn;
+when unset, the messages array is just `[user]`. `quecto_to()` is not widened — it stays the
+single-user-message convenience.
+
 ### Configuration
 
 Three environment variables (read only by `quecto()`):
@@ -97,10 +112,16 @@ Three environment variables (read only by `quecto()`):
 | `QUECTO_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint |
 | `QUECTO_API_KEY` | *(optional)* | Bearer token; if unset, no auth header is sent |
 | `QUECTO_MODEL` | `gpt-4o` | Model name sent in the request body |
+| `QUECTO_SYSTEM` | *(optional)* | System prompt; if set, prepended as a `{role:system}` message |
 
 `QUECTO_API_KEY` is optional by design — the local coding models this harness targets
 (e.g. `qwen2.5-coder`, `qwen3.6:*-mlx`, `devstral`, `codestral`) run on servers that ignore
 auth. The harness must reach them without a key.
+
+`QUECTO_SYSTEM` is a convenience knob for standalone CLI use. A system prompt is just a
+`{role:system}` message, which `quecto_raw`/`quecto_stream` already accept via the body — so
+this env var adds no capability to the core, only ergonomics to the env-based path (see
+[System prompt](#system-prompt)).
 
 ### Error handling
 
@@ -142,9 +163,10 @@ quecto                       # interactive (REPL) mode
 - Reads arguments from `std::env::args()`, skips `argv[0]`, and joins the rest with a
   single space — so `quecto write me a haiku` and `quecto "write me a haiku"` behave
   identically
-- Reads `QUECTO_BASE_URL` / `QUECTO_API_KEY` / `QUECTO_MODEL`, builds the body, and calls
-  `quecto_stream`, printing each token to stdout as it arrives (live output). The buffered
-  `quecto()` / `quecto_to()` remain the library entry points for callers who want a `String`.
+- Reads `QUECTO_BASE_URL` / `QUECTO_API_KEY` / `QUECTO_MODEL` / `QUECTO_SYSTEM`, builds the
+  body (prepending a system message when `QUECTO_SYSTEM` is set), and calls `quecto_stream`,
+  printing each token to stdout as it arrives (live output). The buffered `quecto()` /
+  `quecto_to()` remain the library entry points for callers who want a `String`.
 - Prints a trailing newline when the stream ends
 - Prints error to stderr and exits with code 1
 
@@ -168,10 +190,11 @@ The loop:
 2. Read one line from stdin
    - EOF (Ctrl-D), or a line equal to `exit` or `quit` → break
    - Blank line → skip and re-prompt
-3. Stream the reply — build the body from the line + env config and call `quecto_stream`,
-   printing each token to **stdout** as it arrives. A fresh, independent call
-   (**stateless**: no history is retained or sent between turns, preserving the
-   conversation-history non-goal)
+3. Stream the reply — build the body from the line + env config (including a `QUECTO_SYSTEM`
+   system message if set) and call `quecto_stream`, printing each token to **stdout** as it
+   arrives. A fresh, independent call (**stateless**: no history is retained or sent between
+   turns, preserving the conversation-history non-goal). Note the system prompt is *not*
+   conversational state — it is re-sent identically each turn.
 4. Print a trailing newline
 5. Loop
 
