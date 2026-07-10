@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="272" viewBox="0 0 780 272" font-family="'SF Mono','Menlo','Consolas','Liberation Mono',monospace" font-size="15">
+  <rect x="0.5" y="0.5" width="779" height="271" rx="10" fill="#0d1117" stroke="#30363d"/>
+  <rect x="0.5" y="0.5" width="779" height="40" rx="10" fill="#161b22"/>
+  <rect x="0.5" y="30" width="779" height="11" fill="#161b22"/>
+  <circle cx="24" cy="20" r="6" fill="#ff5f56"/>
+  <circle cx="44" cy="20" r="6" fill="#ffbd2e"/>
+  <circle cx="64" cy="20" r="6" fill="#27c93f"/>
+  <text x="390" y="25" text-anchor="middle" fill="#8b949e" font-size="13">quecto — one-shot</text>
+  <text x="22" y="78"><tspan fill="#6e7681"># point at a local model — no API key needed</tspan></text>
+  <text x="22" y="108"><tspan fill="#27c93f">$ </tspan><tspan fill="#c9d1d9">export QUECTO_MODEL=</tspan><tspan fill="#a5d6ff">qwen3.6:35b-mlx</tspan></text>
+  <text x="22" y="138"><tspan fill="#27c93f">$ </tspan><tspan fill="#58a6ff">quecto</tspan><tspan fill="#a5d6ff"> "write a haiku about small things"</tspan></text>
+  <text x="22" y="176" fill="#e3b341">Shimmer dust floats soft,</text>
+  <text x="22" y="204" fill="#e3b341">Dancing in the warm gold beam,</text>
+  <text x="22" y="232" fill="#e3b341">Deep worlds hide in small.</text>
+  <text x="22" y="262"><tspan fill="#27c93f">$ </tspan><tspan fill="#c9d1d9">▊</tspan></text>
+</svg>

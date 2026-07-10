@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="780" height="216" viewBox="0 0 780 216" font-family="'SF Mono','Menlo','Consolas','Liberation Mono',monospace" font-size="15">
+  <rect x="0.5" y="0.5" width="779" height="215" rx="10" fill="#0d1117" stroke="#30363d"/>
+  <rect x="0.5" y="0.5" width="779" height="40" rx="10" fill="#161b22"/>
+  <rect x="0.5" y="30" width="779" height="11" fill="#161b22"/>
+  <circle cx="24" cy="20" r="6" fill="#ff5f56"/>
+  <circle cx="44" cy="20" r="6" fill="#ffbd2e"/>
+  <circle cx="64" cy="20" r="6" fill="#27c93f"/>
+  <text x="390" y="25" text-anchor="middle" fill="#8b949e" font-size="13">quecto — interactive REPL</text>
+  <text x="22" y="78"><tspan fill="#27c93f">$ </tspan><tspan fill="#58a6ff">quecto</tspan></text>
+  <text x="22" y="108"><tspan fill="#a371f7">quecto› </tspan><tspan fill="#a5d6ff">what is the smallest SI prefix?</tspan></text>
+  <text x="22" y="138" fill="#c9d1d9">The smallest SI prefix is quecto (q), a factor of 10⁻³⁰.</text>
+  <text x="22" y="168"><tspan fill="#a371f7">quecto› </tspan><tspan fill="#c9d1d9">▊</tspan></text>
+  <text x="22" y="200" fill="#6e7681" font-size="13">Ctrl-D to quit · stateless · re-reads env each turn</text>
+</svg>

@@ -27,6 +27,24 @@
 
 ---
 
+## Demo
+
+**One-shot** — a prompt in, streamed output out (here against a local Ollama model, no API key):
+
+<div align="center">
+  <img src="docs/assets/demo-oneshot.svg" alt="quecto one-shot: a haiku streamed from a local model" width="720">
+</div>
+
+**Interactive REPL** — stateless turns, `Ctrl-D` to quit:
+
+<div align="center">
+  <img src="docs/assets/demo-repl.svg" alt="quecto interactive REPL answering a question" width="720">
+</div>
+
+<sub>Real output captured from `quecto` running against `qwen3.6:35b-mlx` on Ollama.</sub>
+
+---
+
 ## 📣 Announcements
 
 - **`2026-07-10` — Core crate landed.** The full `quecto` core is on `main`: four-function library API, streaming with SSE + non-SSE fallback, and a one-shot / REPL / `--init` CLI. 24 tests, clippy-clean, two dependencies.
