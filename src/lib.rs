@@ -109,4 +109,9 @@ mod tests {
     fn parse_sse_delta_bad_json_none() {
         assert!(parse_sse_delta("not json").is_none());
     }
+
+    #[test]
+    fn parse_sse_delta_no_delta_none() {
+        assert!(parse_sse_delta(r#"{"choices":[{}]}"#).is_none());
+    }
 }
