@@ -28,20 +28,21 @@ adapter crate later.
 Four functions: two primitives (buffered + streamed) and two conveniences layered over them.
 
 ```rust
-// primitive (buffered): one POST, full response Value in and out.
-// The composable unit that tool/agent/MCP layers build on.
+// primitive (buffered): POST an arbitrary JSON body to an arbitrary URL with arbitrary
+// headers; return the full response Value. Opinion-free: no path, no auth scheme, no
+// assumption about model, messages, or response shape. The unit everything else builds on.
 pub fn quecto_raw(
+    url: &str,
+    headers: &[(&str, &str)],
     body: serde_json::Value,
-    base_url: &str,
-    api_key: Option<&str>,
 ) -> Result<serde_json::Value, Box<dyn std::error::Error>>
 
-// primitive (streamed): same POST with "stream": true, calls on_delta for each
-// content token as it arrives, and returns the fully accumulated text.
+// primitive (streamed): same, with "stream": true; calls on_delta for each content token
+// as it arrives, and returns the fully accumulated text.
 pub fn quecto_stream(
+    url: &str,
+    headers: &[(&str, &str)],
     body: serde_json::Value,
-    base_url: &str,
-    api_key: Option<&str>,
     on_delta: impl FnMut(&str),
 ) -> Result<String, Box<dyn std::error::Error>>
 
@@ -57,22 +58,30 @@ pub fn quecto_to(
 pub fn quecto(prompt: &str) -> Result<String, Box<dyn std::error::Error>>
 ```
 
-- `quecto()` — reads `QUECTO_BASE_URL`, `QUECTO_API_KEY`, `QUECTO_MODEL`, and the optional
-  `QUECTO_SYSTEM` from the environment. With no system prompt it delegates to `quecto_to()`;
-  with one set it builds a `[system, user]` body itself and calls `quecto_raw()`.
-- `quecto_to()` — builds `{"model": …, "messages": [{"role": "user", "content": prompt}]}`,
-  calls `quecto_raw()`, and extracts `choices[0].message.content`. Deliberately user-message
-  only — the system prompt lives in `quecto()`/the body, not in this signature. This is the
-  primary path for local models (point `base_url` at `http://localhost:11434/v1`, pass `None`
-  for the key).
-- `quecto_raw()` — the buffered primitive. Sends whatever JSON body you give it and returns
-  the whole response as a `Value`. Because it neither shapes the request nor discards the
-  response, a caller can include a `tools` array and read back `tool_calls` — this is the
-  only hook an agent/MCP layer needs.
-- `quecto_stream()` — the streaming primitive. See [Streaming](#streaming).
+- `quecto_raw()` — the opinion-free buffered primitive. You supply the **exact URL**, the
+  **exact headers**, and an arbitrary JSON body; it returns the whole response as a `Value`.
+  It imposes no endpoint path (hit `/chat/completions`, `/completions`, `/embeddings`, …), no
+  auth scheme (`Authorization: Bearer`, `x-api-key`, org/version/proxy headers — your call),
+  and no response shape. Because it neither shapes the request nor discards the response, a
+  caller can include a `tools` array and read back `tool_calls` — the only hook an agent/MCP
+  layer needs. The single opinion left is "the payload is JSON" (inherent to the target APIs).
+- `quecto_stream()` — the streaming primitive, same signature shape. See [Streaming](#streaming).
+- `quecto_to()` — convenience. **This is where the OpenAI-flavored opinions live**: it
+  appends `/chat/completions` to `base_url`, turns `Some(key)` into an
+  `Authorization: Bearer` header (`None` → no auth header, for local servers), builds
+  `{"model": …, "messages": [{"role": "user", "content": prompt}]}`, calls `quecto_raw()`, and
+  extracts `choices[0].message.content`. Deliberately user-message only — the system prompt
+  lives in `quecto()`/the body, not in this signature. Primary path for local models (point
+  `base_url` at `http://localhost:11434/v1`, pass `None` for the key).
+- `quecto()` — the most ergonomic path. Reads `QUECTO_BASE_URL`, `QUECTO_API_KEY`,
+  `QUECTO_MODEL`, and optional `QUECTO_SYSTEM`. With no system prompt it delegates to
+  `quecto_to()`; with one set it builds a `[system, user]` body and the URL/headers itself and
+  calls `quecto_raw()`.
 
-`api_key` is `Option<&str>`: `Some(key)` sends an `Authorization: Bearer` header; `None`
-omits it entirely (required for no-auth local servers like Ollama).
+**Opinion boundary:** the two primitives impose essentially nothing (you control URL,
+headers, body). Every convenience above them — the `/chat/completions` path, the Bearer
+scheme, the message shape, the `choices[0].message.content` extraction, the env defaults — is
+optional sugar you bypass by calling `quecto_raw` directly.
 
 ### Streaming
 
@@ -105,7 +114,7 @@ single-user-message convenience.
 
 ### Configuration
 
-Three environment variables (read only by `quecto()`):
+Four environment variables (read only by `quecto()`; the primitives read none):
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -176,7 +185,17 @@ With zero arguments, `quecto` enters a stateless REPL — see [Interactive Mode]
 This also transparently handles piped input (`echo "hi" | quecto`), since both read lines
 from stdin.
 
-No help flag. No config file. No subcommands.
+### `quecto --init` (optional env bootstrapper)
+
+The one exception to "no subcommands." A `--init` flag runs a tiny interview for the four
+env basics (`QUECTO_BASE_URL`, `QUECTO_API_KEY`, `QUECTO_MODEL`, `QUECTO_SYSTEM`) and writes a
+`.env` (or prints `export` lines). It is a **flag, not a subcommand**, so it never collides
+with a prompt like `quecto init`. Crucially, this only helps you *set* env — the core still
+reads **only** env vars at runtime, so the "no config file" non-goal holds (nothing is read
+back from a file). The same interview is exposed as a library helper that `quecto-agent`'s
+full wizard reuses for its first section.
+
+Otherwise: no help flag, no config file read at runtime, no other subcommands.
 
 ## Interactive Mode
 
@@ -224,8 +243,9 @@ quecto/                    # repo root = core crate + workspace root
 │   ├── lib.rs             # quecto_raw(), quecto_stream(), quecto_to(), quecto()
 │   └── main.rs            # CLI entry point: streaming one-shot + REPL
 │
-├── quecto-agent/          # FUTURE companion crate (own spec): agent loop, tools,
-│                          #   sandbox, verification, session state, rich TUI
+├── quecto-agent/          # FUTURE companion crate (own spec): install wizard + config
+│                          #   file, agent loop, tools, sandbox, verification,
+│                          #   session state, rich TUI
 └── quecto-mcp/            # FUTURE companion crate (own spec): MCP client (tokio + rmcp)
 ```
 
@@ -234,46 +254,57 @@ companions can grow without the core ever gaining `tokio`, tool execution, or st
 
 ## Data Flow
 
-Two paths share one POST. **Buffered** (library convenience + agent tool-turns):
+Conveniences add opinions (path, Bearer, message shape) then call the opinion-free primitive.
+**Buffered** (library convenience + agent tool-turns):
 
 ```
-quecto(prompt) ─env─▶ quecto_to ─build body─▶ quecto_raw(body, base_url, key)
-                                                     │
-                                 ureq POST /chat/completions
-                                 (60s timeout; non-2xx ⇒ Err)
-                                                     │
-                                                     ▼
-                                            Response Value ◀── agent/MCP reads
-                                                     │          choices[].message.tool_calls
-                                                     ▼
-                       String ◀── choices[0].message.content
-                                  (missing choices ⇒ Err("no choices…"), never a panic)
+quecto(prompt) ─env─▶ quecto_to ─┐ append /chat/completions
+                                 ├ Bearer header from key
+                                 └ build messages body
+                                          │
+                                          ▼
+                      quecto_raw(url, headers, body)  ◀── agent/MCP calls this directly
+                                          │                with its own url/headers/tools
+                              ureq POST <url> (non-2xx ⇒ Err)
+                                          │
+                                          ▼
+                                 Response Value ◀── agent/MCP reads
+                                          │          choices[].message.tool_calls
+                                          ▼
+              String ◀── choices[0].message.content
+                         (missing choices ⇒ Err("no choices…"), never a panic)
 ```
 
 **Streamed** (the CLI's default; final-answer UX):
 
 ```
-body (+ "stream": true) ─▶ quecto_stream(body, base_url, key, on_delta)
-                                                     │
-                                 ureq POST /chat/completions
-                                                     │
+body (+ "stream": true) ─▶ quecto_stream(url, headers, body, on_delta)
+                                          │
+                              ureq POST <url>
+                                          │
                           read response as BufRead, line by line
-                                                     │
+                                          │
                     each `data: {…}` ─▶ on_delta(choices[0].delta.content)
                           `data: [DONE]` ─▶ stop
-                                                     ▼
+                                          ▼
                           String (all deltas concatenated)
 ```
 
 ## HTTP Request
 
-| Field | Value |
+The **primitive** sends exactly what it is given: `POST <url>` with the caller's `headers`
+and JSON `body`. It adds only `Content-Type: application/json` (implied by sending JSON) and
+the timeouts below. Nothing else.
+
+The **convenience layer** (`quecto_to`/`quecto`) constructs the OpenAI-flavored request:
+
+| Field | Value constructed by the convenience layer |
 |---|---|
 | Method | `POST` |
 | URL | `<base_url>/chat/completions` |
 | Header | `Authorization: Bearer <api_key>` *(only when `api_key` is `Some`)* |
 | Header | `Content-Type: application/json` |
-| Body | The `Value` passed to `quecto_raw`. `quecto_to` builds `{"model": "<model>", "messages": [{"role": "user", "content": "<prompt>"}]}` |
+| Body | `{"model": "<model>", "messages": [ …optional system…, {"role": "user", "content": "<prompt>"}]}` |
 | Timeout | connect + per-read timeout (e.g. 60s each), **not** an overall deadline |
 
 The timeout is applied as connect/read timeouts rather than a single whole-response deadline
@@ -304,6 +335,7 @@ quecto.**
 | Full-harness component | Home |
 |---|---|
 | Model adapter (talk to the model) | **quecto core** — `quecto_raw` / `quecto_stream` |
+| Install wizard + config file (endpoint→model→system→tools→approvals) | `quecto-agent` (core contributes only `--init` for env basics) |
 | CLI (rich: run/chat/resume/diff/undo, approvals, max-steps) | `quecto-agent` (quecto keeps only its tiny one-shot + REPL) |
 | Instruction loader (AGENTS.md/CLAUDE.md precedence) | `quecto-agent` |
 | Repository context engine (discovery, gitignore, ripgrep, budget) | `quecto-agent` |
@@ -321,6 +353,34 @@ needs **no** typed struct in the core: all four are already present in the `Valu
 `quecto_raw` (`choices[0].message.content`, `.tool_calls`, `choices[0].finish_reason`,
 `usage`). The agent loop reads them directly. So `quecto-agent` can be built with zero
 further additions to quecto.
+
+### Unopinionated by construction
+
+quecto ships with **no baked-in behavior** — the user supplies every opinion. The primitives
+(`quecto_raw`/`quecto_stream`) decide nothing: you pass the exact URL, headers, and body. The
+conveniences add opinions but are entirely optional (bypass them by calling the primitive).
+The way an unopinionated tool becomes usable is that it **asks** rather than assumes — which
+is the job of the install wizard below.
+
+### Install wizard & configuration
+
+The full first-run wizard lives in **`quecto-agent`** (the installable product), because it
+configures things that only exist there — tool enable/disable, approval policy, verification
+commands — alongside the basics. It walks the user from endpoint → key → model → system
+prompt → tools → approvals and persists answers to its own config file
+(`~/.config/quecto/config.toml`). The tiny core contributes only its `--init` env
+bootstrapper (reused as the wizard's first section).
+
+Configuration precedence (in `quecto-agent`) is the standard, scriptable order:
+
+```
+CLI flag  >  env var  >  config.toml  >  built-in default
+```
+
+This keeps everything overridable and CI-friendly: the wizard writes the file, but env vars
+and explicit flags always win, so power users and scripts can ignore the wizard entirely.
+The **core** crate has no config file and no flags beyond `--init`; its runtime precedence is
+simply env var > default.
 
 ### Tools (write / edit / create / read …)
 
@@ -364,8 +424,10 @@ For the **core crate** (most of these belong to `quecto-agent` / `quecto-mcp`, n
 - Native Anthropic/Gemini providers (OpenAI-compatible wire format only)
 - Image/audio generation
 - Context management / conversation history
-- Configuration files
-- Authentication helpers beyond an optional bearer token
+- Config-file *reading* at runtime (env only; `--init` may *write* a `.env`, but nothing is
+  read back from a config file — the persisted `config.toml` + wizard belong to `quecto-agent`)
+- Auth *flows* (OAuth, token refresh, credential storage). The primitive sends whatever
+  headers you give it — any scheme works — but the core performs no auth logic of its own
 - Logging / tracing
 - Async runtime
 
