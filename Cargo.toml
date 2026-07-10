@@ -1,0 +1,14 @@
+[package]
+name = "quecto"
+version = "0.1.0"
+edition = "2021"
+description = "The smallest harness of all time."
+license = "MIT OR Unlicense"
+
+[dependencies]
+ureq = { version = "2", features = ["json"] }   # do NOT set default-features = false
+serde_json = "1"
+
+[workspace]
+members = ["."]
+# Future companion members (own specs): "quecto-agent", "quecto-mcp"
