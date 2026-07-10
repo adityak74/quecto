@@ -451,6 +451,17 @@ and explicit flags always win, so power users and scripts can ignore the wizard 
 The **core** crate has no config file and no flags beyond `--init`; its runtime precedence is
 simply env var > default.
 
+### Flavors (extending quecto-agent)
+
+`quecto-agent` is itself a **framework, not a monolith** — a library of composable pieces
+(the loop, a `Tool` trait + registry, approval `Policy`, `Renderer`, `Session`) plus a default
+binary. Users create their own **flavors** — per project or per user — as either a
+declarative `flavor.toml` manifest (no code) or a small crate depending on the library (custom
+Rust tools), scaffolded by `quecto-agent new`. Forking is possible but never required, so
+flavors track upstream instead of diverging. Selection is layered
+(`--flavor` > project `.quecto/flavor.toml` > user dir > built-in default). None of this
+touches the core. Full design: `2026-07-10-quecto-agent-flavors-design.md`.
+
 ### Tools (write / edit / create / read …)
 
 The core ships **zero** tools and performs **zero** filesystem access. A tool is: a schema
