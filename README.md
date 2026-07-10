@@ -10,7 +10,7 @@
 
 [![The Moat](https://img.shields.io/badge/the%20moat-~1.2%20MB%20binary-2ea44f?style=for-the-badge)](#-the-moat-12-mb)
 
-[![License](https://img.shields.io/badge/license-Unlicense%20%2F%20MIT-blue?style=flat-square)](#license)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/dependencies-2-brightgreen?style=flat-square)](#dependencies)
 [![Async](https://img.shields.io/badge/async-zero-black?style=flat-square)](#philosophy)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
@@ -179,11 +179,15 @@ cargo clippy --all-targets
 ## Star history
 
 <a href="https://star-history.com/#adityak74/quecto&Date">
-  <img src="https://api.star-history.com/svg?repos=adityak74/quecto&type=Date" alt="Star History Chart" width="600">
+  <img src="https://img.shields.io/github/stars/adityak74/quecto?style=social" alt="GitHub stars">
 </a>
+
+⭐ **Be the first star** — the full history chart renders [here](https://star-history.com/#adityak74/quecto&Date) once the repo has stargazers.
 
 ---
 
 ## License
 
-**Unlicense / MIT** — do whatever you want with it.
+Released under the **[MIT License](LICENSE)** — do whatever you want with it, just keep the copyright notice.
+
+© 2026 Aditya

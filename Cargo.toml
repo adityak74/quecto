@@ -3,7 +3,7 @@ name = "quecto"
 version = "0.1.0"
 edition = "2021"
 description = "The smallest harness of all time."
-license = "MIT OR Unlicense"
+license = "MIT"
 
 [dependencies]
 ureq = { version = "2", features = ["json"] }   # do NOT set default-features = false
