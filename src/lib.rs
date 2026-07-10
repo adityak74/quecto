@@ -104,6 +104,85 @@ pub fn quecto(prompt: &str) -> Result<String, BoxErr> {
     extract_content(&resp)
 }
 
+/// Streaming primitive: force stream:true, POST, and deliver each SSE chunk's
+/// `choices[0].delta` to `on_delta`; accumulate delta.content into the return String.
+/// If the server ignores streaming (no `data:` frames), fall back to buffered: parse
+/// the whole body and deliver one synthetic {"content": …} delta — never silent-empty.
+pub fn quecto_stream(
+    url: &str,
+    headers: &[(&str, &str)],
+    mut body: Value,
+    mut on_delta: impl FnMut(&Value),
+) -> Result<String, BoxErr> {
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("stream".to_string(), Value::Bool(true));
+    }
+    let mut req = agent().post(url);
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+    let resp = req.send_json(body)?;
+
+    use std::io::BufRead;
+    let reader = std::io::BufReader::new(resp.into_reader());
+    let mut lines = reader.lines();
+    let mut acc = String::new();
+
+    // Find the first non-empty line to decide SSE vs buffered.
+    let mut first = None;
+    for line in lines.by_ref() {
+        let line = line?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        first = Some(line);
+        break;
+    }
+    let first = match first {
+        Some(f) => f,
+        None => return Ok(acc), // empty body
+    };
+
+    if let Some(payload) = first.strip_prefix("data:") {
+        // SSE path: process the first frame, then the rest.
+        handle_frame(payload.trim(), &mut acc, &mut on_delta);
+        for line in lines {
+            let line = line?;
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(payload) = line.strip_prefix("data:") {
+                let payload = payload.trim();
+                if payload == "[DONE]" {
+                    break;
+                }
+                handle_frame(payload, &mut acc, &mut on_delta);
+            }
+        }
+    } else {
+        // Non-SSE fallback: reassemble the whole body and parse as buffered.
+        let mut whole = first;
+        for line in lines {
+            whole.push_str(&line?);
+        }
+        let resp: Value = serde_json::from_str(&whole)?;
+        let content = extract_content(&resp)?;
+        on_delta(&json!({"content": content}));
+        acc.push_str(&content);
+    }
+    Ok(acc)
+}
+
+fn handle_frame(payload: &str, acc: &mut String, on_delta: &mut impl FnMut(&Value)) {
+    if let Some(delta) = parse_sse_delta(payload) {
+        if let Some(t) = delta.get("content").and_then(|v| v.as_str()) {
+            acc.push_str(t);
+        }
+        on_delta(&delta);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
