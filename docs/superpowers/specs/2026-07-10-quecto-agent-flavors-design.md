@@ -2,8 +2,8 @@
 
 > How users create their own **flavors** of the coding agent — per project or per user —
 > without forking. This is a focused spec for `quecto-agent`'s extensibility model; the full
-> agent loop / tools / sandbox / session design is a broader future spec. Does **not** touch
-> the tiny `quecto` core (still the 4-function model adapter).
+> agent loop / tools / sandbox / session design is in `2026-07-10-quecto-agent-architecture.md`.
+> Does **not** touch the tiny `quecto` core (still the 4-function model adapter).
 
 ## Philosophy
 
@@ -54,9 +54,12 @@ name = "reviewer"
 
 # All optional; omitted keys inherit from the layer below (see Selection & precedence).
 # NOTE: api_key is NEVER read from a manifest (secret-leak risk) — env/flag only.
-model        = "qwen3.6:35b-mlx"
-base_url     = "http://localhost:11434/v1"
-max_steps    = 30
+model           = "qwen3.6:35b-mlx"
+base_url        = "http://localhost:11434/v1"
+max_steps       = 30
+command_timeout = 120                # seconds; sandbox wall-clock limit for run_command
+edit_format     = "search-replace"   # search-replace | begin-patch | unified-diff
+auto_verify     = true               # run [verify] as a completion gate (test-and-fix)
 system_prompt      = "You are a terse senior reviewer. Prefer diffs over prose."
 # or: system_prompt_file = "prompts/reviewer.md"
 
@@ -77,9 +80,10 @@ command = "npx"
 args = ["-y", "@modelcontextprotocol/server-github"]
 
 [verify]
-test  = "cargo test"
-lint  = "cargo clippy -- -D warnings"
-build = "cargo build"
+test     = "cargo test"
+lint     = "cargo clippy -- -D warnings"
+build    = "cargo build"
+required = ["test"]    # which checks gate completion when auto_verify = true
 
 [render]
 style = "compact"    # compact | plain
