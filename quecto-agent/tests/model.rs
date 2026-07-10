@@ -15,7 +15,7 @@ fn http_model_completes_against_mock() {
         api_key: None,
         model: "m".to_string(),
     };
-    let msg = m.complete(&[Message::user("hey")]).unwrap();
+    let msg = m.complete(&[Message::user("hey")], &[]).unwrap();
     assert_eq!(msg.content, "hi");
     assert!(msg.tool_calls.is_empty());
 }

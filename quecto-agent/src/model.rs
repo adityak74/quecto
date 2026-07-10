@@ -6,34 +6,55 @@ use serde_json::{json, Value};
 pub struct Message {
     pub role: String,
     pub content: String,
+    pub tool_calls: Vec<ToolCall>,
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
-    pub fn system(c: impl Into<String>) -> Self {
+    fn plain(role: &str, content: impl Into<String>) -> Self {
         Message {
-            role: "system".into(),
-            content: c.into(),
+            role: role.into(),
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         }
     }
 
+    pub fn system(c: impl Into<String>) -> Self {
+        Message::plain("system", c)
+    }
+
     pub fn user(c: impl Into<String>) -> Self {
-        Message {
-            role: "user".into(),
-            content: c.into(),
-        }
+        Message::plain("user", c)
     }
 
     pub fn assistant(c: impl Into<String>) -> Self {
         Message {
             role: "assistant".into(),
             content: c.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
         }
     }
 
-    pub fn tool(c: impl Into<String>) -> Self {
+    pub fn assistant_with_calls(
+        content: impl Into<String>,
+        tool_calls: Vec<ToolCall>,
+    ) -> Self {
+        Message {
+            role: "assistant".into(),
+            content: content.into(),
+            tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Message {
             role: "tool".into(),
-            content: c.into(),
+            content: content.into(),
+            tool_calls: Vec::new(),
+            tool_call_id: Some(tool_call_id.into()),
         }
     }
 }
@@ -111,17 +132,38 @@ pub fn parse_assistant(resp: &Value) -> Result<AssistantMessage, BoxErr> {
 
 /// Serialize the transcript into an OpenAI-compatible request body.
 pub fn messages_to_body(model: &str, messages: &[Message]) -> Value {
-    let msgs: Vec<Value> = messages
-        .iter()
-        .map(|m| json!({"role": m.role, "content": m.content}))
-        .collect();
+    let msgs: Vec<Value> = messages.iter().map(message_to_json).collect();
     json!({"model": model, "messages": msgs})
+}
+
+fn message_to_json(m: &Message) -> Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert("role".into(), json!(m.role));
+    obj.insert("content".into(), json!(m.content));
+    if !m.tool_calls.is_empty() {
+        let calls: Vec<Value> = m
+            .tool_calls
+            .iter()
+            .map(|c| {
+                json!({
+                    "id": c.id,
+                    "type": "function",
+                    "function": { "name": c.name, "arguments": c.arguments.to_string() }
+                })
+            })
+            .collect();
+        obj.insert("tool_calls".into(), Value::Array(calls));
+    }
+    if let Some(id) = &m.tool_call_id {
+        obj.insert("tool_call_id".into(), json!(id));
+    }
+    Value::Object(obj)
 }
 
 /// Abstraction over "take the transcript, return the assistant's next message."
 /// The real impl calls the model over HTTP; tests inject a scripted fake.
 pub trait Model: Send + Sync {
-    fn complete(&self, messages: &[Message]) -> Result<AssistantMessage, BoxErr>;
+    fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr>;
 }
 
 /// The real model client: buffered `quecto_raw` against an OpenAI-compatible endpoint.
@@ -144,8 +186,11 @@ impl HttpModel {
 }
 
 impl Model for HttpModel {
-    fn complete(&self, messages: &[Message]) -> Result<AssistantMessage, BoxErr> {
-        let body = messages_to_body(&self.model, messages);
+    fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
+        let mut body = messages_to_body(&self.model, messages);
+        if !tools.is_empty() {
+            body["tools"] = Value::Array(tools.to_vec());
+        }
         let auth = self.api_key.as_ref().map(|k| format!("Bearer {k}"));
         let mut headers: Vec<(&str, &str)> = Vec::new();
         if let Some(a) = &auth {
@@ -193,5 +238,30 @@ mod tests {
         assert_eq!(body["model"], "m");
         assert_eq!(body["messages"][0]["role"], "system");
         assert_eq!(body["messages"][1]["content"], "u");
+        assert!(body["messages"][0].get("tool_calls").is_none());
+        assert!(body["messages"][1].get("tool_call_id").is_none());
+    }
+
+    #[test]
+    fn assistant_tool_call_serializes_native_shape() {
+        let call = ToolCall {
+            id: "c1".into(),
+            name: "read_file".into(),
+            arguments: json!({"path":"a.rs"}),
+        };
+        let body = messages_to_body("m", &[Message::assistant_with_calls("", vec![call])]);
+        let tc = &body["messages"][0]["tool_calls"][0];
+        assert_eq!(tc["id"], "c1");
+        assert_eq!(tc["type"], "function");
+        assert_eq!(tc["function"]["name"], "read_file");
+        assert_eq!(tc["function"]["arguments"], "{\"path\":\"a.rs\"}");
+    }
+
+    #[test]
+    fn tool_result_serializes_with_id() {
+        let body = messages_to_body("m", &[Message::tool_result("c1", "file contents")]);
+        assert_eq!(body["messages"][0]["role"], "tool");
+        assert_eq!(body["messages"][0]["tool_call_id"], "c1");
+        assert_eq!(body["messages"][0]["content"], "file contents");
     }
 }

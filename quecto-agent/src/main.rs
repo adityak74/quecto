@@ -17,8 +17,9 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(20);
 
+    let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let model = HttpModel::from_env();
-    let mut agent = Agent::new(Box::new(model), system, max_steps);
+    let mut agent = Agent::new(Box::new(model), system, max_steps, repo_root).register_builtins();
 
     match agent.run(&task) {
         Outcome::Complete(answer) => println!("{answer}"),
