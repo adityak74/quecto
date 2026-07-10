@@ -12,9 +12,7 @@ The smallest AI harness you'll ever find.
 
 One job: take a prompt, run it through an LLM, return the output.
 
-One endpoint. Two files. Zero async. That's the whole harness — build everything else on top.
-
-Build everything else on top.
+One endpoint. Two files. Zero async. **A single ~1.2 MB self-contained binary** — no runtime, no interpreter, statically-linked TLS. That's the whole harness — build everything else on top.
 
 ## Use it for
 
