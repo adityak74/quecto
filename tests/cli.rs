@@ -52,5 +52,23 @@ fn repl_answers_one_line_then_eof() {
         .spawn().unwrap();
     child.stdin.take().unwrap().write_all(b"hello\n").unwrap();
     let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("reply"));
+}
+
+#[test]
+fn init_prints_exports() {
+    let mut child = Command::new(bin())
+        .arg("--init")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn().unwrap();
+    child.stdin.take().unwrap()
+        .write_all(b"http://localhost:11434/v1\n\nqwen\n\n").unwrap();
+    let out = child.wait_with_output().unwrap();
+    let s = String::from_utf8_lossy(&out.stdout);
+    assert!(s.contains("export QUECTO_BASE_URL=\"http://localhost:11434/v1\""));
+    assert!(s.contains("export QUECTO_MODEL=\"qwen\""));
+    assert!(!s.contains("QUECTO_API_KEY"));
 }

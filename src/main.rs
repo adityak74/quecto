@@ -73,8 +73,27 @@ fn run_repl() {
     }
 }
 
+fn run_init() -> Result<(), BoxErr> {
+    let stdin = io::stdin();
+    let mut input = stdin.lock();
+    let stderr = io::stderr();
+    let mut prompts = stderr.lock();
+    let pairs = quecto::init_exports(&mut input, &mut prompts)?;
+    for (k, v) in pairs {
+        println!("export {k}=\"{v}\"");
+    }
+    Ok(())
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(|s| s.as_str()) == Some("--init") {
+        if let Err(e) = run_init() {
+            eprintln!("quecto: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if args.is_empty() {
         run_repl();
     } else {

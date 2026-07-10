@@ -186,6 +186,34 @@ fn handle_frame(payload: &str, acc: &mut String, on_delta: &mut impl FnMut(&Valu
     }
 }
 
+/// Interactive env bootstrap: prompt (on `prompts`) for each knob, read answers
+/// from `input`, and return the (var, value) pairs the user actually set (blanks
+/// skipped). The binary prints these as `export VAR="value"`; the agent's wizard
+/// reuses it for its first section.
+pub fn init_exports(
+    input: &mut impl std::io::BufRead,
+    prompts: &mut impl std::io::Write,
+) -> std::io::Result<Vec<(String, String)>> {
+    let fields = [
+        ("QUECTO_BASE_URL", "Base URL [http://localhost:11434/v1]: "),
+        ("QUECTO_API_KEY", "API key (blank for none): "),
+        ("QUECTO_MODEL", "Model [gpt-4o]: "),
+        ("QUECTO_SYSTEM", "System prompt (blank for none): "),
+    ];
+    let mut out = Vec::new();
+    for (var, prompt) in fields {
+        write!(prompts, "{prompt}")?;
+        prompts.flush()?;
+        let mut line = String::new();
+        input.read_line(&mut line)?;
+        let val = line.trim();
+        if !val.is_empty() {
+            out.push((var.to_string(), val.to_string()));
+        }
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,5 +281,18 @@ mod tests {
     #[test]
     fn parse_sse_delta_no_delta_none() {
         assert!(parse_sse_delta(r#"{"choices":[{}]}"#).is_none());
+    }
+
+    #[test]
+    fn init_exports_skips_blanks() {
+        use std::io::Cursor;
+        // base set, key blank, model set, system blank
+        let mut input = Cursor::new("http://localhost:11434/v1\n\nqwen\n\n");
+        let mut prompts = Vec::new();
+        let pairs = init_exports(&mut input, &mut prompts).unwrap();
+        assert_eq!(pairs, vec![
+            ("QUECTO_BASE_URL".to_string(), "http://localhost:11434/v1".to_string()),
+            ("QUECTO_MODEL".to_string(), "qwen".to_string()),
+        ]);
     }
 }
