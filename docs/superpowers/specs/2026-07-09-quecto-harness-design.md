@@ -35,16 +35,16 @@ pub fn quecto_raw(
     url: &str,
     headers: &[(&str, &str)],
     body: serde_json::Value,
-) -> Result<serde_json::Value, Box<dyn std::error::Error>>
+) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>>
 
-// primitive (streamed): same, with "stream": true; calls on_delta for each content token
-// as it arrives, and returns the fully accumulated text.
+// primitive (streamed): same, with "stream": true; calls on_delta with each SSE chunk's
+// parsed `choices[0].delta` object, and returns the accumulated text content.
 pub fn quecto_stream(
     url: &str,
     headers: &[(&str, &str)],
     body: serde_json::Value,
-    on_delta: impl FnMut(&str),
-) -> Result<String, Box<dyn std::error::Error>>
+    on_delta: impl FnMut(&serde_json::Value),
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>>
 
 // convenience: build a single-user-message body, extract the text content.
 pub fn quecto_to(
@@ -52,10 +52,10 @@ pub fn quecto_to(
     base_url: &str,
     api_key: Option<&str>,
     model: &str,
-) -> Result<String, Box<dyn std::error::Error>>
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>>
 
 // ergonomic: read config from the environment, delegate to quecto_to.
-pub fn quecto(prompt: &str) -> Result<String, Box<dyn std::error::Error>>
+pub fn quecto(prompt: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>>
 ```
 
 - `quecto_raw()` — the opinion-free buffered primitive. You supply the **exact URL**, the
@@ -66,13 +66,17 @@ pub fn quecto(prompt: &str) -> Result<String, Box<dyn std::error::Error>>
   caller can include a `tools` array and read back `tool_calls` — the only hook an agent/MCP
   layer needs. The single opinion left is "the payload is JSON" (inherent to the target APIs).
 - `quecto_stream()` — the streaming primitive, same signature shape. See [Streaming](#streaming).
-- `quecto_to()` — convenience. **This is where the OpenAI-flavored opinions live**: it
-  appends `/chat/completions` to `base_url`, turns `Some(key)` into an
-  `Authorization: Bearer` header (`None` → no auth header, for local servers), builds
+- `quecto_to()` — convenience. **This is where the OpenAI-flavored opinions live**: it joins
+  `base_url` + `/chat/completions` (trimming a trailing `/` from `base_url` first, so
+  `…/v1` and `…/v1/` both work), turns `Some(key)` into an `Authorization: Bearer` header
+  (`None` → no auth header, for local servers), builds
   `{"model": …, "messages": [{"role": "user", "content": prompt}]}`, calls `quecto_raw()`, and
-  extracts `choices[0].message.content`. Deliberately user-message only — the system prompt
-  lives in `quecto()`/the body, not in this signature. Primary path for local models (point
-  `base_url` at `http://localhost:11434/v1`, pass `None` for the key).
+  extracts `choices[0].message.content`. If `content` is absent or `null` (e.g. a tool-call-only
+  response), it returns an **empty string** rather than erroring — a text convenience shouldn't
+  choke on a tool turn; callers who need `tool_calls` use `quecto_raw`. Deliberately
+  user-message only — the system prompt lives in `quecto()`/the body, not in this signature.
+  Primary path for local models (point `base_url` at `http://localhost:11434/v1`, pass `None`
+  for the key).
 - `quecto()` — the most ergonomic path. Reads `QUECTO_BASE_URL`, `QUECTO_API_KEY`,
   `QUECTO_MODEL`, and optional `QUECTO_SYSTEM`. With no system prompt it delegates to
   `quecto_to()`; with one set it builds a `[system, user]` body and the URL/headers itself and
@@ -89,16 +93,31 @@ optional sugar you bypass by calling `quecto_raw` directly.
 **without reintroducing async**. It:
 
 1. Ensures `"stream": true` in the body and POSTs as usual.
-2. Reads the response body as a synchronous `BufRead`, line by line (this is all `ureq`
-   needs — no runtime, no futures).
-3. For each `data: {…}` line, parses it and passes `choices[0].delta.content` to the
-   `on_delta` closure; stops at `data: [DONE]`.
-4. Accumulates the deltas and returns the complete text `String`.
+2. Reads the response body as a synchronous reader (`ureq`'s `into_reader()`), line by line —
+   no runtime, no futures.
+3. For each `data: {…}` line, parses the chunk and passes `choices[0].delta` (a `Value`) to
+   `on_delta`; accumulates `delta.content` into the return `String`; stops at `data: [DONE]`.
+4. Returns the accumulated text content.
 
-Scope note: streaming carries **text content only**. Tool-calling turns should use
-`quecto_raw` (the agent needs the *complete* `tool_calls` before executing anything); only
-the final user-facing answer benefits from streaming. This keeps `quecto_stream` tiny — it
-never has to reassemble partial `tool_calls` deltas.
+**Callback carries the full delta.** `on_delta` receives the parsed `delta` object, not just
+a string — so a caller can read `delta.content` *or* `delta.tool_calls`. This lets
+`quecto-agent` stream tool-call turns live through the same primitive instead of re-parsing
+SSE itself. The return value stays the concatenated text `content` for the simple case (the
+CLI just prints each `delta.content`).
+
+**Non-SSE fallback (never silent-empty).** If the response is not an event stream — some
+proxies/servers ignore `"stream": true` and return a normal JSON body — `quecto_stream`
+detects the absence of `data:` frames and parses the body as a buffered response instead,
+delivering the full content in one `on_delta` call. A misconfigured endpoint degrades to
+buffered output rather than producing nothing.
+
+**Off-switch.** The CLI reads `QUECTO_STREAM` (default on); `QUECTO_STREAM=0` makes it use the
+buffered path (`quecto`) instead. Streaming is a default, not a mandate — consistent with the
+unopinionated stance.
+
+Scope note on the return value: it accumulates **text content only**. An agent that also
+needs assembled `tool_calls` reads them from the `delta` objects in `on_delta` (or, more
+simply, uses `quecto_raw` for tool turns, which returns the complete `tool_calls` at once).
 
 ### System prompt
 
@@ -114,7 +133,7 @@ single-user-message convenience.
 
 ### Configuration
 
-Four environment variables (read only by `quecto()`; the primitives read none):
+Environment variables (read by `quecto()` and the binary; the primitives read none):
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -122,6 +141,7 @@ Four environment variables (read only by `quecto()`; the primitives read none):
 | `QUECTO_API_KEY` | *(optional)* | Bearer token; if unset, no auth header is sent |
 | `QUECTO_MODEL` | `gpt-4o` | Model name sent in the request body |
 | `QUECTO_SYSTEM` | *(optional)* | System prompt; if set, prepended as a `{role:system}` message |
+| `QUECTO_STREAM` | `1` | Binary only: `0` uses the buffered path instead of streaming |
 
 `QUECTO_API_KEY` is optional by design — the local coding models this harness targets
 (e.g. `qwen2.5-coder`, `qwen3.6:*-mlx`, `devstral`, `codestral`) run on servers that ignore
@@ -134,7 +154,7 @@ this env var adds no capability to the core, only ergonomics to the env-based pa
 
 ### Error handling
 
-No custom error type. Every function returns `Result<_, Box<dyn std::error::Error>>`.
+No custom error type. Every function returns `Result<_, Box<dyn std::error::Error + Send + Sync>>`.
 
 - `ureq` errors (transport failures *and* non-2xx HTTP status) propagate via `?`.
 - `serde_json` parse errors propagate via `?`.
@@ -147,14 +167,28 @@ transport-vs-logic — an acceptable trade for "give me the string or a failure.
 
 ### Dependencies
 
-| Crate | Feature | Purpose |
+| Crate | Version / Features | Purpose |
 |---|---|---|
-| `ureq` | `json` | Synchronous HTTP client (no async runtime) |
-| `serde_json` | *(none)* | Build request bodies, parse responses |
+| `ureq` | `2`, features `["json"]` (keeps default `tls` = **rustls**) | Synchronous HTTP client (no async runtime) |
+| `serde_json` | `1` | Build request bodies, parse responses |
+
+```toml
+ureq = { version = "2", features = ["json"] }   # do NOT set default-features = false
+serde_json = "1"                                 #   without re-adding a tls feature
+```
+
+TLS note: HTTPS (`https://api.openai.com`) requires a TLS backend. `ureq` 2.x provides one
+via its **default** features (rustls — no OpenSSL, fully portable), and adding `["json"]` does
+not disable defaults. If any future change sets `default-features = false`, a `tls`/`rustls`
+feature **must** be re-added or every HTTPS call fails. Version is pinned to `ureq` 2.x
+deliberately: 3.x has a different request/response API (notably body reading) and would
+require rewrites.
 
 Two direct dependencies, ~30 transitive crates, **no `tokio`, no `reqwest`, no `serde`
 derive**. `ureq` is blocking, so `main` is a plain `fn main()`. `serde_json::Value` appears
-in the public API — that is intentional; it is what makes `quecto_raw` composable.
+in the public API — that is intentional; it is what makes `quecto_raw` composable. The error
+alias is `Box<dyn std::error::Error + Send + Sync>` (both `ureq::Error` and `serde_json::Error`
+satisfy it) so errors cross into `quecto-agent`'s `tokio` tasks without conversion.
 
 No framework. No CLI library. No tracing/logging. No error-chain crate. No async runtime.
 
@@ -172,11 +206,13 @@ quecto                       # interactive (REPL) mode
 - Reads arguments from `std::env::args()`, skips `argv[0]`, and joins the rest with a
   single space — so `quecto write me a haiku` and `quecto "write me a haiku"` behave
   identically
-- Reads `QUECTO_BASE_URL` / `QUECTO_API_KEY` / `QUECTO_MODEL` / `QUECTO_SYSTEM`, builds the
-  body (prepending a system message when `QUECTO_SYSTEM` is set), and calls `quecto_stream`,
-  printing each token to stdout as it arrives (live output). The buffered `quecto()` /
-  `quecto_to()` remain the library entry points for callers who want a `String`.
-- Prints a trailing newline when the stream ends
+- Reads `QUECTO_BASE_URL` / `QUECTO_API_KEY` / `QUECTO_MODEL` / `QUECTO_SYSTEM` and builds the
+  body via a shared internal `build_body(system, prompt)` helper (also used by `quecto()`, so
+  the system+user assembly lives in one place)
+- If `QUECTO_STREAM` ≠ `0`, calls `quecto_stream`, printing each chunk's `delta.content` to
+  stdout as it arrives (live output); if `QUECTO_STREAM=0`, calls buffered `quecto()` and
+  prints the whole `String`
+- Prints a trailing newline when done
 - Prints error to stderr and exits with code 1
 
 ### Interactive mode (no arguments)
@@ -187,13 +223,24 @@ from stdin.
 
 ### `quecto --init` (optional env bootstrapper)
 
-The one exception to "no subcommands." A `--init` flag runs a tiny interview for the four
-env basics (`QUECTO_BASE_URL`, `QUECTO_API_KEY`, `QUECTO_MODEL`, `QUECTO_SYSTEM`) and writes a
-`.env` (or prints `export` lines). It is a **flag, not a subcommand**, so it never collides
-with a prompt like `quecto init`. Crucially, this only helps you *set* env — the core still
-reads **only** env vars at runtime, so the "no config file" non-goal holds (nothing is read
-back from a file). The same interview is exposed as a library helper that `quecto-agent`'s
-full wizard reuses for its first section.
+The one exception to "no subcommands." A `--init` flag runs a tiny interview for the env
+basics (`QUECTO_BASE_URL`, `QUECTO_API_KEY`, `QUECTO_MODEL`, `QUECTO_SYSTEM`) and **prints
+`export QUECTO_*=…` lines to stdout** — nothing more. The user wires them in with
+`eval "$(quecto --init)"` or by pasting into their shell profile:
+
+```bash
+$ quecto --init
+export QUECTO_BASE_URL="http://localhost:11434/v1"
+export QUECTO_MODEL="qwen3.6:35b-mlx"
+# …prompts on stderr so stdout stays eval-able…
+```
+
+Printing exports (rather than writing a `.env`) keeps the tool honest: the core reads **only
+env vars** at runtime, so a written file would be silently ignored. There is no dangling
+config file and the "no config-file reading" non-goal stays intact. `--init` is a **flag, not
+a subcommand**, so it never collides with a prompt like `quecto init`. The same interview is
+exposed as a library helper that `quecto-agent`'s full wizard reuses for its first section
+(the agent, which *does* have a config file, is free to persist the result).
 
 Otherwise: no help flag, no config file read at runtime, no other subcommands.
 
@@ -209,11 +256,11 @@ The loop:
 2. Read one line from stdin
    - EOF (Ctrl-D), or a line equal to `exit` or `quit` → break
    - Blank line → skip and re-prompt
-3. Stream the reply — build the body from the line + env config (including a `QUECTO_SYSTEM`
-   system message if set) and call `quecto_stream`, printing each token to **stdout** as it
-   arrives. A fresh, independent call (**stateless**: no history is retained or sent between
-   turns, preserving the conversation-history non-goal). Note the system prompt is *not*
-   conversational state — it is re-sent identically each turn.
+3. Answer the line — build the body via the same `build_body(system, prompt)` helper and,
+   per `QUECTO_STREAM`, either `quecto_stream` (printing each `delta.content` to **stdout** as
+   it arrives) or buffered `quecto()`. A fresh, independent call (**stateless**: no history is
+   retained or sent between turns, preserving the conversation-history non-goal). The system
+   prompt is *not* conversational state — it is re-sent identically each turn.
 4. Print a trailing newline
 5. Loop
 
@@ -280,14 +327,20 @@ quecto(prompt) ─env─▶ quecto_to ─┐ append /chat/completions
 ```
 body (+ "stream": true) ─▶ quecto_stream(url, headers, body, on_delta)
                                           │
-                              ureq POST <url>
+                              ureq POST <url> → into_reader()
                                           │
-                          read response as BufRead, line by line
-                                          │
-                    each `data: {…}` ─▶ on_delta(choices[0].delta.content)
-                          `data: [DONE]` ─▶ stop
-                                          ▼
-                          String (all deltas concatenated)
+                          read line by line
+                            │
+             ┌── SSE? ──────┤
+             │ yes          │ no `data:` frames (server ignored stream)
+             ▼              ▼
+  each `data: {…}` ─▶     fall back: parse whole body as buffered JSON,
+  on_delta(choices[0]      one on_delta(delta) with the full content
+    .delta)  [Value]                    │
+  `data:[DONE]` ─▶ stop                 │
+             │                          │
+             ▼                          ▼
+        String (accumulated delta.content) ── never silent-empty
 ```
 
 ## HTTP Request
@@ -319,6 +372,22 @@ exit 1.
 
 **Interactive mode:** the same failures print to stderr but the loop continues — there is no
 fatal case. See [Error handling in the REPL](#error-handling-in-the-repl).
+
+## Known Limitations (accepted trade-offs)
+
+Consequences of staying tiny and synchronous, recorded deliberately rather than fixed:
+
+- **Ctrl-C during a generation ends the process, not just the turn.** A synchronous `ureq`
+  blocking read cannot be cancelled back to the REPL prompt without signal handling or a
+  worker thread — both rejected as too heavy for the core. Ctrl-C therefore exits. Rich
+  per-turn cancellation (abort this generation, keep the session) is a `quecto-agent` concern.
+- **`main.rs` is dense.** It carries arg parsing, env reading, `build_body`, the streaming
+  print loop, the REPL, and the `--init` interview. It is still one file and dependency-free;
+  if `--init` ever grows past a few prompts, splitting it into a third module (`init.rs`) is
+  the escape hatch, and "two files" becomes "two files of library + a thin binary."
+- **Streaming's return value is text-only.** Assembled `tool_calls` are available per-chunk
+  through `on_delta(&Value)` but are not reassembled into the return value; agents that want a
+  complete tool call use `quecto_raw`. This is a scope choice, not a defect.
 
 ## Composability
 
