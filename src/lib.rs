@@ -67,6 +67,43 @@ pub fn quecto_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Va
     Ok(value)
 }
 
+/// Read the four env knobs, applying defaults for base_url and model.
+pub fn env_config() -> (String, Option<String>, String, Option<String>) {
+    let base = std::env::var("QUECTO_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    let key = std::env::var("QUECTO_API_KEY").ok();
+    let model = std::env::var("QUECTO_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
+    let system = std::env::var("QUECTO_SYSTEM").ok();
+    (base, key, model, system)
+}
+
+/// Convenience: build a single-user-message body, POST to <base_url>/chat/completions
+/// with optional Bearer auth, return the assistant text ("" on a tool-only turn).
+pub fn quecto_to(prompt: &str, base_url: &str, api_key: Option<&str>, model: &str) -> Result<String, BoxErr> {
+    let url = join_url(base_url, "chat/completions");
+    let body = build_body(None, prompt, model);
+    let auth = api_key.map(|k| format!("Bearer {k}"));
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(a) = &auth {
+        headers.push(("Authorization", a.as_str()));
+    }
+    let resp = quecto_raw(&url, &headers, body)?;
+    extract_content(&resp)
+}
+
+/// Ergonomic: read env config (incl. optional QUECTO_SYSTEM), send, return text.
+pub fn quecto(prompt: &str) -> Result<String, BoxErr> {
+    let (base, key, model, system) = env_config();
+    let url = join_url(&base, "chat/completions");
+    let body = build_body(system.as_deref(), prompt, &model);
+    let auth = key.map(|k| format!("Bearer {k}"));
+    let mut headers: Vec<(&str, &str)> = Vec::new();
+    if let Some(a) = &auth {
+        headers.push(("Authorization", a.as_str()));
+    }
+    let resp = quecto_raw(&url, &headers, body)?;
+    extract_content(&resp)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
