@@ -28,20 +28,20 @@ process I/O, and `quecto_raw`/`quecto_stream` are called directly. The rare need
 tool calls within a turn uses `std::thread`. Only the optional **`mcp` feature** pulls in
 `tokio` + `rmcp`, and it runs a runtime scoped to MCP clients — the core loop stays sync.
 
-### Cancellation (this fixes the core's Ctrl-C limitation)
+### Cancellation
 
 A `SIGINT` handler (via `ctrlc`) sets an `AtomicBool` "cancel requested" rather than killing
 the process. The loop checks it:
 
 - **Between steps and tool calls** → abort the turn, return to the prompt (chat) or exit
   cleanly (one-shot).
-- **During model streaming** → because `quecto_stream` reads line-by-line synchronously, the
-  agent's delta handler checks the flag per chunk and stops early.
 - **During `run_command`** → the child runs in its own process group; on cancel the whole
   process tree is killed (see [Sandbox](#command-sandbox)).
 
-So the agent gets real per-turn cancellation without async. A second Ctrl-C within a short
-window exits hard.
+The model call itself is a **buffered, blocking `quecto_raw`** (see below), so it cannot be
+interrupted mid-generation by the flag alone. A **second Ctrl-C within a short window exits
+hard**, which covers a long generation that won't return. This is the accepted cost of the
+buffered (reliable) tool-calling path.
 
 ## Crate layout
 
@@ -53,7 +53,7 @@ quecto-agent/
 ├── src/
 │   ├── lib.rs            # re-exports: Agent, Tool, Policy, Renderer, Session, Flavor
 │   ├── agent.rs          # the loop, state, limits, completion, cancellation
-│   ├── model.rs          # StreamAssembler over quecto_stream/quecto_raw
+│   ├── model.rs          # buffered quecto_raw turns; parse_assistant (native|text protocol)
 │   ├── tools/
 │   │   ├── mod.rs        # Tool trait, Registry, dispatch
 │   │   ├── fs.rs         # read_file, list_files, write_file
@@ -99,11 +99,11 @@ loop {
     if step >= max_steps           -> return StepLimit
 
     messages = build_messages(state)          // layered system + history + observations
-    body     = { model, messages, tools: registry.enabled_schemas(), stream: true }
+    body     = { model, messages, /* tools per protocol, see below */ }
 
-    // StreamAssembler renders content deltas live AND reconstructs the full assistant
-    // message (content + tool_calls) from on_delta(&Value). See model.rs.
-    msg = model.turn(url, headers, body, &renderer)?
+    // Buffered, blocking call — the complete message (content + tool_calls) arrives at once.
+    resp = quecto_raw(url, headers, body)?
+    msg  = parse_assistant(resp, flavor.tool_protocol)   // native or text (see below)
 
     append(state, msg)                         // assistant message into history
 
@@ -122,9 +122,13 @@ loop {
         if cancel_requested() { return Cancelled }
         let decision = policy.decide(&call);   // allow | ask | deny
         let out = match decision {
-            Deny        => ToolOutput::denied(),
-            Ask if !renderer.confirm(&call) => ToolOutput::denied(),
-            _           => registry.dispatch(&call, &mut cx),
+            Deny                         => ToolOutput::denied(),
+            Ask => match interactivity {         // see Interactivity below
+                Interactive if renderer.confirm(&call) => registry.dispatch(&call, &mut cx),
+                AutoApprove                             => registry.dispatch(&call, &mut cx),
+                _ /* denied or non-interactive */       => ToolOutput::denied(),
+            },
+            Allow                        => registry.dispatch(&call, &mut cx),
         };
         append_tool_result(state, &call, truncate(out));   // tool message into history
     }
@@ -133,19 +137,35 @@ loop {
 ```
 
 Loop invariants enforced: `max_steps`, per-tool-output truncation (head+tail with a byte cap),
-cancellation checks, and a **repeated-action guard** (if the same tool+args is issued N times
-consecutively with identical results, inject a nudge/observation to break the loop).
+cancellation checks, and a **repeated-action guard**. The guard triggers only when the *same
+tool + same args* yields the *same result* **and no file changed in between** across N
+consecutive turns — so a legitimate test-and-fix loop (`cargo test` → edit → `cargo test`)
+does not misfire; a genuine spin (re-reading the same file to no effect) does.
 
-### StreamAssembler (`model.rs`)
+### Buffered turns + tool-call transport (`model.rs`)
 
-Wraps `quecto_stream`. Its `on_delta(&Value)` closure:
-1. appends `delta.content` to a buffer and prints it live through the renderer;
-2. merges `delta.tool_calls` fragments (index, id, name, arguments) into an accumulating map.
+The loop uses **buffered `quecto_raw`**, not streaming: tool-call turns need the *complete*
+`tool_calls` before executing, so there is no execution benefit to streaming them, and
+reassembling partial `tool_calls` deltas is the least-standardized, least-reliable part of the
+OpenAI-compatible surface across local servers (Ollama/vLLM/MLX/llama.cpp). Buffered calls
+sidestep that entirely. Progress is shown through **activity lines** (one per tool), not
+token-by-token output — which reads cleanly and needs no reassembly. (Token streaming remains
+a feature of the bare `quecto` core CLI, and can be an optional nicety for a final text-only
+answer, but is not part of the loop.)
 
-On stream end it yields a complete `AssistantMessage { content, tool_calls, finish_reason }`.
-This is where the "reassemble partial tool_calls" work the core deliberately skipped lives —
-exactly what the core's `on_delta(&Value)` hook was designed to enable. If `QUECTO_STREAM=0`
-or streaming is unsupported, it falls back to a single `quecto_raw` call.
+**Tool protocol is flavor-configurable** (`tool_protocol = native | text`), because native
+function-calling is weak or absent on several target local models:
+
+- **`native`** (default) — send `tools: registry.enabled_schemas()`; read `tool_calls` from
+  `choices[0].message.tool_calls`.
+- **`text`** — omit the `tools` field; the system prompt documents a fenced tool-call format
+  (e.g. a ```` ```tool ```` block of `{ "name": …, "arguments": … }`), and `parse_assistant`
+  extracts calls from the message text. Robust on models with poor native FC; streams
+  naturally if ever needed; the rest of the loop (dispatch, approval, observation) is
+  identical. Malformed blocks are returned to the model as a structured error to retry.
+
+`parse_assistant` normalizes both into the same `AssistantMessage { content, tool_calls,
+finish_reason }` the loop consumes.
 
 ## Tool system
 
@@ -168,7 +188,10 @@ structured error message to the model (never a panic) when a tool fails.
 ### Path safety (shared by every fs/patch/shell tool)
 
 All paths are resolved against the repo root and **must** canonicalize to inside it; any
-`..`/symlink escape is rejected before I/O. There is no generic unrestricted filesystem tool.
+`..`/symlink escape is rejected before I/O. For files that don't exist yet (`write_file` /
+`apply_patch` creating a file), the **parent directory** is canonicalized and checked — a
+naive `canonicalize()` on the not-yet-existing path fails and would otherwise let a symlinked
+parent escape. There is no generic unrestricted filesystem tool.
 
 ## Built-in tools (the essential ~9)
 
@@ -182,7 +205,7 @@ All paths are resolved against the repo root and **must** canonicalize to inside
 | `run_command` | Run a shell command in the repo | Fully sandboxed + approval-gated (see [Sandbox](#command-sandbox)) |
 | `git_diff` | Show working-tree diff | Read-only |
 | `git_status` | Show working-tree status | Read-only |
-| `ask_user` | Ask the human a question mid-task | Pauses for input; the human-in-the-loop escape |
+| `ask_user` | Ask the human a question mid-task | Prompts on an interactive TTY; returns a structured error in non-interactive mode (see [Interactivity](#interactivity-no-tty-safety)) |
 
 Verification (`test`/`lint`/`build`) is **not** separate tools — it runs the flavor's
 `[verify]` commands through the same sandboxed `run_command` path.
@@ -228,8 +251,13 @@ creates a new file (equivalent to `write_file`).
   tree, not just the shell.
 - **Output cap** — stdout/stderr captured up to a byte cap, truncated head+tail with a
   `[… N bytes truncated …]` marker so a runaway command can't blow the context budget.
-- **Secret redaction** — `QUECTO_API_KEY` and configured secret patterns are stripped from the
-  child's environment and redacted from captured output before it reaches the model.
+- **Secret redaction (best-effort, defense-in-depth — not a guarantee)** — configured secret
+  patterns are redacted from captured command output before it reaches the model. This is a
+  mitigation, not a boundary: `read_file` can still read a repo `.env`/config, so secrets
+  living in the working tree can reach the model regardless. The child's environment is passed
+  through **unmodified by default** (stripping `QUECTO_API_KEY` would break tests that
+  legitimately need credentials); a flavor can opt into an env allow-list when it wants
+  stricter isolation. Treat the model + endpoint as inside the trust boundary.
 
 ## Approval policy (`policy.rs`)
 
@@ -237,8 +265,28 @@ Enforces the flavor's `[approval]` (defined in the flavors spec): every operatio
 `allow | ask | deny`; `preset` (`read-only`/`editor`/`full`) expands to a per-operation map;
 the built-in default is `read-only`; `sudo`/outside-repo/`push` are never auto-allowed. The
 policy classifies each tool call by operation (read, edit, run_command, delete, network,
-install, push) and returns the decision the loop acts on. `ask` decisions route to the
-renderer's confirmation prompt.
+install, push) and returns the decision the loop acts on.
+
+### Interactivity (no-TTY safety)
+
+`ask` needs a human. The agent detects an interactive TTY and behaves accordingly:
+
+| Mode | `ask` resolves to | `ask_user` |
+|---|---|---|
+| Interactive TTY | prompt the human (`renderer.confirm`) | prompt the human |
+| Non-interactive (one-shot pipe / CI, no TTY) | **deny** (safe) | returns a structured error observation the model must work around |
+| `--yes` / `--auto-approve` (or flavor `auto_approve = true`) | **allow** | still errors (no human to answer) |
+
+Hard `deny` and the denylist always hold, even under `--yes`. So unattended runs are safe by
+default and become permissive only when the operator explicitly opts in.
+
+### Verification commands and approval
+
+The flavor's `[verify]` commands are **pre-declared and trust-gated** (they went through
+trust-on-first-use like the rest of the project flavor). When `auto_verify` runs them they
+**bypass the `run_command` `ask` prompt** — otherwise the agent would interrupt every
+test-and-fix cycle asking to run the same `cargo test`. They still honor a hard `deny` and the
+denylist.
 
 ## Context engine (`context.rs`)
 
@@ -250,10 +298,18 @@ the **model the tools to retrieve** (model-directed search) and seeds a small st
 - **Retrieval** happens through `list_files`/`search_text`/`read_file` as the model requests.
 - **Token budget**: every tool output is truncated to a cap; `read_file` favors ranges; the
   seed tree is depth-limited. A running estimate guards the total; when near the model's
-  window the oldest tool observations are dropped first (full compaction is deferred).
+  window the **oldest complete turns are dropped as whole units** — an assistant `tool_calls`
+  message and its matching `tool` result messages are always removed together, never split.
+  Dropping a result while keeping its `tool_call_id` (or vice versa) would produce a dangling
+  reference the Chat API rejects. (Full compaction is deferred.)
 
 Discovery respects `.gitignore` (the `ignore` crate). This matches the reference's guidance
 that ripgrep + file paths + model-directed search suffice for the MVP.
+
+**No-git degradation:** if the working directory is not a git repository (or `git` is
+unavailable), `git_diff`/`git_status` return a clear "not a git repository" result rather than
+failing the turn, and the seed context simply omits the git sections. The agent still works;
+it just loses git-awareness.
 
 ## Instruction loader (`instructions.rs`)
 
@@ -270,10 +326,14 @@ When the model stops with edits present and `auto_verify` is on, the agent runs 
 
 ```
 complete = changes_exist
-        && diff_reviewed            // the agent surfaced the diff to the user
+        && diff_surfaced            // interactive: shown for review; one-shot: printed at end
         && required_checks_passed   // [verify] test/lint/build as configured
         && no_unresolved_tool_errors
 ```
+
+`diff_surfaced` is satisfied by *presenting* the diff, not by a human acting on it: in chat
+mode the renderer shows it (and `/diff` re-shows it); in one-shot mode it is printed at the end
+of the run. There is no interactive-review requirement that would hang an unattended run.
 
 A failing check is fed back as an observation and the loop continues (test-and-fix) until it
 passes or `max_steps` is hit. With `auto_verify` off, the model drives verification itself via
@@ -354,11 +414,12 @@ Still **no `tokio` in the default build**. `main` is a plain `fn main()`.
 
 ## Relationship to the core
 
-`quecto-agent` talks to models **only** through `quecto_raw`/`quecto_stream`. A flavor's
-`model`/`base_url`/`api_key` become the `url`/`headers`/`body` handed to those primitives; the
-`StreamAssembler` consumes the core's `on_delta(&Value)` to reconstruct tool calls. Everything
-stateful, opinionated, or heavy lives here — the core stays the tiny, sync, opinion-free
-4-function adapter.
+`quecto-agent` talks to models **only** through the core. The loop uses buffered `quecto_raw`
+(reliable, complete `tool_calls`); a flavor's `model`/`base_url`/`api_key` become the
+`url`/`headers`/`body` handed to it. `quecto_stream` remains available for an optional
+final-answer stream, but is not part of the loop — token streaming is primarily the bare
+`quecto` CLI's feature. Everything stateful, opinionated, or heavy lives here; the core stays
+the tiny, sync, opinion-free adapter.
 
 ## Deferred (future specs)
 

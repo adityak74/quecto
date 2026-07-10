@@ -59,7 +59,9 @@ base_url        = "http://localhost:11434/v1"
 max_steps       = 30
 command_timeout = 120                # seconds; sandbox wall-clock limit for run_command
 edit_format     = "search-replace"   # search-replace | begin-patch | unified-diff
+tool_protocol   = "native"           # native (OpenAI tool_calls) | text (parse a fenced block)
 auto_verify     = true               # run [verify] as a completion gate (test-and-fix)
+auto_approve    = false              # unattended: allow `ask`-level ops (deny/denylist still hold)
 system_prompt      = "You are a terse senior reviewer. Prefer diffs over prose."
 # or: system_prompt_file = "prompts/reviewer.md"
 
