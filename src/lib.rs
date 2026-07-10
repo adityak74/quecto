@@ -139,8 +139,10 @@ pub fn quecto_stream(
         break;
     }
     let first = match first {
+        // An empty 200 body must not silently succeed — surface it (the spec's
+        // "never silent-empty" guarantee).
+        None => return Err("empty response body".into()),
         Some(f) => f,
-        None => return Ok(acc), // empty body
     };
 
     if let Some(payload) = first.strip_prefix("data:") {
@@ -164,6 +166,7 @@ pub fn quecto_stream(
         // Non-SSE fallback: reassemble the whole body and parse as buffered.
         let mut whole = first;
         for line in lines {
+            whole.push('\n');
             whole.push_str(&line?);
         }
         let resp: Value = serde_json::from_str(&whole)?;

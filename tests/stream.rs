@@ -25,3 +25,11 @@ fn stream_non_sse_fallback() {
     assert_eq!(out, "whole");
     assert_eq!(calls, 1);
 }
+
+#[test]
+fn stream_empty_body_errors() {
+    let base = mock(200, "text/event-stream", "");
+    let url = quecto::join_url(&base, "chat/completions");
+    let r = quecto::quecto_stream(&url, &[], json!({"model":"m","messages":[]}), |_d| {});
+    assert!(r.is_err());
+}
