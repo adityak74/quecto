@@ -4,6 +4,7 @@
 //! binary and future companion crates.
 
 use serde_json::{json, Value};
+use std::time::Duration;
 
 /// Shared boxed error: every fallible fn returns this. Both ureq::Error and
 /// serde_json::Error satisfy it, so `?` composes and errors cross into async tasks.
@@ -44,6 +45,26 @@ pub(crate) fn parse_sse_delta(data: &str) -> Option<Value> {
     }
     let chunk: Value = serde_json::from_str(data).ok()?;
     chunk.get("choices")?.get(0)?.get("delta").cloned()
+}
+
+fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(60))
+        .timeout_read(Duration::from_secs(60))
+        .build()
+}
+
+/// Buffered primitive: POST an arbitrary JSON body to an arbitrary URL with
+/// arbitrary headers; return the full parsed response. No path/auth/shape opinions.
+/// `ureq` returns `Err` on non-2xx status, so no explicit status check is needed.
+pub fn quecto_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Value, BoxErr> {
+    let mut req = agent().post(url);
+    for (k, v) in headers {
+        req = req.set(k, v);
+    }
+    let resp = req.send_json(body)?;
+    let value: Value = resp.into_json()?;
+    Ok(value)
 }
 
 #[cfg(test)]
