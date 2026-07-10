@@ -68,7 +68,26 @@ fn init_prints_exports() {
         .write_all(b"http://localhost:11434/v1\n\nqwen\n\n").unwrap();
     let out = child.wait_with_output().unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
-    assert!(s.contains("export QUECTO_BASE_URL=\"http://localhost:11434/v1\""));
-    assert!(s.contains("export QUECTO_MODEL=\"qwen\""));
+    assert!(s.contains("export QUECTO_BASE_URL='http://localhost:11434/v1'"));
+    assert!(s.contains("export QUECTO_MODEL='qwen'"));
     assert!(!s.contains("QUECTO_API_KEY"));
+}
+
+#[test]
+fn init_escapes_special_chars() {
+    let mut child = Command::new(bin())
+        .arg("--init")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    // base, (blank key), model, system-with-quote-and-dollar
+    child.stdin.take().unwrap()
+        .write_all(b"http://x/v1\n\nm\nit's $HOME\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let s = String::from_utf8_lossy(&out.stdout);
+    // Single-quoted, with the embedded ' escaped as '\'' — inert under eval.
+    assert!(s.contains(r#"export QUECTO_SYSTEM='it'\''s $HOME'"#), "got: {s}");
 }

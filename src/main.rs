@@ -80,7 +80,10 @@ fn run_init() -> Result<(), BoxErr> {
     let mut prompts = stderr.lock();
     let pairs = quecto::init_exports(&mut input, &mut prompts)?;
     for (k, v) in pairs {
-        println!("export {k}=\"{v}\"");
+        // Single-quote the value so $, backticks, and double quotes are inert
+        // under `eval "$(quecto --init)"`; escape any embedded single quote.
+        let escaped = v.replace('\'', "'\\''");
+        println!("export {k}='{escaped}'");
     }
     Ok(())
 }

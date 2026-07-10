@@ -132,7 +132,14 @@ pub fn quecto_stream(
     let mut first = None;
     for line in lines.by_ref() {
         let line = line?;
-        if line.trim().is_empty() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        // SSE comment/heartbeat lines start with ':' — some proxies emit one
+        // before the first data frame. Skip them so they don't trigger the
+        // non-SSE fallback (a stray comment must not hard-fail a real stream).
+        if trimmed.starts_with(':') {
             continue;
         }
         first = Some(line);
@@ -145,7 +152,7 @@ pub fn quecto_stream(
         Some(f) => f,
     };
 
-    if let Some(payload) = first.strip_prefix("data:") {
+    if let Some(payload) = first.trim().strip_prefix("data:") {
         // SSE path: process the first frame, then the rest.
         handle_frame(payload.trim(), &mut acc, &mut on_delta);
         for line in lines {

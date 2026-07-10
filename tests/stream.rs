@@ -27,6 +27,16 @@ fn stream_non_sse_fallback() {
 }
 
 #[test]
+fn stream_skips_leading_comment_line() {
+    // Proxy emits an SSE comment/heartbeat before the first data frame.
+    let sse = ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n";
+    let base = mock(200, "text/event-stream", sse);
+    let url = quecto::join_url(&base, "chat/completions");
+    let out = quecto::quecto_stream(&url, &[], json!({"model":"m","messages":[]}), |_d| {}).unwrap();
+    assert_eq!(out, "ok");
+}
+
+#[test]
 fn stream_empty_body_errors() {
     let base = mock(200, "text/event-stream", "");
     let url = quecto::join_url(&base, "chat/completions");
