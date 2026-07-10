@@ -4,66 +4,94 @@
 
 ## Overview
 
-quecto is a Rust library + CLI that sends a prompt to any OpenAI-compatible LLM endpoint and returns the raw text response.
+quecto is a Rust library + CLI that sends a prompt to any OpenAI-compatible LLM
+endpoint — cloud (OpenAI) or local (Ollama, MLX/LM Studio, vLLM) — and returns the raw
+text response.
 
-Two functions. Two files. That's the harness.
+One endpoint. Two files. Zero async. That's the harness.
+
+Everything larger — tools, MCP, agent loops — is a **companion crate built on top**, never
+part of the core (see [Composability](#composability)).
 
 ## Core Library
 
 ### Public API
 
-Two functions:
+Three functions, layered. Each is a thin wrapper over the one below it:
 
 ```rust
-pub fn quecto(prompt: &str) -> Result<String, Error>
-pub fn quecto_to(prompt: &str, base_url: &str, api_key: &str, model: &str) -> Result<String, Error>
+// primitive: one POST, full response Value in and out.
+// The composable unit that tool/agent/MCP layers build on.
+pub fn quecto_raw(
+    body: serde_json::Value,
+    base_url: &str,
+    api_key: Option<&str>,
+) -> Result<serde_json::Value, Box<dyn std::error::Error>>
+
+// convenience: build a single-user-message body, extract the text content.
+pub fn quecto_to(
+    prompt: &str,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+) -> Result<String, Box<dyn std::error::Error>>
+
+// ergonomic: read config from the environment, delegate to quecto_to.
+pub fn quecto(prompt: &str) -> Result<String, Box<dyn std::error::Error>>
 ```
 
-- `quecto()` — reads `QUECTO_BASE_URL`, `QUECTO_API_KEY`, and `QUECTO_MODEL` from environment
-- `quecto_to()` — accepts base URL, API key, and model directly (for local models, vLLM, Ollama, etc.)
+- `quecto()` — reads `QUECTO_BASE_URL`, `QUECTO_API_KEY`, and `QUECTO_MODEL` from the
+  environment, then calls `quecto_to()`.
+- `quecto_to()` — builds `{"model": …, "messages": [{"role": "user", "content": prompt}]}`,
+  calls `quecto_raw()`, and extracts `choices[0].message.content`. This is the primary path
+  for local models (point `base_url` at `http://localhost:11434/v1`, pass `None` for the key).
+- `quecto_raw()` — the primitive. Sends whatever JSON body you give it and returns the whole
+  response as a `Value`. Because it neither shapes the request nor discards the response, a
+  caller can include a `tools` array and read back `tool_calls` — this is the only hook an
+  agent/MCP layer needs.
 
-All four parameters of `quecto_to()` are required. `quecto()` supplies the model from
-`QUECTO_MODEL` (defaulting to `gpt-4o`) and delegates to `quecto_to()`.
+`api_key` is `Option<&str>`: `Some(key)` sends an `Authorization: Bearer` header; `None`
+omits it entirely (required for no-auth local servers like Ollama).
 
 ### Configuration
 
-Two environment variables:
+Three environment variables (read only by `quecto()`):
 
 | Variable | Default | Purpose |
 |---|---|---|
 | `QUECTO_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint |
-| `QUECTO_API_KEY` | *(required)* | API key for authentication |
+| `QUECTO_API_KEY` | *(optional)* | Bearer token; if unset, no auth header is sent |
 | `QUECTO_MODEL` | `gpt-4o` | Model name sent in the request body |
+
+`QUECTO_API_KEY` is optional by design — the local coding models this harness targets
+(e.g. `qwen2.5-coder`, `qwen3.6:*-mlx`, `devstral`, `codestral`) run on servers that ignore
+auth. The harness must reach them without a key.
 
 ### Error handling
 
-Single `Error` enum, two variants:
+No custom error type. Every function returns `Result<_, Box<dyn std::error::Error>>`.
 
-```rust
-pub enum Error {
-    Http(reqwest::Error),
-    Quecto(String),
-}
-```
+- `ureq` errors (transport failures *and* non-2xx HTTP status) propagate via `?`.
+- `serde_json` parse errors propagate via `?`.
+- quecto's own logic errors (e.g. a response with no `choices`) are constructed inline:
+  `return Err("no choices in response".into());`
 
-- `Http` — transport/decode failures from `reqwest` (via `From<reqwest::Error>`)
-- `Quecto` — everything quecto detects itself: a missing/empty `QUECTO_API_KEY`,
-  a non-2xx API response, or a response body with no `choices`
-
-Two variants is the floor for correct behavior: env-var lookup returns `VarError` (not
-a `reqwest::Error`), and an empty `choices` array must produce a clean error rather than
-panicking on `choices[0]`. No error-chain crate; `Error` implements `std::error::Error`
-and `Display` by hand.
+This is the tiniest correct option: zero type definitions, zero `From` impls, and every
+error path composes with `?`. Consumers get a `Display` string; they can't `match` on
+transport-vs-logic — an acceptable trade for "give me the string or a failure."
 
 ### Dependencies
 
 | Crate | Feature | Purpose |
 |---|---|---|
-| `reqwest` | `json` | HTTP client |
-| `serde` | `derive` | JSON serialization |
-| `serde_json` | *(none)* | JSON parsing |
+| `ureq` | `json` | Synchronous HTTP client (no async runtime) |
+| `serde_json` | *(none)* | Build request bodies, parse responses |
 
-No framework. No CLI library. No tracing/logging. No error chain crate.
+Two direct dependencies, ~30 transitive crates, **no `tokio`, no `reqwest`, no `serde`
+derive**. `ureq` is blocking, so `main` is a plain `fn main()`. `serde_json::Value` appears
+in the public API — that is intentional; it is what makes `quecto_raw` composable.
+
+No framework. No CLI library. No tracing/logging. No error-chain crate. No async runtime.
 
 ## CLI Binary
 
@@ -110,12 +138,10 @@ The loop:
 
 ### Error handling in the REPL
 
-This is the one behavioral difference from one-shot mode:
-
-- A per-turn failure (network blip, bad response) → print to stderr and **keep looping**;
-  a single flaky turn must not kill the session
-- A missing/empty `QUECTO_API_KEY` → fatal on the first turn (exit 1); looping is pointless
-  when no turn can ever succeed
+Any per-turn failure (network blip, bad response, unreachable server) prints to stderr and
+the loop **continues** — a single flaky turn must not kill the session. There is no fatal
+case: with the API key optional there is nothing to validate up front, so the REPL simply
+loops until EOF/`exit`/`quit`.
 
 ### REPL non-goals
 
@@ -129,7 +155,7 @@ similar) and is a separate decision. Ctrl-D exits. That is the whole UI.
 quecto/
 ├── Cargo.toml
 ├── src/
-│   ├── lib.rs    # pub fn quecto(), pub fn quecto_to(), Error type
+│   ├── lib.rs    # quecto_raw(), quecto_to(), quecto()
 │   └── main.rs   # CLI entry point: one-shot + REPL
 ```
 
@@ -138,20 +164,22 @@ Two source files. That's the entire project.
 ## Data Flow
 
 ```
-CLI arg (prompt)
-    │
-    ▼
-quecto(prompt)
-    │
-    ▼
-reqwest POST /chat/completions  (60s timeout, .error_for_status())
-    │
-    ▼
-Parse body → choices.first() → message.content
-    (empty choices ⇒ Error::Quecto, never a panic)
-    │
-    ▼
-Return String
+CLI arg (prompt)                body: Value (+ optional tools)
+    │                                   │
+    ▼                                   │
+quecto(prompt)  ── env ──▶ quecto_to ──▶│
+    │                                   ▼
+    │                       quecto_raw(body, base_url, key)
+    │                                   │
+    │                   ureq POST /chat/completions
+    │                   (60s timeout; non-2xx ⇒ Err)
+    │                                   │
+    │                                   ▼
+    │                          Response Value  ◀── agent/MCP layer reads
+    │                                   │           choices[].message.tool_calls here
+    ▼                                   ▼
+Return String  ◀── choices[0].message.content
+                   (missing choices ⇒ Err("no choices…"), never a panic)
 ```
 
 ## HTTP Request
@@ -159,36 +187,64 @@ Return String
 | Field | Value |
 |---|---|
 | Method | `POST` |
-| URL | `$QUECTO_BASE_URL/chat/completions` |
-| Header | `Authorization: Bearer $QUECTO_API_KEY` |
+| URL | `<base_url>/chat/completions` |
+| Header | `Authorization: Bearer <api_key>` *(only when `api_key` is `Some`)* |
 | Header | `Content-Type: application/json` |
-| Body | `{"model": "<model>", "messages": [{"role": "user", "content": "<prompt>"}]}` |
-| Timeout | 60s (set explicitly; reqwest has no default) |
+| Body | The `Value` passed to `quecto_raw`. `quecto_to` builds `{"model": "<model>", "messages": [{"role": "user", "content": "<prompt>"}]}` |
+| Timeout | 60s (set explicitly on the `ureq` agent) |
 
-The model comes from the caller: `quecto()` reads `QUECTO_MODEL` (default `gpt-4o`), and
-`quecto_to()` takes it as a required fourth parameter. The request status is checked with
-`.error_for_status()` so non-2xx responses become an `Error::Quecto` instead of being
-decoded as a success body.
+`ureq` returns `Err` on non-2xx status by default, so no explicit status check is needed —
+HTTP errors surface through `?` like any other failure.
 
 ## Error Behavior
 
-In **one-shot mode**:
+**One-shot mode:** any failure (network, invalid response, HTTP 4xx/5xx) → print to stderr,
+exit 1.
 
-- Network failure → print error to stderr, exit 1
-- Invalid response → print error to stderr, exit 1
-- API error (4xx/5xx) → print error to stderr, exit 1
+**Interactive mode:** the same failures print to stderr but the loop continues — there is no
+fatal case. See [Error handling in the REPL](#error-handling-in-the-repl).
 
-In **interactive mode** the same failures print to stderr but the loop continues, except a
-missing/empty `QUECTO_API_KEY`, which is fatal on the first turn. See
-[Interactive Mode](#error-handling-in-the-repl).
+## Composability
+
+quecto's core is a text/JSON primitive. Anything stateful or agentic lives **outside** it,
+depending on `quecto_raw`. The core never gains an async runtime, tool execution, or
+conversation state.
+
+### Tools (write / edit / create / read …)
+
+The core ships **zero** tools and performs **zero** filesystem access. A tool is: a schema
+in the request `tools` array, a `tool_calls` reply from the model, execution of the call
+(with real side effects), and a follow-up turn feeding the result back — i.e. an agent loop
+with state. That belongs one layer up. `quecto_raw` already exposes everything such a layer
+needs (arbitrary body in, full response with `tool_calls` out).
+
+Two ways a user adds tools on top, both richer than any hardcoded builtins:
+
+- **Via MCP** — a `quecto-mcp` companion points at existing MCP servers; the official
+  `server-filesystem` provides `read`/`write`/`edit`/`list` for free.
+- **Hand-rolled native tools** — match on `tool_calls`, call `std::fs`, feed results back
+  (~20 lines each, no dependency).
+
+### MCP
+
+MCP support is a **future companion crate** (`quecto-mcp`), not part of this spec or the core
+crate. It would carry its own heavy dependencies (`tokio`, an MCP SDK such as `rmcp`,
+JSON-RPC transports) and implement the agentic tool loop, building on `quecto_raw`. None of
+that touches the tiny core. Whether that companion ships a batteries-included filesystem
+tool set is a decision for *its* spec, later.
 
 ## Non-Goals
 
+For the **core crate** (candidates for a companion crate, never the core):
+
 - Streaming responses
 - Model *behavior* tuning (temperature, max_tokens, top_p, etc. — model name is the only knob)
-- Tool/function calling
+- Tool/function calling *execution* (the core forwards `tools` and returns `tool_calls`, but
+  never executes them)
+- MCP client (see [Composability](#composability))
 - Image/audio generation
 - Context management / conversation history
 - Configuration files
-- Authentication helpers
+- Authentication helpers beyond an optional bearer token
 - Logging / tracing
+- Async runtime
