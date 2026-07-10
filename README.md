@@ -12,7 +12,7 @@ The smallest AI harness you'll ever find.
 
 One job: take a prompt, run it through an LLM, return the output.
 
-A single function. A single file. That's the whole harness.
+Two small functions. Two files. That's the whole harness.
 
 Build everything else on top.
 
