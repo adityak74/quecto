@@ -41,6 +41,7 @@ fn deny_reason(command: &str) -> Option<String> {
     let forbidden = tokenize_command(&normalized)
         .map(|segments| segments.iter().any(|words| segment_is_forbidden(words)))
         .unwrap_or(true)
+        || normalized.contains('$')
         || normalized.contains("$(")
         || normalized.contains('`')
         || ["> /", ">/", ">> /", ">>/"]
@@ -55,6 +56,9 @@ fn segment_is_forbidden(words: &[String]) -> bool {
         return false;
     }
     let executable = executable_name(&words[0]);
+    if executable == "eval" {
+        return true;
+    }
     if matches!(executable, "sh" | "bash" | "zsh") {
         if let Some(index) = words
             .iter()
@@ -85,8 +89,12 @@ fn executable_name(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
-fn unwrap_command(mut words: &[String]) -> &[String] {
-    while words.first().map(|word| executable_name(word)) == Some("command") {
+fn unwrap_execution_wrappers(mut words: &[String]) -> &[String] {
+    while words
+        .first()
+        .map(|word| executable_name(word))
+        .is_some_and(|name| matches!(name, "command" | "exec"))
+    {
         let mut index = 1;
         while words.get(index).is_some_and(|word| word.starts_with('-')) {
             index += 1;
@@ -99,12 +107,26 @@ fn unwrap_command(mut words: &[String]) -> &[String] {
 fn unwrap_common_wrappers(mut words: &[String]) -> &[String] {
     loop {
         let previous_len = words.len();
-        words = unwrap_command(words);
+        while words.first().is_some_and(|word| is_assignment(word)) {
+            words = &words[1..];
+        }
+        words = unwrap_execution_wrappers(words);
         words = command_after_env(words);
         if words.len() == previous_len {
             return words;
         }
     }
+}
+
+fn is_assignment(word: &str) -> bool {
+    let Some((name, _)) = word.split_once('=') else {
+        return false;
+    };
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|ch| ch == '_' || ch.is_ascii_alphabetic())
+        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
 fn command_after_env(words: &[String]) -> &[String] {
@@ -314,5 +336,41 @@ mod tests {
                 "{command}"
             );
         }
+    }
+
+    #[test]
+    fn assignment_variable_exec_and_eval_bypasses_are_denied() {
+        let p = Policy;
+        for command in [
+            "FOO=1 /usr/bin/sudo true",
+            "FOO=1 /usr/bin/git push origin main",
+            "cmd=/usr/bin/sudo; $cmd true",
+            "$VAR",
+            "${VAR}",
+            "sh -c \"$CMD\"",
+            "exec sudo true",
+            "/usr/bin/exec /usr/bin/git push origin main",
+            "eval 'git push origin main'",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Deny(_)
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn benign_leading_assignment_remains_approval_gated() {
+        let p = Policy;
+        assert!(matches!(
+            p.decide(&call(
+                "run_command",
+                json!({"command":"RUST_LOG=debug cargo test"})
+            )),
+            Decision::Ask
+        ));
     }
 }
