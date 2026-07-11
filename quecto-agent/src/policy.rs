@@ -38,22 +38,35 @@ impl Policy {
 
 fn deny_reason(command: &str) -> Option<String> {
     let normalized = command.to_ascii_lowercase();
-    let words: Vec<&str> = normalized.split_whitespace().collect();
-    let root_rm = words.first() == Some(&"rm")
-        && words.iter().any(|w| *w == "/" || w.starts_with("/../"))
-        && words
-            .iter()
-            .any(|w| w.starts_with('-') && w.contains('r') && w.contains('f'));
-    let forbidden = words.first() == Some(&"sudo")
-        || root_rm
-        || words.iter().any(|w| w.starts_with("mkfs"))
-        || words.first() == Some(&"fdisk")
-        || (normalized.contains("diskutil") && normalized.contains("erasedisk"))
-        || (words.first() == Some(&"git") && words.get(1) == Some(&"push"))
+    let forbidden = normalized
+        .split([';', '&', '|', '\n'])
+        .any(segment_is_forbidden)
         || ["> /", ">/", ">> /", ">>/"]
             .iter()
             .any(|p| normalized.contains(p));
     forbidden.then(|| "command matches the hard denylist".to_string())
+}
+
+fn segment_is_forbidden(segment: &str) -> bool {
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    let words = if words.first() == Some(&"env") {
+        &words[1..]
+    } else {
+        &words[..]
+    };
+    let root_rm = words.first() == Some(&"rm")
+        && words.iter().any(|w| *w == "/" || w.starts_with("/../"))
+        && ['r', 'f'].iter().all(|flag| {
+            words
+                .iter()
+                .any(|word| word.starts_with('-') && word.contains(*flag))
+        });
+    words.first() == Some(&"sudo")
+        || root_rm
+        || words.iter().any(|w| w.starts_with("mkfs"))
+        || words.first() == Some(&"fdisk")
+        || (words.contains(&"diskutil") && words.contains(&"erasedisk"))
+        || (words.first() == Some(&"git") && words.get(1) == Some(&"push"))
 }
 
 #[cfg(test)]
@@ -105,6 +118,25 @@ mod tests {
             "diskutil eraseDisk APFS X disk2",
             "git push origin main",
             "echo x > /tmp/x",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Deny(_)
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn compound_wrapped_and_split_flag_commands_are_denied() {
+        let p = Policy;
+        for command in [
+            "echo ok; sudo true",
+            "env git push origin main",
+            "cd /tmp && fdisk /dev/sda",
+            "rm -r -f /",
         ] {
             assert!(
                 matches!(
