@@ -5,12 +5,71 @@ use crate::sandbox::CancelToken;
 use crate::tools::{builtin_tools, Context, Registry, Tool, ToolOutput};
 use crate::BoxErr;
 use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 
 /// Terminal state of an agent run.
 pub enum Outcome {
     Complete(String),
     StepLimit,
+    Cancelled,
+    RepeatedAction,
     Error(BoxErr),
+}
+
+#[derive(Default)]
+struct RepeatGuard {
+    fingerprint: Option<String>,
+    changes: usize,
+    streak: usize,
+}
+
+impl RepeatGuard {
+    fn observe(&mut self, call: &crate::model::ToolCall, result: &str, changes: usize) -> bool {
+        let fingerprint = format!(
+            "{}\n{}\n{}",
+            call.name,
+            canonical_json(&call.arguments),
+            result
+        );
+        if self.fingerprint.as_deref() == Some(&fingerprint) && self.changes == changes {
+            self.streak += 1;
+        } else {
+            self.fingerprint = Some(fingerprint);
+            self.changes = changes;
+            self.streak = 1;
+        }
+        self.streak >= 3
+    }
+}
+
+fn canonical_json(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by_key(|(key, _)| *key);
+            let fields = entries
+                .into_iter()
+                .map(|(key, value)| {
+                    format!(
+                        "{}:{}",
+                        serde_json::Value::String(key.clone()),
+                        canonical_json(value)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("{{{fields}}}")
+        }
+        serde_json::Value::Array(items) => format!(
+            "[{}]",
+            items
+                .iter()
+                .map(canonical_json)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+        _ => value.to_string(),
+    }
 }
 
 /// The agent loop: reason -> call read-only tools -> observe -> answer.
@@ -69,9 +128,13 @@ impl Agent {
         self.messages.push(Message::user(task));
         let schemas = self.registry.schemas();
         let mut step = 0;
+        let mut repeats = RepeatGuard::default();
         loop {
             if step >= self.max_steps {
                 return Outcome::StepLimit;
+            }
+            if self.cancel.load(Ordering::SeqCst) {
+                return Outcome::Cancelled;
             }
             let msg = match self.model.complete(&self.messages, &schemas) {
                 Ok(m) => m,
@@ -85,6 +148,9 @@ impl Agent {
                 return Outcome::Complete(msg.content);
             }
             for call in &msg.tool_calls {
+                if self.cancel.load(Ordering::SeqCst) {
+                    return Outcome::Cancelled;
+                }
                 let out = match self.policy.decide(call) {
                     Decision::Allow => self.registry.dispatch(call, &mut self.cx),
                     Decision::Ask if self.approval.allows(call) => {
@@ -95,7 +161,15 @@ impl Agent {
                         ToolOutput::new(format!("denied: {reason}"), "denied")
                     }
                 };
+                if self.cancel.load(Ordering::SeqCst) {
+                    return Outcome::Cancelled;
+                }
                 eprintln!("● {}  {}", call.name, out.summary);
+                if repeats.observe(call, &out.content, self.cx.changes().len()) {
+                    self.messages
+                        .push(Message::tool_result(&call.id, out.content));
+                    return Outcome::RepeatedAction;
+                }
                 self.messages
                     .push(Message::tool_result(&call.id, out.content));
             }
@@ -178,6 +252,52 @@ mod tests {
     struct RecordingNamed {
         name: &'static str,
         ran: Arc<AtomicBool>,
+    }
+
+    struct StaticNamed {
+        name: &'static str,
+        content: &'static str,
+    }
+
+    struct CancelOnRun {
+        token: CancelToken,
+    }
+
+    impl Tool for CancelOnRun {
+        fn name(&self) -> &str {
+            "read_file"
+        }
+
+        fn description(&self) -> &str {
+            "cancels the run"
+        }
+
+        fn schema(&self) -> Value {
+            json!({"type":"object","properties":{},"required":[]})
+        }
+
+        fn run(&self, _args: &Value, _cx: &mut Context) -> ToolResult {
+            self.token.store(true, Ordering::SeqCst);
+            Ok(ToolOutput::new("cancelled", "cancelled"))
+        }
+    }
+
+    impl Tool for StaticNamed {
+        fn name(&self) -> &str {
+            self.name
+        }
+
+        fn description(&self) -> &str {
+            "returns static content"
+        }
+
+        fn schema(&self) -> Value {
+            json!({"type":"object","properties":{},"required":[]})
+        }
+
+        fn run(&self, _args: &Value, _cx: &mut Context) -> ToolResult {
+            Ok(ToolOutput::new(self.content, "same"))
+        }
     }
 
     impl Tool for RecordingNamed {
@@ -286,6 +406,112 @@ mod tests {
             ApprovalMode::NonInteractive,
         );
         assert!(matches!(a.run("hi"), Outcome::StepLimit));
+    }
+
+    #[test]
+    fn pre_cancelled_agent_stops_before_model_call() {
+        let token = cancel_token();
+        token.store(true, Ordering::SeqCst);
+        let mut a = Agent::new(
+            Box::new(Scripted::new(vec![text("unused")])),
+            "sys",
+            10,
+            PathBuf::from("."),
+            token,
+            ApprovalMode::NonInteractive,
+        );
+        assert!(matches!(a.run("hi"), Outcome::Cancelled));
+    }
+
+    #[test]
+    fn three_identical_no_change_observations_stop() {
+        let replies = vec![
+            wants_tool("read_file"),
+            wants_tool("read_file"),
+            wants_tool("read_file"),
+        ];
+        let mut a = configured_agent(Scripted::new(replies), ApprovalMode::NonInteractive)
+            .register(Box::new(StaticNamed {
+                name: "read_file",
+                content: "same",
+            }));
+        assert!(matches!(a.run("hi"), Outcome::RepeatedAction));
+    }
+
+    #[test]
+    fn file_change_resets_repeat_streak() {
+        let mut guard = RepeatGuard::default();
+        let call = ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: json!({"path":"a"}),
+        };
+        assert!(!guard.observe(&call, "same", 0));
+        assert!(!guard.observe(&call, "same", 0));
+        assert!(!guard.observe(&call, "same", 1));
+        assert!(!guard.observe(&call, "same", 1));
+        assert!(guard.observe(&call, "same", 1));
+    }
+
+    #[test]
+    fn fingerprint_uses_canonical_nested_json_and_result() {
+        let mut guard = RepeatGuard::default();
+        let first = ToolCall {
+            id: "1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::from_str(r#"{"outer":{"b":2,"a":1},"path":"a"}"#).unwrap(),
+        };
+        let reordered = ToolCall {
+            id: "2".into(),
+            name: "read_file".into(),
+            arguments: serde_json::from_str(r#"{"path":"a","outer":{"a":1,"b":2}}"#).unwrap(),
+        };
+        assert!(!guard.observe(&first, "same", 0));
+        assert!(!guard.observe(&reordered, "same", 0));
+        assert!(guard.observe(&first, "same", 0));
+        assert!(!guard.observe(&first, "different", 0));
+    }
+
+    #[test]
+    fn repeated_denials_are_guarded() {
+        let replies = vec![
+            wants_tool("custom"),
+            wants_tool("custom"),
+            wants_tool("custom"),
+        ];
+        let mut a = configured_agent(Scripted::new(replies), ApprovalMode::AutoApprove);
+        assert!(matches!(a.run("hi"), Outcome::RepeatedAction));
+    }
+
+    #[test]
+    fn cancellation_set_during_dispatch_stops_immediately() {
+        let token = cancel_token();
+        let call = AssistantMessage {
+            content: String::new(),
+            tool_calls: vec![
+                ToolCall {
+                    id: "1".into(),
+                    name: "read_file".into(),
+                    arguments: json!({}),
+                },
+                ToolCall {
+                    id: "2".into(),
+                    name: "read_file".into(),
+                    arguments: json!({}),
+                },
+            ],
+            finish_reason: "tool_calls".into(),
+        };
+        let mut a = Agent::new(
+            Box::new(Scripted::new(vec![call])),
+            "sys",
+            10,
+            PathBuf::from("."),
+            token.clone(),
+            ApprovalMode::NonInteractive,
+        )
+        .register(Box::new(CancelOnRun { token }));
+        assert!(matches!(a.run("hi"), Outcome::Cancelled));
     }
 
     #[test]
