@@ -3,6 +3,7 @@ use crate::model::{Message, Model};
 use crate::policy::{Decision, Policy};
 use crate::sandbox::CancelToken;
 use crate::tools::{builtin_tools, Context, Registry, Tool, ToolOutput};
+use crate::verify::Verifier;
 use crate::BoxErr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
@@ -81,6 +82,7 @@ pub struct Agent {
     max_steps: usize,
     policy: Policy,
     approval: ApprovalMode,
+    verifier: Option<Verifier>,
     #[allow(dead_code)]
     cancel: CancelToken,
 }
@@ -104,8 +106,16 @@ impl Agent {
             max_steps,
             policy: Policy,
             approval,
+            verifier: None,
             cancel,
         }
+    }
+
+    /// Attach a completion-gate verifier. Its commands run (bypassing approval)
+    /// whenever the model stops with edits present.
+    pub fn with_verifier(mut self, verifier: Verifier) -> Self {
+        self.verifier = Some(verifier);
+        self
     }
 
     pub fn register(mut self, tool: Box<dyn Tool>) -> Self {
@@ -145,6 +155,23 @@ impl Agent {
                 msg.tool_calls.clone(),
             ));
             if msg.tool_calls.is_empty() {
+                if let Some(verifier) = &self.verifier {
+                    if !verifier.is_empty() && !self.cx.changes().is_empty() {
+                        let report = verifier.run(&self.cx);
+                        for r in &report.results {
+                            eprintln!(
+                                "● verify {}  {}",
+                                r.command,
+                                if r.passed { "passed" } else { "failed" }
+                            );
+                        }
+                        if !report.all_passed() {
+                            self.messages.push(Message::user(report.observation()));
+                            step += 1;
+                            continue;
+                        }
+                    }
+                }
                 return Outcome::Complete(msg.content);
             }
             for call in &msg.tool_calls {
@@ -512,6 +539,76 @@ mod tests {
         )
         .register(Box::new(CancelOnRun { token }));
         assert!(matches!(a.run("hi"), Outcome::Cancelled));
+    }
+
+    #[test]
+    fn verify_gate_passes_returns_complete() {
+        use crate::tools::fs::WriteFile;
+        let dir = tempfile::tempdir().unwrap();
+        let write = AssistantMessage {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "write_file".into(),
+                arguments: json!({"path":"a.txt","content":"hi\n"}),
+            }],
+            finish_reason: "tool_calls".into(),
+        };
+        let model = Scripted::new(vec![write, text("done")]);
+        let mut a = Agent::new(
+            Box::new(model),
+            "sys",
+            10,
+            dir.path().to_path_buf(),
+            cancel_token(),
+            ApprovalMode::AutoApprove,
+        )
+        .register(Box::new(WriteFile))
+        .with_verifier(crate::verify::Verifier::new(vec!["exit 0".into()]));
+        match a.run("edit") {
+            Outcome::Complete(s) => assert_eq!(s, "done"),
+            _ => panic!("expected Complete after passing verification"),
+        }
+    }
+
+    #[test]
+    fn verify_gate_failure_loops_until_step_limit() {
+        use crate::tools::fs::WriteFile;
+        let dir = tempfile::tempdir().unwrap();
+        let write = AssistantMessage {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "write_file".into(),
+                arguments: json!({"path":"a.txt","content":"hi\n"}),
+            }],
+            finish_reason: "tool_calls".into(),
+        };
+        // After the edit the model keeps trying to stop; the failing gate
+        // re-prompts each time until max_steps is hit.
+        let model = Scripted::new(vec![write, text("done"), text("still"), text("more")]);
+        let mut a = Agent::new(
+            Box::new(model),
+            "sys",
+            3,
+            dir.path().to_path_buf(),
+            cancel_token(),
+            ApprovalMode::AutoApprove,
+        )
+        .register(Box::new(WriteFile))
+        .with_verifier(crate::verify::Verifier::new(vec!["exit 1".into()]));
+        assert!(matches!(a.run("edit"), Outcome::StepLimit));
+    }
+
+    #[test]
+    fn verify_gate_skipped_without_edits() {
+        let model = Scripted::new(vec![text("hi")]);
+        let mut a = configured_agent(model, ApprovalMode::NonInteractive)
+            .with_verifier(crate::verify::Verifier::new(vec!["exit 1".into()]));
+        match a.run("nothing to change") {
+            Outcome::Complete(s) => assert_eq!(s, "hi"),
+            _ => panic!("no edits means the gate must not run"),
+        }
     }
 
     #[test]
