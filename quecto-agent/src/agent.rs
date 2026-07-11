@@ -65,15 +65,18 @@ impl Agent {
                 Ok(m) => m,
                 Err(e) => return Outcome::Error(e),
             };
-            self.messages
-                .push(Message::assistant_with_calls(msg.content.clone(), msg.tool_calls.clone()));
+            self.messages.push(Message::assistant_with_calls(
+                msg.content.clone(),
+                msg.tool_calls.clone(),
+            ));
             if msg.tool_calls.is_empty() {
                 return Outcome::Complete(msg.content);
             }
             for call in &msg.tool_calls {
                 let out = self.registry.dispatch(call, &mut self.cx);
                 eprintln!("● {}  {}", call.name, out.summary);
-                self.messages.push(Message::tool_result(&call.id, out.content));
+                self.messages
+                    .push(Message::tool_result(&call.id, out.content));
             }
             step += 1;
         }
@@ -95,7 +98,9 @@ mod tests {
     }
     impl Scripted {
         fn new(replies: Vec<AssistantMessage>) -> Self {
-            Scripted { replies: Mutex::new(replies) }
+            Scripted {
+                replies: Mutex::new(replies),
+            }
         }
     }
     impl Model for Scripted {
@@ -176,7 +181,10 @@ mod tests {
             Outcome::Complete(s) => assert_eq!(s, "done"),
             _ => panic!("expected Complete"),
         }
-        assert!(ran.load(Ordering::SeqCst), "the tool should have been dispatched");
+        assert!(
+            ran.load(Ordering::SeqCst),
+            "the tool should have been dispatched"
+        );
     }
 
     #[test]
@@ -193,5 +201,32 @@ mod tests {
         let model = Scripted::new(vec![wants_tool("x"), wants_tool("x"), wants_tool("x")]);
         let mut a = Agent::new(Box::new(model), "sys", 2, PathBuf::from("."));
         assert!(matches!(a.run("hi"), Outcome::StepLimit));
+    }
+
+    #[test]
+    fn agent_write_file_flows_through_the_loop() {
+        use crate::tools::fs::WriteFile;
+
+        let dir = tempfile::tempdir().unwrap();
+        let call = AssistantMessage {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "write_file".into(),
+                arguments: json!({"path":"hello.txt","content":"hi there\n"}),
+            }],
+            finish_reason: "tool_calls".into(),
+        };
+        let model = Scripted::new(vec![call, text("done")]);
+        let mut a = Agent::new(Box::new(model), "sys", 10, dir.path().to_path_buf())
+            .register(Box::new(WriteFile));
+        match a.run("make the file") {
+            Outcome::Complete(s) => assert_eq!(s, "done"),
+            _ => panic!("expected Complete"),
+        }
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("hello.txt")).unwrap(),
+            "hi there\n"
+        );
     }
 }

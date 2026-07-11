@@ -39,10 +39,7 @@ impl Tool for ReadFile {
             let lines: Vec<&str> = text.lines().collect();
             let s = start.unwrap_or(1).max(1) as usize;
             let e = (end.unwrap_or(lines.len() as u64) as usize).min(lines.len());
-            lines
-                .get(s.saturating_sub(1)..e)
-                .unwrap_or(&[])
-                .join("\n")
+            lines.get(s.saturating_sub(1)..e).unwrap_or(&[]).join("\n")
         } else {
             text
         };
@@ -90,7 +87,10 @@ impl Tool for ListFiles {
             if dent.depth() == 0 {
                 continue;
             }
-            let shown = dent.path().strip_prefix(&cx.repo_root).unwrap_or(dent.path());
+            let shown = dent
+                .path()
+                .strip_prefix(&cx.repo_root)
+                .unwrap_or(dent.path());
             entries.push(shown.display().to_string());
             if entries.len() >= 500 {
                 break;
@@ -101,6 +101,55 @@ impl Tool for ListFiles {
         Ok(ToolOutput::new(
             cap_output(&entries.join("\n"), 32_000),
             format!("{n} entries"),
+        ))
+    }
+}
+
+/// Create a new file or overwrite an existing one with complete contents.
+pub struct WriteFile;
+
+impl Tool for WriteFile {
+    fn name(&self) -> &str {
+        "write_file"
+    }
+
+    fn description(&self) -> &str {
+        "Create a new file or overwrite an existing one with the given content. For a targeted edit, prefer apply_patch."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": {"type":"string","description":"repo-relative file path"},
+                "content": {"type":"string","description":"the full new file contents"}
+            },
+            "required": ["path", "content"]
+        })
+    }
+
+    fn run(&self, args: &Value, cx: &mut Context) -> ToolResult {
+        let path = args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::new("write_file: 'path' is required"))?;
+        let content = args
+            .get("content")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| ToolError::new("write_file: 'content' is required"))?;
+        let abs = cx.resolve_for_create(path)?;
+        let before = std::fs::read_to_string(&abs).ok();
+        std::fs::write(&abs, content).map_err(|e| ToolError::new(format!("{path}: {e}")))?;
+        cx.record_change(path, before.clone(), content.to_string());
+        let lines = content.lines().count();
+        let verb = if before.is_some() {
+            "overwrote"
+        } else {
+            "created"
+        };
+        Ok(ToolOutput::new(
+            format!("{verb} {path} ({lines} lines)"),
+            format!("{verb} {lines} lines"),
         ))
     }
 }
@@ -126,7 +175,10 @@ mod tests {
         fs::write(dir.path().join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
         let mut cx = Context::new(dir.path().to_path_buf());
         let out = ReadFile
-            .run(&json!({"path":"a.txt","start_line":2,"end_line":3}), &mut cx)
+            .run(
+                &json!({"path":"a.txt","start_line":2,"end_line":3}),
+                &mut cx,
+            )
             .unwrap();
         assert_eq!(out.content, "two\nthree");
     }
@@ -148,5 +200,43 @@ mod tests {
         let out = ListFiles.run(&json!({}), &mut cx).unwrap();
         assert!(out.content.contains("kept.txt"));
         assert!(!out.content.contains("ignored.txt"));
+    }
+
+    #[test]
+    fn write_file_creates_and_records() {
+        let dir = tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf());
+        let out = WriteFile
+            .run(&json!({"path":"new.txt","content":"hello\n"}), &mut cx)
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("new.txt")).unwrap(),
+            "hello\n"
+        );
+        assert!(out.content.contains("created"));
+        assert_eq!(cx.changes().len(), 1);
+        assert_eq!(cx.changes()[0].before, None);
+    }
+
+    #[test]
+    fn write_file_overwrites_and_records_before() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("a.txt"), "old").unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf());
+        let out = WriteFile
+            .run(&json!({"path":"a.txt","content":"new"}), &mut cx)
+            .unwrap();
+        assert_eq!(fs::read_to_string(dir.path().join("a.txt")).unwrap(), "new");
+        assert!(out.content.contains("overwrote"));
+        assert_eq!(cx.changes()[0].before, Some("old".to_string()));
+    }
+
+    #[test]
+    fn write_file_rejects_escape() {
+        let dir = tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf());
+        assert!(WriteFile
+            .run(&json!({"path":"../evil.txt","content":"x"}), &mut cx)
+            .is_err());
     }
 }

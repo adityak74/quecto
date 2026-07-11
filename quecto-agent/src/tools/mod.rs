@@ -1,5 +1,6 @@
 pub mod fs;
 pub mod git;
+pub mod patch;
 pub mod search;
 
 use crate::model::ToolCall;
@@ -42,16 +43,29 @@ pub trait Tool: Send + Sync {
     fn run(&self, args: &Value, cx: &mut Context) -> ToolResult;
 }
 
+/// A recorded file mutation for in-session summaries and later undo support.
+#[derive(Clone, Debug)]
+pub struct FileChange {
+    pub path: String,
+    pub before: Option<String>,
+    pub after: String,
+}
+
 pub struct Context {
     pub repo_root: PathBuf,
+    changes: Vec<FileChange>,
 }
 
 impl Context {
     pub fn new(repo_root: PathBuf) -> Self {
         let repo_root = repo_root.canonicalize().unwrap_or(repo_root);
-        Context { repo_root }
+        Context {
+            repo_root,
+            changes: Vec::new(),
+        }
     }
 
+    /// Resolve a repo-relative path that must already exist, rejecting escapes.
     pub fn resolve_existing(&self, rel: &str) -> Result<PathBuf, ToolError> {
         let canon = self
             .repo_root
@@ -64,6 +78,45 @@ impl Context {
             )));
         }
         Ok(canon)
+    }
+
+    /// Resolve a repo-relative path for creation/overwrite, rejecting parent escapes.
+    pub fn resolve_for_create(&self, rel: &str) -> Result<PathBuf, ToolError> {
+        let joined = self.repo_root.join(rel);
+        let parent = joined
+            .parent()
+            .ok_or_else(|| ToolError::new(format!("invalid path '{rel}'")))?;
+        let parent_canon = parent
+            .canonicalize()
+            .map_err(|e| ToolError::new(format!("{rel}: parent {e}")))?;
+        if !parent_canon.starts_with(&self.repo_root) {
+            return Err(ToolError::new(format!(
+                "path '{rel}' escapes the repository root"
+            )));
+        }
+        let file_name = joined
+            .file_name()
+            .ok_or_else(|| ToolError::new(format!("invalid path '{rel}'")))?;
+        Ok(parent_canon.join(file_name))
+    }
+
+    /// Record a file mutation in order of application.
+    pub fn record_change(
+        &mut self,
+        path: impl Into<String>,
+        before: Option<String>,
+        after: String,
+    ) {
+        self.changes.push(FileChange {
+            path: path.into(),
+            before,
+            after,
+        });
+    }
+
+    /// Return the file mutations recorded in this session.
+    pub fn changes(&self) -> &[FileChange] {
+        &self.changes
     }
 }
 
@@ -124,7 +177,9 @@ pub fn builtin_tools() -> Vec<Box<dyn Tool>> {
     vec![
         Box::new(fs::ReadFile),
         Box::new(fs::ListFiles),
+        Box::new(fs::WriteFile),
         Box::new(search::SearchText),
+        Box::new(patch::ApplyPatch),
         Box::new(git::GitDiff),
         Box::new(git::GitStatus),
     ]
@@ -144,6 +199,7 @@ pub fn cap_output(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     struct Echo;
 
@@ -206,6 +262,33 @@ mod tests {
     fn resolve_rejects_escape() {
         let cx = Context::new(PathBuf::from("."));
         assert!(cx.resolve_existing("../../../etc/passwd").is_err());
+    }
+
+    #[test]
+    fn resolve_for_create_allows_new_file_in_repo() {
+        let dir = tempdir().unwrap();
+        let cx = Context::new(dir.path().to_path_buf());
+        let p = cx.resolve_for_create("new.txt").unwrap();
+        assert!(p.starts_with(&cx.repo_root));
+        assert!(p.ends_with("new.txt"));
+    }
+
+    #[test]
+    fn resolve_for_create_rejects_escape() {
+        let dir = tempdir().unwrap();
+        let cx = Context::new(dir.path().to_path_buf());
+        assert!(cx.resolve_for_create("../evil.txt").is_err());
+    }
+
+    #[test]
+    fn record_change_is_logged() {
+        let dir = tempdir().unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf());
+        cx.record_change("a.txt", None, "hi".to_string());
+        assert_eq!(cx.changes().len(), 1);
+        assert_eq!(cx.changes()[0].path, "a.txt");
+        assert_eq!(cx.changes()[0].before, None);
+        assert_eq!(cx.changes()[0].after, "hi");
     }
 
     #[test]
