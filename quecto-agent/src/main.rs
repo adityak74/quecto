@@ -7,6 +7,8 @@ fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let auto_approve = args.iter().any(|arg| arg == "--yes");
     args.retain(|arg| arg != "--yes");
+    let no_verify = args.iter().any(|arg| arg == "--no-verify");
+    args.retain(|arg| arg != "--no-verify");
     if args.is_empty() {
         eprintln!("usage: quecto-agent [--yes] \"<task>\"");
         std::process::exit(2);
@@ -22,7 +24,15 @@ fn main() {
         std::process::exit(1);
     }
     let approval = ApprovalMode::terminal(auto_approve);
-    let system = std::env::var("QUECTO_SYSTEM").unwrap_or_else(|_| DEFAULT_SYSTEM.to_string());
+    let base = std::env::var("QUECTO_SYSTEM").unwrap_or_else(|_| DEFAULT_SYSTEM.to_string());
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let mut system = base;
+    if let Some(rules) = quecto_agent::load_instructions(&cwd, &cwd) {
+        system.push_str("\n\n# Repository rules\n");
+        system.push_str(&rules);
+    }
+    system.push_str("\n\n");
+    system.push_str(&quecto_agent::seed_context(&cwd));
     let max_steps = std::env::var("QUECTO_MAX_STEPS")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -39,6 +49,11 @@ fn main() {
         approval,
     )
     .register_builtins();
+    if !no_verify {
+        if let Some(verifier) = quecto_agent::Verifier::from_env() {
+            agent = agent.with_verifier(verifier);
+        }
+    }
 
     match agent.run(&task) {
         Outcome::Complete(answer) => println!("{answer}"),

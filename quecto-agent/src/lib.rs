@@ -13,6 +13,8 @@ mod verify;
 
 pub use agent::{Agent, Outcome};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
+pub use context::seed as seed_context;
+pub use instructions::load as load_instructions;
 pub use model::{
     messages_to_body, parse_assistant, AssistantMessage, HttpModel, Message, Model, ToolCall,
 };
@@ -27,9 +29,7 @@ pub use tools::{
     builtin_tools, cap_output, Context, FileChange, Registry, Tool, ToolError, ToolOutput,
     ToolResult,
 };
-pub use context::seed as seed_context;
-pub use instructions::load as load_instructions;
-pub use verify::{VerifyReport, VerifyResult, Verifier};
+pub use verify::{Verifier, VerifyReport, VerifyResult};
 
 /// Shared boxed error, mirroring the core so `?` composes across both crates.
 pub type BoxErr = Box<dyn std::error::Error + Send + Sync>;

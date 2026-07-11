@@ -36,6 +36,9 @@ fn no_args_is_usage_error() {
 
 #[test]
 fn yes_flag_is_removed_from_the_user_task() {
+    // Run in a fresh directory so the seeded repository context (git diff of the
+    // working tree) cannot vary the captured request body.
+    let dir = tempfile::tempdir().unwrap();
     let (base, request) = mock_capture(
         200,
         "application/json",
@@ -43,6 +46,7 @@ fn yes_flag_is_removed_from_the_user_task() {
     );
     let out = Command::new(bin())
         .args(["--yes", "do", "it"])
+        .current_dir(dir.path())
         .env("QUECTO_BASE_URL", &base)
         .env("QUECTO_MODEL", "m")
         .env_remove("QUECTO_API_KEY")
@@ -55,6 +59,31 @@ fn yes_flag_is_removed_from_the_user_task() {
         .unwrap();
     assert!(body.contains("do it"));
     assert!(!body.contains("--yes"));
+}
+
+#[test]
+fn no_verify_flag_is_removed_from_the_user_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, request) = mock_capture(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+    );
+    let out = Command::new(bin())
+        .args(["--no-verify", "do", "it"])
+        .current_dir(dir.path())
+        .env("QUECTO_BASE_URL", &base)
+        .env("QUECTO_MODEL", "m")
+        .env_remove("QUECTO_API_KEY")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ok\n");
+    let body = request
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    assert!(body.contains("do it"));
+    assert!(!body.contains("--no-verify"));
 }
 
 #[test]
