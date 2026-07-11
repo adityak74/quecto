@@ -3,10 +3,13 @@
 
 mod agent;
 mod approval;
+mod context;
+mod instructions;
 mod model;
 mod policy;
 mod sandbox;
 mod tools;
+mod verify;
 
 pub use agent::{Agent, Outcome};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
@@ -24,6 +27,9 @@ pub use tools::{
     builtin_tools, cap_output, Context, FileChange, Registry, Tool, ToolError, ToolOutput,
     ToolResult,
 };
+pub use context::seed as seed_context;
+pub use instructions::load as load_instructions;
+pub use verify::{VerifyReport, VerifyResult, Verifier};
 
 /// Shared boxed error, mirroring the core so `?` composes across both crates.
 pub type BoxErr = Box<dyn std::error::Error + Send + Sync>;
