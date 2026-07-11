@@ -38,41 +38,83 @@ impl Policy {
 
 fn deny_reason(command: &str) -> Option<String> {
     let normalized = command.to_ascii_lowercase();
-    let forbidden = normalized
-        .split([';', '&', '|', '\n'])
-        .any(segment_is_forbidden)
+    let forbidden = tokenize_command(&normalized)
+        .map(|segments| segments.iter().any(|words| segment_is_forbidden(words)))
+        .unwrap_or(true)
+        || normalized.contains("$(")
+        || normalized.contains('`')
         || ["> /", ">/", ">> /", ">>/"]
             .iter()
             .any(|p| normalized.contains(p));
     forbidden.then(|| "command matches the hard denylist".to_string())
 }
 
-fn segment_is_forbidden(segment: &str) -> bool {
-    let words: Vec<&str> = segment.split_whitespace().collect();
-    let words = command_after_env(&words);
-    let root_rm = words.first() == Some(&"rm")
-        && words.iter().any(|w| *w == "/" || w.starts_with("/../"))
+fn segment_is_forbidden(words: &[String]) -> bool {
+    let words = unwrap_common_wrappers(words);
+    if words.is_empty() {
+        return false;
+    }
+    let executable = executable_name(&words[0]);
+    if matches!(executable, "sh" | "bash" | "zsh") {
+        if let Some(index) = words
+            .iter()
+            .position(|word| word == "-c" || (word.starts_with('-') && word[1..].contains('c')))
+        {
+            let Some(payload) = words.get(index + 1) else {
+                return true;
+            };
+            return deny_reason(payload).is_some();
+        }
+    }
+    let root_rm = executable == "rm"
+        && words.iter().any(|w| w == "/" || w.starts_with("/../"))
         && ['r', 'f'].iter().all(|flag| {
             words
                 .iter()
                 .any(|word| word.starts_with('-') && word.contains(*flag))
         });
-    words.first() == Some(&"sudo")
+    executable == "sudo"
         || root_rm
-        || words.iter().any(|w| w.starts_with("mkfs"))
-        || words.first() == Some(&"fdisk")
-        || (words.contains(&"diskutil") && words.contains(&"erasedisk"))
+        || executable.starts_with("mkfs")
+        || executable == "fdisk"
+        || (executable == "diskutil" && words.iter().any(|word| word == "erasedisk"))
         || git_subcommand(words) == Some("push")
 }
 
-fn command_after_env<'a>(words: &'a [&str]) -> &'a [&'a str] {
-    if words.first() != Some(&"env") {
+fn executable_name(word: &str) -> &str {
+    word.rsplit('/').next().unwrap_or(word)
+}
+
+fn unwrap_command(mut words: &[String]) -> &[String] {
+    while words.first().map(|word| executable_name(word)) == Some("command") {
+        let mut index = 1;
+        while words.get(index).is_some_and(|word| word.starts_with('-')) {
+            index += 1;
+        }
+        words = &words[index.min(words.len())..];
+    }
+    words
+}
+
+fn unwrap_common_wrappers(mut words: &[String]) -> &[String] {
+    loop {
+        let previous_len = words.len();
+        words = unwrap_command(words);
+        words = command_after_env(words);
+        if words.len() == previous_len {
+            return words;
+        }
+    }
+}
+
+fn command_after_env(words: &[String]) -> &[String] {
+    if words.first().map(|word| executable_name(word)) != Some("env") {
         return words;
     }
     let mut index = 1;
     while let Some(word) = words.get(index) {
         let takes_value = matches!(
-            *word,
+            word.as_str(),
             "-u" | "--unset" | "-c" | "--chdir" | "--argv0" | "-s" | "--split-string"
         );
         if takes_value {
@@ -86,24 +128,70 @@ fn command_after_env<'a>(words: &'a [&str]) -> &'a [&'a str] {
     &words[index.min(words.len())..]
 }
 
-fn git_subcommand<'a>(words: &'a [&'a str]) -> Option<&'a str> {
-    if words.first() != Some(&"git") {
+fn git_subcommand(words: &[String]) -> Option<&str> {
+    if words.first().map(|word| executable_name(word)) != Some("git") {
         return None;
     }
     let mut index = 1;
     while let Some(word) = words.get(index) {
         if matches!(
-            *word,
+            word.as_str(),
             "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix"
         ) {
             index += 2;
         } else if word.starts_with('-') {
             index += 1;
         } else {
-            return Some(word);
+            return Some(word.as_str());
         }
     }
     None
+}
+
+fn tokenize_command(command: &str) -> Result<Vec<Vec<String>>, ()> {
+    let mut segments = vec![Vec::new()];
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    for ch in command.chars() {
+        if escaped {
+            word.push(ch);
+            escaped = false;
+            continue;
+        }
+        if ch == '\\' && quote != Some('\'') {
+            escaped = true;
+            continue;
+        }
+        if let Some(active) = quote {
+            if ch == active {
+                quote = None;
+            } else {
+                word.push(ch);
+            }
+            continue;
+        }
+        if matches!(ch, '\'' | '"') {
+            quote = Some(ch);
+        } else if ch.is_whitespace() || matches!(ch, ';' | '&' | '|') {
+            if !word.is_empty() {
+                segments.last_mut().unwrap().push(std::mem::take(&mut word));
+            }
+            if matches!(ch, ';' | '&' | '|' | '\n') && !segments.last().unwrap().is_empty() {
+                segments.push(Vec::new());
+            }
+        } else {
+            word.push(ch);
+        }
+    }
+    if escaped || quote.is_some() {
+        return Err(());
+    }
+    if !word.is_empty() {
+        segments.last_mut().unwrap().push(word);
+    }
+    segments.retain(|segment| !segment.is_empty());
+    Ok(segments)
 }
 
 #[cfg(test)]
@@ -176,6 +264,47 @@ mod tests {
             "git -C repo push",
             "cd /tmp && fdisk /dev/sda",
             "rm -r -f /",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Deny(_)
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_qualified_and_common_wrapper_bypasses_are_denied() {
+        let p = Policy;
+        for command in [
+            "/usr/bin/sudo true",
+            "/usr/bin/git push origin main",
+            "command sudo true",
+            "command /usr/bin/git push origin main",
+            "command env FOO=bar /usr/bin/git push origin main",
+            "sh -c 'git push origin main'",
+            "/bin/bash -c \"sudo true\"",
+            "zsh -c 'echo ok; git push origin main'",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Deny(_)
+                ),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn ambiguous_shell_wrappers_are_denied_conservatively() {
+        let p = Policy;
+        for command in [
+            "sh -c",
+            "bash -c 'git push origin main",
+            "command -- sudo true",
         ] {
             assert!(
                 matches!(
