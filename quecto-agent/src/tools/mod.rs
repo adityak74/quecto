@@ -5,7 +5,7 @@ pub mod search;
 pub mod shell;
 
 use crate::model::ToolCall;
-use crate::sandbox::{CancelToken, Sandbox};
+use crate::sandbox::{CancelToken, CommandOutput, Sandbox};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
@@ -79,6 +79,13 @@ impl Context {
             "command finished"
         };
         Ok(ToolOutput::new(output.render(), summary))
+    }
+
+    /// Run a pre-declared verification command through the sandbox, exposing the
+    /// raw exit status. Unlike `run_command`, this does not wrap the output for a
+    /// tool result; the verification gate reads `status` directly.
+    pub fn run_verify(&self, command: &str) -> Result<CommandOutput, ToolError> {
+        self.sandbox.run(command)
     }
 
     /// Resolve a repo-relative path that must already exist, rejecting escapes.
@@ -307,6 +314,16 @@ mod tests {
         assert_eq!(cx.changes()[0].path, "a.txt");
         assert_eq!(cx.changes()[0].before, None);
         assert_eq!(cx.changes()[0].after, "hi");
+    }
+
+    #[test]
+    fn run_verify_exposes_exit_status() {
+        let dir = tempdir().unwrap();
+        let cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        let ok = cx.run_verify("exit 0").unwrap();
+        assert_eq!(ok.status, Some(0));
+        let bad = cx.run_verify("exit 3").unwrap();
+        assert_eq!(bad.status, Some(3));
     }
 
     #[test]
