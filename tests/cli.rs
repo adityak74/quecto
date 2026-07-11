@@ -9,15 +9,21 @@ fn bin() -> &'static str {
 
 #[test]
 fn oneshot_buffered_joins_args() {
-    let base = mock(200, "application/json", r#"{"choices":[{"message":{"content":"hi there"}}]}"#);
+    let base = mock(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"hi there"}}]}"#,
+    );
     let out = Command::new(bin())
-        .arg("say").arg("hi")
+        .arg("say")
+        .arg("hi")
         .env("QUECTO_BASE_URL", &base)
         .env("QUECTO_MODEL", "m")
         .env("QUECTO_STREAM", "0")
         .env_remove("QUECTO_API_KEY")
         .env_remove("QUECTO_SYSTEM")
-        .output().unwrap();
+        .output()
+        .unwrap();
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout), "hi there\n");
 }
@@ -33,14 +39,19 @@ fn oneshot_streaming_prints_deltas() {
         .env("QUECTO_STREAM", "1")
         .env_remove("QUECTO_API_KEY")
         .env_remove("QUECTO_SYSTEM")
-        .output().unwrap();
+        .output()
+        .unwrap();
     assert!(out.status.success());
     assert_eq!(String::from_utf8_lossy(&out.stdout), "stream\n");
 }
 
 #[test]
 fn repl_answers_one_line_then_eof() {
-    let base = mock(200, "application/json", r#"{"choices":[{"message":{"content":"reply"}}]}"#);
+    let base = mock(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"reply"}}]}"#,
+    );
     let mut child = Command::new(bin())
         .env("QUECTO_BASE_URL", &base)
         .env("QUECTO_MODEL", "m")
@@ -49,7 +60,8 @@ fn repl_answers_one_line_then_eof() {
         .env_remove("QUECTO_SYSTEM")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .spawn().unwrap();
+        .spawn()
+        .unwrap();
     child.stdin.take().unwrap().write_all(b"hello\n").unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success());
@@ -63,9 +75,14 @@ fn init_prints_exports() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .spawn().unwrap();
-    child.stdin.take().unwrap()
-        .write_all(b"http://localhost:11434/v1\n\nqwen\n\n").unwrap();
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"http://localhost:11434/v1\n\nqwen\n\n")
+        .unwrap();
     let out = child.wait_with_output().unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
     assert!(s.contains("export QUECTO_BASE_URL='http://localhost:11434/v1'"));
@@ -83,11 +100,17 @@ fn init_escapes_special_chars() {
         .spawn()
         .unwrap();
     // base, (blank key), model, system-with-quote-and-dollar
-    child.stdin.take().unwrap()
+    child
+        .stdin
+        .take()
+        .unwrap()
         .write_all(b"http://x/v1\n\nm\nit's $HOME\n")
         .unwrap();
     let out = child.wait_with_output().unwrap();
     let s = String::from_utf8_lossy(&out.stdout);
     // Single-quoted, with the embedded ' escaped as '\'' — inert under eval.
-    assert!(s.contains(r#"export QUECTO_SYSTEM='it'\''s $HOME'"#), "got: {s}");
+    assert!(
+        s.contains(r#"export QUECTO_SYSTEM='it'\''s $HOME'"#),
+        "got: {s}"
+    );
 }

@@ -25,6 +25,67 @@ pub fn mock(status: u16, content_type: &str, body: &str) -> String {
     format!("http://{addr}")
 }
 
+#[allow(dead_code)]
+pub fn mock_capture(
+    status: u16,
+    content_type: &str,
+    body: &str,
+) -> (String, std::sync::mpsc::Receiver<String>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let reason = if status == 200 { "OK" } else { "ERROR" };
+    let response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let (tx, rx) = std::sync::mpsc::channel();
+    thread::spawn(move || {
+        if let Ok((mut stream, _)) = listener.accept() {
+            let request = read_request_capture(&mut stream);
+            let _ = tx.send(request);
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        }
+    });
+    (format!("http://{addr}"), rx)
+}
+
+#[allow(dead_code)]
+fn read_request_capture(stream: &mut std::net::TcpStream) -> String {
+    let mut buf = Vec::new();
+    let mut chunk = [0u8; 1024];
+    loop {
+        let n = stream.read(&mut chunk).unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(header) = find_subslice(&buf, b"\r\n\r\n") {
+            let end = header + 4;
+            let headers = String::from_utf8_lossy(&buf[..end]);
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    let (key, value) = line.split_once(':')?;
+                    key.trim()
+                        .eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            while buf.len() < end + length {
+                let n = stream.read(&mut chunk).unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            break;
+        }
+    }
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
 fn read_request(stream: &mut std::net::TcpStream) {
     let mut buf = Vec::new();
     let mut chunk = [0u8; 1024];

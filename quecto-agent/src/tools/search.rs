@@ -28,8 +28,8 @@ impl Tool for SearchText {
             .get("pattern")
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::new("search_text: 'pattern' is required"))?;
-        let re =
-            regex::Regex::new(pattern).map_err(|e| ToolError::new(format!("invalid regex: {e}")))?;
+        let re = regex::Regex::new(pattern)
+            .map_err(|e| ToolError::new(format!("invalid regex: {e}")))?;
         let rel = args.get("path").and_then(|v| v.as_str()).unwrap_or(".");
         let base = cx.resolve_existing(rel)?;
 

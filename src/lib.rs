@@ -23,7 +23,11 @@ pub fn build_body(system: Option<&str>, prompt: &str, model: &str) -> Value {
 /// Join a base URL and a path with exactly one slash, tolerating trailing/leading
 /// slashes on either side (so `…/v1` and `…/v1/` both work).
 pub fn join_url(base: &str, path: &str) -> String {
-    format!("{}/{}", base.trim_end_matches('/'), path.trim_start_matches('/'))
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
 }
 
 /// Extract assistant text from a buffered chat response. Errors only when there
@@ -34,7 +38,10 @@ pub fn extract_content(resp: &Value) -> Result<String, BoxErr> {
         .and_then(|c| c.as_array())
         .filter(|a| !a.is_empty())
         .ok_or("no choices in response")?;
-    Ok(choices[0]["message"]["content"].as_str().unwrap_or("").to_string())
+    Ok(choices[0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string())
 }
 
 /// Parse one SSE `data:` payload into its `choices[0].delta` object.
@@ -69,7 +76,8 @@ pub fn quecto_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Va
 
 /// Read the four env knobs, applying defaults for base_url and model.
 pub fn env_config() -> (String, Option<String>, String, Option<String>) {
-    let base = std::env::var("QUECTO_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
+    let base = std::env::var("QUECTO_BASE_URL")
+        .unwrap_or_else(|_| "https://api.openai.com/v1".to_string());
     let key = std::env::var("QUECTO_API_KEY").ok();
     let model = std::env::var("QUECTO_MODEL").unwrap_or_else(|_| "gpt-4o".to_string());
     let system = std::env::var("QUECTO_SYSTEM").ok();
@@ -78,7 +86,12 @@ pub fn env_config() -> (String, Option<String>, String, Option<String>) {
 
 /// Convenience: build a single-user-message body, POST to <base_url>/chat/completions
 /// with optional Bearer auth, return the assistant text ("" on a tool-only turn).
-pub fn quecto_to(prompt: &str, base_url: &str, api_key: Option<&str>, model: &str) -> Result<String, BoxErr> {
+pub fn quecto_to(
+    prompt: &str,
+    base_url: &str,
+    api_key: Option<&str>,
+    model: &str,
+) -> Result<String, BoxErr> {
     let url = join_url(base_url, "chat/completions");
     let body = build_body(None, prompt, model);
     let auth = api_key.map(|k| format!("Bearer {k}"));
@@ -246,9 +259,18 @@ mod tests {
 
     #[test]
     fn join_url_variants() {
-        assert_eq!(join_url("http://x/v1", "chat/completions"), "http://x/v1/chat/completions");
-        assert_eq!(join_url("http://x/v1/", "chat/completions"), "http://x/v1/chat/completions");
-        assert_eq!(join_url("http://x/v1", "/chat/completions"), "http://x/v1/chat/completions");
+        assert_eq!(
+            join_url("http://x/v1", "chat/completions"),
+            "http://x/v1/chat/completions"
+        );
+        assert_eq!(
+            join_url("http://x/v1/", "chat/completions"),
+            "http://x/v1/chat/completions"
+        );
+        assert_eq!(
+            join_url("http://x/v1", "/chat/completions"),
+            "http://x/v1/chat/completions"
+        );
     }
 
     #[test]
@@ -297,9 +319,15 @@ mod tests {
         let mut input = Cursor::new("http://localhost:11434/v1\n\nqwen\n\n");
         let mut prompts = Vec::new();
         let pairs = init_exports(&mut input, &mut prompts).unwrap();
-        assert_eq!(pairs, vec![
-            ("QUECTO_BASE_URL".to_string(), "http://localhost:11434/v1".to_string()),
-            ("QUECTO_MODEL".to_string(), "qwen".to_string()),
-        ]);
+        assert_eq!(
+            pairs,
+            vec![
+                (
+                    "QUECTO_BASE_URL".to_string(),
+                    "http://localhost:11434/v1".to_string()
+                ),
+                ("QUECTO_MODEL".to_string(), "qwen".to_string()),
+            ]
+        );
     }
 }

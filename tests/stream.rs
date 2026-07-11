@@ -8,20 +8,28 @@ fn stream_accumulates_sse() {
     let base = mock(200, "text/event-stream", sse);
     let url = quecto::join_url(&base, "chat/completions");
     let mut seen = 0;
-    let out = quecto::quecto_stream(&url, &[], json!({"model":"m","messages":[]}), |_d| seen += 1).unwrap();
+    let out = quecto::quecto_stream(&url, &[], json!({"model":"m","messages":[]}), |_d| {
+        seen += 1
+    })
+    .unwrap();
     assert_eq!(out, "Hello");
     assert_eq!(seen, 2);
 }
 
 #[test]
 fn stream_non_sse_fallback() {
-    let base = mock(200, "application/json", r#"{"choices":[{"message":{"content":"whole"}}]}"#);
+    let base = mock(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"whole"}}]}"#,
+    );
     let url = quecto::join_url(&base, "chat/completions");
     let mut calls = 0;
     let out = quecto::quecto_stream(&url, &[], json!({"model":"m","messages":[]}), |d| {
         calls += 1;
         assert_eq!(d["content"], "whole");
-    }).unwrap();
+    })
+    .unwrap();
     assert_eq!(out, "whole");
     assert_eq!(calls, 1);
 }
@@ -32,7 +40,8 @@ fn stream_skips_leading_comment_line() {
     let sse = ": keep-alive\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n";
     let base = mock(200, "text/event-stream", sse);
     let url = quecto::join_url(&base, "chat/completions");
-    let out = quecto::quecto_stream(&url, &[], json!({"model":"m","messages":[]}), |_d| {}).unwrap();
+    let out =
+        quecto::quecto_stream(&url, &[], json!({"model":"m","messages":[]}), |_d| {}).unwrap();
     assert_eq!(out, "ok");
 }
 

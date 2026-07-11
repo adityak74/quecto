@@ -483,7 +483,7 @@ mod tests {
     fn streaming_redaction_retains_bounded_output_and_cross_chunk_secrets() {
         let mut input = vec![b'x'; 4095];
         input.extend_from_slice(b"cross-boundary-secret");
-        input.extend(std::iter::repeat(b'y').take(4096));
+        input.extend(std::iter::repeat_n(b'y', 4096));
         let expected_redacted_len =
             input.len() - b"cross-boundary-secret".len() + b"[REDACTED]".len();
         let secrets = Arc::new(vec![b"cross-boundary-secret".to_vec()]);

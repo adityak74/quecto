@@ -2,7 +2,9 @@ use quecto::BoxErr;
 use std::io::{self, BufRead, Write};
 
 fn stream_enabled() -> bool {
-    std::env::var("QUECTO_STREAM").map(|v| v != "0").unwrap_or(true)
+    std::env::var("QUECTO_STREAM")
+        .map(|v| v != "0")
+        .unwrap_or(true)
 }
 
 /// Answer one prompt with the given config, writing the model text to stdout.
@@ -37,7 +39,14 @@ fn answer(
 
 fn run_oneshot(prompt: &str) {
     let (base, key, model, system) = quecto::env_config();
-    if let Err(e) = answer(prompt, &base, key.as_deref(), &model, system.as_deref(), stream_enabled()) {
+    if let Err(e) = answer(
+        prompt,
+        &base,
+        key.as_deref(),
+        &model,
+        system.as_deref(),
+        stream_enabled(),
+    ) {
         eprintln!("quecto: {e}");
         std::process::exit(1);
     }
@@ -66,7 +75,14 @@ fn run_repl() {
             break;
         }
         let (base, key, model, system) = quecto::env_config();
-        if let Err(e) = answer(prompt, &base, key.as_deref(), &model, system.as_deref(), stream_enabled()) {
+        if let Err(e) = answer(
+            prompt,
+            &base,
+            key.as_deref(),
+            &model,
+            system.as_deref(),
+            stream_enabled(),
+        ) {
             eprintln!("quecto: {e}"); // per-turn failure never kills the loop
         }
         println!();

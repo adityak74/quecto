@@ -37,10 +37,7 @@ impl Message {
         }
     }
 
-    pub fn assistant_with_calls(
-        content: impl Into<String>,
-        tool_calls: Vec<ToolCall>,
-    ) -> Self {
+    pub fn assistant_with_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
         Message {
             role: "assistant".into(),
             content: content.into(),
