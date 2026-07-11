@@ -5,6 +5,7 @@ mod agent;
 mod approval;
 mod model;
 mod policy;
+mod sandbox;
 mod tools;
 
 pub use agent::{Agent, Outcome};
@@ -13,6 +14,7 @@ pub use model::{
     messages_to_body, parse_assistant, AssistantMessage, HttpModel, Message, Model, ToolCall,
 };
 pub use policy::{Decision, Policy};
+pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};
 pub use tools::fs::{ListFiles, ReadFile, WriteFile};
 pub use tools::git::{GitDiff, GitStatus};
 pub use tools::patch::ApplyPatch;
