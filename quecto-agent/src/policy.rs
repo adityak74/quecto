@@ -49,11 +49,7 @@ fn deny_reason(command: &str) -> Option<String> {
 
 fn segment_is_forbidden(segment: &str) -> bool {
     let words: Vec<&str> = segment.split_whitespace().collect();
-    let words = if words.first() == Some(&"env") {
-        &words[1..]
-    } else {
-        &words[..]
-    };
+    let words = command_after_env(&words);
     let root_rm = words.first() == Some(&"rm")
         && words.iter().any(|w| *w == "/" || w.starts_with("/../"))
         && ['r', 'f'].iter().all(|flag| {
@@ -66,7 +62,48 @@ fn segment_is_forbidden(segment: &str) -> bool {
         || words.iter().any(|w| w.starts_with("mkfs"))
         || words.first() == Some(&"fdisk")
         || (words.contains(&"diskutil") && words.contains(&"erasedisk"))
-        || (words.first() == Some(&"git") && words.get(1) == Some(&"push"))
+        || git_subcommand(words) == Some("push")
+}
+
+fn command_after_env<'a>(words: &'a [&str]) -> &'a [&'a str] {
+    if words.first() != Some(&"env") {
+        return words;
+    }
+    let mut index = 1;
+    while let Some(word) = words.get(index) {
+        let takes_value = matches!(
+            *word,
+            "-u" | "--unset" | "-c" | "--chdir" | "--argv0" | "-s" | "--split-string"
+        );
+        if takes_value {
+            index += 2;
+        } else if word.starts_with('-') || word.contains('=') {
+            index += 1;
+        } else {
+            break;
+        }
+    }
+    &words[index.min(words.len())..]
+}
+
+fn git_subcommand<'a>(words: &'a [&'a str]) -> Option<&'a str> {
+    if words.first() != Some(&"git") {
+        return None;
+    }
+    let mut index = 1;
+    while let Some(word) = words.get(index) {
+        if matches!(
+            *word,
+            "-c" | "--git-dir" | "--work-tree" | "--namespace" | "--super-prefix"
+        ) {
+            index += 2;
+        } else if word.starts_with('-') {
+            index += 1;
+        } else {
+            return Some(word);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -135,6 +172,8 @@ mod tests {
         for command in [
             "echo ok; sudo true",
             "env git push origin main",
+            "env FOO=bar git push origin main",
+            "git -C repo push",
             "cd /tmp && fdisk /dev/sda",
             "rm -r -f /",
         ] {
