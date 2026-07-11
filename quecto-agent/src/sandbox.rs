@@ -4,11 +4,12 @@ compile_error!("quecto-agent M4 requires a Unix target");
 use crate::tools::ToolError;
 use std::collections::{HashSet, VecDeque};
 use std::io::{self, Read};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -24,6 +25,7 @@ pub struct Sandbox {
     cancel: CancelToken,
     timeout: Duration,
     output_cap: usize,
+    reader_finalize_delay: Duration,
 }
 
 #[derive(Debug)]
@@ -58,6 +60,7 @@ impl Sandbox {
             cancel,
             timeout: Duration::from_secs(120),
             output_cap: 32 * 1024,
+            reader_finalize_delay: Duration::ZERO,
         }
     }
 
@@ -70,6 +73,12 @@ impl Sandbox {
     #[cfg(test)]
     fn with_output_cap(mut self, cap: usize) -> Self {
         self.output_cap = cap;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_reader_finalize_delay(mut self, delay: Duration) -> Self {
+        self.reader_finalize_delay = delay;
         self
     }
 
@@ -101,25 +110,39 @@ impl Sandbox {
             .stderr
             .take()
             .ok_or_else(|| ToolError::new("stderr pipe unavailable"))?;
+        let stdout_probe = duplicate_fd(stdout.as_raw_fd())?;
+        let stderr_probe = duplicate_fd(stderr.as_raw_fd())?;
         let output_cap = self.output_cap;
-        let (reader_done_tx, reader_done_rx) = mpsc::channel();
+        let finalize_delay = self.reader_finalize_delay;
+        let stdout_eof = Arc::new(AtomicBool::new(false));
+        let stderr_eof = Arc::new(AtomicBool::new(false));
         let stdout_secrets = secrets.clone();
-        let stdout_done = reader_done_tx.clone();
+        let stdout_eof_reader = stdout_eof.clone();
         let out_reader = thread::spawn(move || {
-            let result = capture_stream(&mut stdout, output_cap, stdout_secrets);
-            let _ = stdout_done.send(());
-            result
+            capture_stream(
+                &mut stdout,
+                output_cap,
+                stdout_secrets,
+                stdout_eof_reader,
+                finalize_delay,
+            )
         });
+        let stderr_eof_reader = stderr_eof.clone();
         let err_reader = thread::spawn(move || {
-            let result = capture_stream(&mut stderr, output_cap, secrets);
-            let _ = reader_done_tx.send(());
-            result
+            capture_stream(
+                &mut stderr,
+                output_cap,
+                secrets,
+                stderr_eof_reader,
+                finalize_delay,
+            )
         });
         let started = Instant::now();
         let (status, timed_out, cancelled) = loop {
             if child_exited_unreaped(pgid)? {
-                let readers_done = wait_for_readers(&reader_done_rx, Duration::from_millis(20));
-                let kill_result = if readers_done {
+                let pipes_closed = stream_closed(&stdout_eof, &stdout_probe)?
+                    && stream_closed(&stderr_eof, &stderr_probe)?;
+                let kill_result = if pipes_closed {
                     Ok(())
                 } else {
                     kill_process_group(pgid)
@@ -134,10 +157,15 @@ impl Sandbox {
             let timed_out = started.elapsed() >= self.timeout;
             if cancelled || timed_out {
                 let kill_result = kill_process_group(pgid);
+                if let Err(error) = kill_result {
+                    child.try_wait().map_err(|e| {
+                        ToolError::new(format!("check child after failed kill: {e}"))
+                    })?;
+                    return Err(ToolError::new(format!("kill process group: {error}")));
+                }
                 let status = child
                     .wait()
                     .map_err(|e| ToolError::new(format!("reap: {e}")))?;
-                kill_result.map_err(|e| ToolError::new(format!("kill process group: {e}")))?;
                 break (status.code(), timed_out, cancelled);
             }
             thread::sleep(Duration::from_millis(20));
@@ -160,19 +188,34 @@ impl Sandbox {
     }
 }
 
-fn wait_for_readers(receiver: &mpsc::Receiver<()>, grace: Duration) -> bool {
-    let deadline = Instant::now() + grace;
-    let mut completed = 0;
-    while completed < 2 {
-        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
-            break;
-        };
-        match receiver.recv_timeout(remaining) {
-            Ok(()) => completed += 1,
-            Err(_) => break,
-        }
+fn duplicate_fd(fd: i32) -> Result<OwnedFd, ToolError> {
+    let duplicated = unsafe { libc::dup(fd) };
+    if duplicated == -1 {
+        return Err(ToolError::new(format!(
+            "duplicate output pipe: {}",
+            io::Error::last_os_error()
+        )));
     }
-    completed == 2
+    Ok(unsafe { OwnedFd::from_raw_fd(duplicated) })
+}
+
+fn stream_closed(eof: &AtomicBool, probe: &OwnedFd) -> Result<bool, ToolError> {
+    if eof.load(Ordering::SeqCst) {
+        return Ok(true);
+    }
+    let mut descriptor = libc::pollfd {
+        fd: probe.as_raw_fd(),
+        events: libc::POLLHUP,
+        revents: 0,
+    };
+    let result = unsafe { libc::poll(&mut descriptor, 1, 0) };
+    if result == -1 {
+        return Err(ToolError::new(format!(
+            "poll output pipe: {}",
+            io::Error::last_os_error()
+        )));
+    }
+    Ok(descriptor.revents & libc::POLLHUP != 0)
 }
 
 fn child_exited_unreaped(pid: i32) -> Result<bool, ToolError> {
@@ -210,12 +253,12 @@ fn secret_values() -> Vec<Vec<u8>> {
     let mut seen = HashSet::new();
     let mut values = Vec::new();
     for (name, value) in std::env::vars_os() {
-        let upper = name.to_string_lossy().to_ascii_uppercase();
-        let value = value.to_string_lossy().into_owned().into_bytes();
+        let name = name.as_os_str().as_bytes();
+        let value = value.as_os_str().as_bytes().to_vec();
         if !value.is_empty()
             && ["KEY", "TOKEN", "SECRET", "PASSWORD"]
                 .iter()
-                .any(|pattern| upper.contains(pattern))
+                .any(|pattern| contains_ascii_case_insensitive(name, pattern.as_bytes()))
             && seen.insert(value.clone())
         {
             values.push(value);
@@ -223,6 +266,12 @@ fn secret_values() -> Vec<Vec<u8>> {
     }
     values.sort_by_key(|value| std::cmp::Reverse(value.len()));
     values
+}
+
+fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 #[derive(Debug)]
@@ -286,6 +335,8 @@ fn capture_stream(
     mut reader: impl Read,
     cap: usize,
     secrets: Arc<Vec<Vec<u8>>>,
+    eof: Arc<AtomicBool>,
+    finalize_delay: Duration,
 ) -> io::Result<BoundedCapture> {
     let mut capture = BoundedCapture::new(cap);
     let mut pending = Vec::new();
@@ -299,6 +350,10 @@ fn capture_stream(
     loop {
         let count = reader.read(&mut buffer)?;
         if count == 0 {
+            eof.store(true, Ordering::SeqCst);
+            if !finalize_delay.is_zero() {
+                thread::sleep(finalize_delay);
+            }
             let process_len = pending.len();
             redact_pending(&mut pending, process_len, &secrets, &mut capture);
             break;
@@ -432,9 +487,12 @@ mod tests {
         let expected_redacted_len =
             input.len() - b"cross-boundary-secret".len() + b"[REDACTED]".len();
         let secrets = Arc::new(vec![b"cross-boundary-secret".to_vec()]);
+        let eof = Arc::new(AtomicBool::new(false));
 
-        let capture = capture_stream(Cursor::new(input), 64, secrets).unwrap();
+        let capture =
+            capture_stream(Cursor::new(input), 64, secrets, eof.clone(), Duration::ZERO).unwrap();
 
+        assert!(eof.load(Ordering::SeqCst));
         assert!(capture.retained_len() <= 64);
         assert!(capture.omitted() > 0);
         assert_eq!(capture.total, expected_redacted_len);
@@ -479,10 +537,14 @@ mod tests {
         let _env_lock = ENV_LOCK.lock().unwrap();
         let invalid = std::ffi::OsString::from_vec(vec![b'a', 0xff, b'b']);
         let _env = EnvVarGuard::set_os("QUECTO_TEST_SECRET", &invalid);
+        let dir = tempfile::tempdir().unwrap();
 
-        let secrets = secret_values();
+        let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
+            .run("printf '%s' \"$QUECTO_TEST_SECRET\"")
+            .unwrap();
 
-        assert!(secrets.iter().any(|value| value == "a�b".as_bytes()));
+        assert_eq!(out.stdout, "[REDACTED]");
+        assert!(!out.stdout.contains('�'));
     }
 
     impl Drop for EnvVarGuard {
@@ -503,6 +565,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(out.stdout, "12345678");
+    }
+
+    #[test]
+    fn eof_signal_precedes_delayed_reader_finalization() {
+        let dir = tempfile::tempdir().unwrap();
+        let out = Sandbox::new(dir.path().to_path_buf(), cancel_token())
+            .with_timeout(Duration::from_secs(1))
+            .with_reader_finalize_delay(Duration::from_millis(100))
+            .run("printf done")
+            .unwrap();
+
+        assert_eq!(out.stdout, "done");
+        assert!(!out.timed_out);
     }
 
     #[test]
