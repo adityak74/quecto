@@ -1,4 +1,4 @@
-use quecto_agent::{Agent, HttpModel, Outcome};
+use quecto_agent::{cancel_token, Agent, ApprovalMode, HttpModel, Outcome};
 
 const DEFAULT_SYSTEM: &str =
     "You are quecto-agent, a helpful coding assistant. Answer concisely and accurately.";
@@ -19,7 +19,15 @@ fn main() {
 
     let repo_root = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let model = HttpModel::from_env();
-    let mut agent = Agent::new(Box::new(model), system, max_steps, repo_root).register_builtins();
+    let mut agent = Agent::new(
+        Box::new(model),
+        system,
+        max_steps,
+        repo_root,
+        cancel_token(),
+        ApprovalMode::AutoApprove,
+    )
+    .register_builtins();
 
     match agent.run(&task) {
         Outcome::Complete(answer) => println!("{answer}"),

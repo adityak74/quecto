@@ -1,6 +1,8 @@
+use crate::approval::ApprovalMode;
 use crate::model::{Message, Model};
-use crate::sandbox::cancel_token;
-use crate::tools::{builtin_tools, Context, Registry, Tool};
+use crate::policy::{Decision, Policy};
+use crate::sandbox::CancelToken;
+use crate::tools::{builtin_tools, Context, Registry, Tool, ToolOutput};
 use crate::BoxErr;
 use std::path::PathBuf;
 
@@ -18,6 +20,10 @@ pub struct Agent {
     cx: Context,
     messages: Vec<Message>,
     max_steps: usize,
+    policy: Policy,
+    approval: ApprovalMode,
+    #[allow(dead_code)]
+    cancel: CancelToken,
 }
 
 impl Agent {
@@ -28,13 +34,18 @@ impl Agent {
         system: impl Into<String>,
         max_steps: usize,
         repo_root: PathBuf,
+        cancel: CancelToken,
+        approval: ApprovalMode,
     ) -> Self {
         Agent {
             model,
             registry: Registry::new(),
-            cx: Context::new(repo_root, cancel_token()),
+            cx: Context::new(repo_root, cancel.clone()),
             messages: vec![Message::system(system.into())],
             max_steps,
+            policy: Policy,
+            approval,
+            cancel,
         }
     }
 
@@ -74,7 +85,16 @@ impl Agent {
                 return Outcome::Complete(msg.content);
             }
             for call in &msg.tool_calls {
-                let out = self.registry.dispatch(call, &mut self.cx);
+                let out = match self.policy.decide(call) {
+                    Decision::Allow => self.registry.dispatch(call, &mut self.cx),
+                    Decision::Ask if self.approval.allows(call) => {
+                        self.registry.dispatch(call, &mut self.cx)
+                    }
+                    Decision::Ask => ToolOutput::new("denied: approval required", "denied"),
+                    Decision::Deny(reason) => {
+                        ToolOutput::new(format!("denied: {reason}"), "denied")
+                    }
+                };
                 eprintln!("● {}  {}", call.name, out.summary);
                 self.messages
                     .push(Message::tool_result(&call.id, out.content));
@@ -87,7 +107,9 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::approval::ApprovalMode;
     use crate::model::{AssistantMessage, ToolCall};
+    use crate::sandbox::cancel_token;
     use crate::tools::{Context, Tool, ToolOutput, ToolResult};
     use serde_json::{json, Value};
     use std::path::PathBuf;
@@ -138,17 +160,29 @@ mod tests {
         }
     }
 
-    fn agent(model: Scripted) -> Agent {
-        Agent::new(Box::new(model), "sys", 10, PathBuf::from("."))
+    fn configured_agent(model: Scripted, approval: ApprovalMode) -> Agent {
+        Agent::new(
+            Box::new(model),
+            "sys",
+            10,
+            PathBuf::from("."),
+            cancel_token(),
+            approval,
+        )
     }
 
-    struct Recording {
+    fn agent(model: Scripted) -> Agent {
+        configured_agent(model, ApprovalMode::NonInteractive)
+    }
+
+    struct RecordingNamed {
+        name: &'static str,
         ran: Arc<AtomicBool>,
     }
 
-    impl Tool for Recording {
+    impl Tool for RecordingNamed {
         fn name(&self) -> &str {
-            "rec"
+            self.name
         }
 
         fn description(&self) -> &str {
@@ -176,8 +210,11 @@ mod tests {
     #[test]
     fn dispatches_a_registered_tool_then_completes() {
         let ran = Arc::new(AtomicBool::new(false));
-        let model = Scripted::new(vec![wants_tool("rec"), text("done")]);
-        let mut a = agent(model).register(Box::new(Recording { ran: ran.clone() }));
+        let model = Scripted::new(vec![wants_tool("read_file"), text("done")]);
+        let mut a = agent(model).register(Box::new(RecordingNamed {
+            name: "read_file",
+            ran: ran.clone(),
+        }));
         match a.run("hi") {
             Outcome::Complete(s) => assert_eq!(s, "done"),
             _ => panic!("expected Complete"),
@@ -186,6 +223,46 @@ mod tests {
             ran.load(Ordering::SeqCst),
             "the tool should have been dispatched"
         );
+    }
+
+    #[test]
+    fn ask_tool_is_denied_without_interactivity() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let model = Scripted::new(vec![wants_tool("write_file"), text("done")]);
+        let mut a = configured_agent(model, ApprovalMode::NonInteractive).register(Box::new(
+            RecordingNamed {
+                name: "write_file",
+                ran: ran.clone(),
+            },
+        ));
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        assert!(!ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn auto_approve_runs_ask_tool_but_not_hard_denies() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let model = Scripted::new(vec![wants_tool("write_file"), text("done")]);
+        let mut a =
+            configured_agent(model, ApprovalMode::AutoApprove).register(Box::new(RecordingNamed {
+                name: "write_file",
+                ran: ran.clone(),
+            }));
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        assert!(ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn unknown_custom_tool_is_denied_even_if_registered() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let model = Scripted::new(vec![wants_tool("custom"), text("done")]);
+        let mut a =
+            configured_agent(model, ApprovalMode::AutoApprove).register(Box::new(RecordingNamed {
+                name: "custom",
+                ran: ran.clone(),
+            }));
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        assert!(!ran.load(Ordering::SeqCst));
     }
 
     #[test]
@@ -200,7 +277,14 @@ mod tests {
     #[test]
     fn step_limit_stops_a_spinning_model() {
         let model = Scripted::new(vec![wants_tool("x"), wants_tool("x"), wants_tool("x")]);
-        let mut a = Agent::new(Box::new(model), "sys", 2, PathBuf::from("."));
+        let mut a = Agent::new(
+            Box::new(model),
+            "sys",
+            2,
+            PathBuf::from("."),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        );
         assert!(matches!(a.run("hi"), Outcome::StepLimit));
     }
 
@@ -219,8 +303,15 @@ mod tests {
             finish_reason: "tool_calls".into(),
         };
         let model = Scripted::new(vec![call, text("done")]);
-        let mut a = Agent::new(Box::new(model), "sys", 10, dir.path().to_path_buf())
-            .register(Box::new(WriteFile));
+        let mut a = Agent::new(
+            Box::new(model),
+            "sys",
+            10,
+            dir.path().to_path_buf(),
+            cancel_token(),
+            ApprovalMode::AutoApprove,
+        )
+        .register(Box::new(WriteFile));
         match a.run("make the file") {
             Outcome::Complete(s) => assert_eq!(s, "done"),
             _ => panic!("expected Complete"),
