@@ -51,7 +51,9 @@ fn deny_reason(command: &str) -> Option<String> {
 }
 
 fn segment_is_forbidden(words: &[String]) -> bool {
-    let words = unwrap_common_wrappers(words);
+    let Some(words) = unwrap_common_wrappers(words) else {
+        return true;
+    };
     if words.is_empty() {
         return false;
     }
@@ -89,31 +91,50 @@ fn executable_name(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
-fn unwrap_execution_wrappers(mut words: &[String]) -> &[String] {
-    while words
-        .first()
-        .map(|word| executable_name(word))
-        .is_some_and(|name| matches!(name, "command" | "exec"))
-    {
+fn unwrap_execution_wrappers(mut words: &[String]) -> Option<&[String]> {
+    while let Some(name) = words.first().map(|word| executable_name(word)) {
+        if name == "exec" {
+            let mut index = 1;
+            while let Some(option) = words.get(index).map(String::as_str) {
+                match option {
+                    "--" => {
+                        index += 1;
+                        break;
+                    }
+                    "-a" => {
+                        words.get(index + 1)?;
+                        index += 2;
+                    }
+                    "-c" | "-l" => index += 1,
+                    option if option.starts_with('-') => return None,
+                    _ => break,
+                }
+            }
+            words = &words[index.min(words.len())..];
+            continue;
+        }
+        if name != "command" {
+            break;
+        }
         let mut index = 1;
         while words.get(index).is_some_and(|word| word.starts_with('-')) {
             index += 1;
         }
         words = &words[index.min(words.len())..];
     }
-    words
+    Some(words)
 }
 
-fn unwrap_common_wrappers(mut words: &[String]) -> &[String] {
+fn unwrap_common_wrappers(mut words: &[String]) -> Option<&[String]> {
     loop {
         let previous_len = words.len();
         while words.first().is_some_and(|word| is_assignment(word)) {
             words = &words[1..];
         }
-        words = unwrap_execution_wrappers(words);
+        words = unwrap_execution_wrappers(words)?;
         words = command_after_env(words);
         if words.len() == previous_len {
-            return words;
+            return Some(words);
         }
     }
 }
@@ -369,6 +390,30 @@ mod tests {
             p.decide(&call(
                 "run_command",
                 json!({"command":"RUST_LOG=debug cargo test"})
+            )),
+            Decision::Ask
+        ));
+    }
+
+    #[test]
+    fn exec_argv0_option_cannot_hide_dangerous_executable() {
+        let p = Policy;
+        for command in [
+            "exec -a harmless sudo true",
+            "exec -a harmless /usr/bin/git push origin main",
+        ] {
+            assert!(
+                matches!(
+                    p.decide(&call("run_command", json!({"command":command}))),
+                    Decision::Deny(_)
+                ),
+                "{command}"
+            );
+        }
+        assert!(matches!(
+            p.decide(&call(
+                "run_command",
+                json!({"command":"exec -a cargo cargo test"})
             )),
             Decision::Ask
         ));
