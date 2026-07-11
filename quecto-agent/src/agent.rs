@@ -1,4 +1,5 @@
 use crate::model::{Message, Model};
+use crate::sandbox::cancel_token;
 use crate::tools::{builtin_tools, Context, Registry, Tool};
 use crate::BoxErr;
 use std::path::PathBuf;
@@ -31,7 +32,7 @@ impl Agent {
         Agent {
             model,
             registry: Registry::new(),
-            cx: Context::new(repo_root),
+            cx: Context::new(repo_root, cancel_token()),
             messages: vec![Message::system(system.into())],
             max_steps,
         }

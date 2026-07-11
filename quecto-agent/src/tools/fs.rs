@@ -157,6 +157,7 @@ impl Tool for WriteFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::cancel_token;
     use std::fs;
     use tempfile::tempdir;
 
@@ -164,7 +165,7 @@ mod tests {
     fn read_file_returns_contents() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), "hello\nworld\n").unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let out = ReadFile.run(&json!({"path":"a.txt"}), &mut cx).unwrap();
         assert_eq!(out.content, "hello\nworld\n");
     }
@@ -173,7 +174,7 @@ mod tests {
     fn read_file_honors_line_range() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), "one\ntwo\nthree\nfour\n").unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let out = ReadFile
             .run(
                 &json!({"path":"a.txt","start_line":2,"end_line":3}),
@@ -186,7 +187,7 @@ mod tests {
     #[test]
     fn read_file_missing_is_error() {
         let dir = tempdir().unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         assert!(ReadFile.run(&json!({"path":"nope.txt"}), &mut cx).is_err());
     }
 
@@ -196,7 +197,7 @@ mod tests {
         fs::write(dir.path().join(".gitignore"), "ignored.txt\n").unwrap();
         fs::write(dir.path().join("kept.txt"), "x").unwrap();
         fs::write(dir.path().join("ignored.txt"), "x").unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let out = ListFiles.run(&json!({}), &mut cx).unwrap();
         assert!(out.content.contains("kept.txt"));
         assert!(!out.content.contains("ignored.txt"));
@@ -205,7 +206,7 @@ mod tests {
     #[test]
     fn write_file_creates_and_records() {
         let dir = tempdir().unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let out = WriteFile
             .run(&json!({"path":"new.txt","content":"hello\n"}), &mut cx)
             .unwrap();
@@ -222,7 +223,7 @@ mod tests {
     fn write_file_overwrites_and_records_before() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a.txt"), "old").unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let out = WriteFile
             .run(&json!({"path":"a.txt","content":"new"}), &mut cx)
             .unwrap();
@@ -234,7 +235,7 @@ mod tests {
     #[test]
     fn write_file_rejects_escape() {
         let dir = tempdir().unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         assert!(WriteFile
             .run(&json!({"path":"../evil.txt","content":"x"}), &mut cx)
             .is_err());

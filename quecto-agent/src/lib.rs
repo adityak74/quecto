@@ -19,6 +19,7 @@ pub use tools::fs::{ListFiles, ReadFile, WriteFile};
 pub use tools::git::{GitDiff, GitStatus};
 pub use tools::patch::ApplyPatch;
 pub use tools::search::SearchText;
+pub use tools::shell::RunCommand;
 pub use tools::{
     builtin_tools, cap_output, Context, FileChange, Registry, Tool, ToolError, ToolOutput,
     ToolResult,

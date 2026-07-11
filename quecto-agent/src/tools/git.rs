@@ -79,12 +79,13 @@ impl Tool for GitStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::cancel_token;
     use tempfile::tempdir;
 
     #[test]
     fn git_status_reports_not_a_repo() {
         let dir = tempdir().unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let res = GitStatus.run(&json!({}), &mut cx);
         assert!(res.is_err());
         assert!(res.err().unwrap().message.contains("not a git repository"));

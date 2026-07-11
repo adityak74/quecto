@@ -81,6 +81,7 @@ impl Tool for SearchText {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::cancel_token;
     use std::fs;
     use tempfile::tempdir;
 
@@ -92,7 +93,7 @@ mod tests {
             "fn main() {}\nlet x = 1;\nfn helper() {}\n",
         )
         .unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let out = SearchText.run(&json!({"pattern":"fn "}), &mut cx).unwrap();
         assert!(out.content.contains("a.rs:1:"));
         assert!(out.content.contains("a.rs:3:"));
@@ -103,7 +104,7 @@ mod tests {
     fn search_text_reports_no_matches() {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("a.rs"), "nothing here\n").unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let out = SearchText.run(&json!({"pattern":"zzz"}), &mut cx).unwrap();
         assert!(out.content.contains("no matches"));
     }
@@ -111,7 +112,7 @@ mod tests {
     #[test]
     fn search_text_invalid_regex_is_error() {
         let dir = tempdir().unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         assert!(SearchText.run(&json!({"pattern":"("}), &mut cx).is_err());
     }
 }

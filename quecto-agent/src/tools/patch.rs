@@ -219,6 +219,7 @@ fn apply_block(cx: &mut Context, block: &PatchBlock) -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sandbox::cancel_token;
     use std::fs;
     use tempfile::tempdir;
 
@@ -281,7 +282,7 @@ let x = 2;
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/a.rs"), "let x = 1;\n").unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let out = ApplyPatch.run(&json!({"patch": PATCH}), &mut cx).unwrap();
         assert_eq!(
             fs::read_to_string(dir.path().join("src/a.rs")).unwrap(),
@@ -297,7 +298,7 @@ let x = 2;
         let dir = tempdir().unwrap();
         fs::create_dir(dir.path().join("src")).unwrap();
         fs::write(dir.path().join("src/a.rs"), "let y = 9;\n").unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let out = ApplyPatch.run(&json!({"patch": PATCH}), &mut cx).unwrap();
         assert!(out.content.contains("not found"));
         assert_eq!(
@@ -310,7 +311,7 @@ let x = 2;
     #[test]
     fn apply_patch_empty_search_creates_file() {
         let dir = tempdir().unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         let create = "------ new.rs\n<<<<<<< SEARCH\n=======\nfn main() {}\n>>>>>>> REPLACE";
         let out = ApplyPatch.run(&json!({"patch": create}), &mut cx).unwrap();
         assert_eq!(
@@ -323,7 +324,7 @@ let x = 2;
     #[test]
     fn apply_patch_no_blocks_is_error() {
         let dir = tempdir().unwrap();
-        let mut cx = Context::new(dir.path().to_path_buf());
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
         assert!(ApplyPatch
             .run(&json!({"patch":"garbage with no blocks"}), &mut cx)
             .is_err());
