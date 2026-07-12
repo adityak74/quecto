@@ -14,6 +14,7 @@ mod render;
 mod sandbox;
 mod session;
 mod tools;
+mod trust;
 mod verify;
 
 pub use agent::{Agent, Outcome, RunRecorder};
@@ -43,6 +44,7 @@ pub use tools::{
     builtin_tools, builtin_tools_filtered, cap_output, Context, FileChange, Registry, Tool,
     ToolError, ToolOutput, ToolResult,
 };
+pub use trust::TrustStore;
 pub use verify::{Verifier, VerifyReport, VerifyResult};
 
 /// Shared boxed error, mirroring the core so `?` composes across both crates.
