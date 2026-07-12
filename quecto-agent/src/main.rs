@@ -323,6 +323,13 @@ fn finish(outcome: Outcome, store_status: Option<(&Store, &str)>) {
             eprintln!("quecto-agent: repeated action detected");
             "repeated_action"
         }
+        Outcome::Blocked => {
+            eprintln!(
+                "quecto-agent: stopped — several actions were denied. Re-run with --yes to \
+                 auto-approve edits and commands, or set an approval preset in a flavor."
+            );
+            "blocked"
+        }
     };
     if let Some((store, id)) = store_status {
         let _ = store.set_status(id, status);
@@ -560,6 +567,9 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                     )),
                     Outcome::Cancelled => out.notice("(cancelled)"),
                     Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
+                    Outcome::Blocked => {
+                        out.notice("(stopped: actions denied — use /approve to allow this session)")
+                    }
                     Outcome::Error(e) => out.notice(&format!("(error: {e})")),
                 }
             }
