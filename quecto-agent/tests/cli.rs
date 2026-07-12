@@ -306,3 +306,61 @@ fn model_flag_overrides_env_and_flavor() {
     assert!(!body.contains("flavor-model"));
     assert!(!body.contains("env-model"));
 }
+
+#[test]
+fn untrusted_project_verify_is_not_applied_noninteractively() {
+    // A project flavor that would fail verification if applied. Non-interactive
+    // (piped) runs must NOT apply it, so the run still succeeds.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".quecto")).unwrap();
+    std::fs::write(
+        dir.path().join(".quecto/flavor.toml"),
+        "[verify]\ntest = \"exit 1\"",
+    )
+    .unwrap();
+    let base = mock_script(vec![
+        r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"n.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+        r#"{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}"#,
+    ]);
+    let out = Command::new(bin())
+        .args(["--yes", "write n.txt"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("QUECTO_BASE_URL", &base)
+        .env("QUECTO_MODEL", "m")
+        .env("QUECTO_STATE_DB", dir.path().join("s.db"))
+        .env("QUECTO_TRUST_FILE", dir.path().join("trust"))
+        .env_remove("QUECTO_API_KEY")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    // --yes trusts the project flavor, so verify IS applied and "exit 1" fails
+    // the completion gate → non-Complete outcome, exit 1.
+    assert!(
+        !out.status.success(),
+        "with --yes the failing verify should gate"
+    );
+
+    // Now without --yes and with no TTY: verify is withheld, run completes.
+    let base2 = mock_script(vec![
+        r#"{"choices":[{"message":{"content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"n2.txt\",\"content\":\"x\\n\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+        r#"{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}]}"#,
+    ]);
+    let out2 = Command::new(bin())
+        .args(["write n2.txt"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("QUECTO_BASE_URL", &base2)
+        .env("QUECTO_MODEL", "m")
+        .env("QUECTO_STATE_DB", dir.path().join("s2.db"))
+        .env("QUECTO_TRUST_FILE", dir.path().join("trust2"))
+        .env_remove("QUECTO_API_KEY")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    assert!(
+        out2.status.success(),
+        "untrusted verify must be withheld non-interactively: {}",
+        String::from_utf8_lossy(&out2.stderr)
+    );
+}

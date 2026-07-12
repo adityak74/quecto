@@ -1,8 +1,9 @@
 use clap::{Parser, Subcommand};
 use quecto_agent::{
-    cancel_token, join_url, load_instructions, new_session_id, parse_command,
-    render_change_summary, resolve_scoped, seed_context, Agent, ApprovalMode, ChatCommand, Flavor,
-    HttpModel, LineRenderer, Outcome, Policy, Preset, Renderer, SqliteRecorder, Store, Verifier,
+    cancel_token, content_hash, join_url, load_instructions, new_session_id, parse_command,
+    project_raw, render_change_summary, resolve_scoped, seed_context, Agent, ApprovalMode,
+    ChatCommand, Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, Renderer, SqliteRecorder,
+    Store, TrustStore, Verifier,
 };
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -134,6 +135,70 @@ fn resolve_flavor(overrides: &Overrides) -> (Flavor, Flavor) {
     }
 }
 
+/// Return the flavor whose command-bearing/loosening fields may be applied:
+/// `user ⊕ project` when the project flavor is trusted (or needs no privilege),
+/// otherwise `user` alone. Prompts on a TTY; non-interactive denies; `--yes`
+/// trusts and records.
+fn gated_flavor(
+    user: &Flavor,
+    project: &Flavor,
+    flavor_name: Option<&str>,
+    auto_approve: bool,
+) -> Flavor {
+    let home = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let Some(raw) = project_raw(&home, &cwd, flavor_name) else {
+        return user.clone();
+    };
+    if !project.wants_privilege() {
+        // Only safe project fields exist; nothing to gate for policy/verify.
+        return user.clone();
+    }
+    let hash = content_hash(&raw);
+    let mut store = TrustStore::open();
+    if store.is_trusted(&hash) {
+        return user.clone().merge(project.clone());
+    }
+    let trusted = if auto_approve {
+        store.trust(&hash);
+        true
+    } else if prompt_trust(project) {
+        store.trust(&hash);
+        true
+    } else {
+        eprintln!(
+            "quecto-agent: project flavor not trusted; its verify/approval settings are ignored"
+        );
+        false
+    };
+    if trusted {
+        user.clone().merge(project.clone())
+    } else {
+        user.clone()
+    }
+}
+
+/// Ask the human to approve a project flavor. Denies unless stdin is a TTY and
+/// the answer is y/yes.
+fn prompt_trust(project: &Flavor) -> bool {
+    if !std::io::stdin().is_terminal() {
+        return false;
+    }
+    eprintln!("⚠  ./.quecto/flavor.toml is new/changed and wants to:");
+    for line in project.privilege_summary() {
+        eprintln!("     • {line}");
+    }
+    eprint!("   Allow this project flavor? [y/N] ");
+    let _ = std::io::stderr().flush();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
 fn pick(flag: Option<&str>, env: &str, flavor: Option<&str>, default: &str) -> String {
     flag.map(str::to_string)
         .or_else(|| std::env::var(env).ok().filter(|s| !s.is_empty()))
@@ -212,6 +277,12 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
     let approval = ApprovalMode::terminal(auto_approve);
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let gated = gated_flavor(
+        &user_flavor,
+        &project_flavor,
+        overrides.flavor.as_deref(),
+        auto_approve,
+    );
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let base_url = pick(
@@ -254,8 +325,8 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &user_flavor));
-    agent = attach_verifier(agent, no_verify, &user_flavor);
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated));
+    agent = attach_verifier(agent, no_verify, &gated);
 
     // Attach a recorder when the store is available; the run proceeds regardless.
     let recorder_store = open_store();
@@ -294,6 +365,12 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let gated = gated_flavor(
+        &user_flavor,
+        &project_flavor,
+        overrides.flavor.as_deref(),
+        auto_approve,
+    );
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let base_url = pick(
@@ -341,9 +418,9 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         approval,
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
-    .with_policy(build_policy(overrides.approval.as_deref(), &user_flavor))
+    .with_policy(build_policy(overrides.approval.as_deref(), &gated))
     .with_renderer(Box::new(LineRenderer::new(std::io::stdout(), color)));
-    agent = attach_verifier(agent, no_verify, &user_flavor);
+    agent = attach_verifier(agent, no_verify, &gated);
 
     let store = open_store();
     if let Some(s) = &store {
@@ -479,6 +556,12 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     let approval = ApprovalMode::terminal(auto_approve);
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let gated = gated_flavor(
+        &user_flavor,
+        &project_flavor,
+        overrides.flavor.as_deref(),
+        auto_approve,
+    );
     let merged = user_flavor.clone().merge(project_flavor);
     let base_url = pick(
         overrides.base_url.as_deref(),
@@ -513,9 +596,9 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     let change_seq = store.change_count(id).unwrap_or(0);
     let mut agent = Agent::new(Box::new(model), String::new(), steps, cwd, cancel, approval)
         .register_builtins_filtered(merged.tools.enabled.as_deref())
-        .with_policy(build_policy(overrides.approval.as_deref(), &user_flavor))
+        .with_policy(build_policy(overrides.approval.as_deref(), &gated))
         .with_messages(messages);
-    agent = attach_verifier(agent, no_verify, &user_flavor);
+    agent = attach_verifier(agent, no_verify, &gated);
     if let Ok(rec_store) = Store::open_default() {
         agent = agent.with_recorder(Box::new(SqliteRecorder::new(
             rec_store,
