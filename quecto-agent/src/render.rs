@@ -122,7 +122,10 @@ mod tests {
             r.tool("read_file", "x");
         }
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.contains('\u{1b}'), "colored output should contain ANSI escapes");
+        assert!(
+            s.contains('\u{1b}'),
+            "colored output should contain ANSI escapes"
+        );
         assert!(s.contains("read_file"));
     }
 }

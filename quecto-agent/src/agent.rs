@@ -391,7 +391,10 @@ mod tests {
                 tools: tools.clone(),
             }));
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
-        assert_eq!(tools.lock().unwrap().clone(), vec!["read_file:ok".to_string()]);
+        assert_eq!(
+            tools.lock().unwrap().clone(),
+            vec!["read_file:ok".to_string()]
+        );
     }
 
     #[test]
