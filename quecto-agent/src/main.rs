@@ -1,8 +1,8 @@
 use clap::{Parser, Subcommand};
 use quecto_agent::{
-    cancel_token, load_instructions, new_session_id, parse_command, render_change_summary,
-    seed_context, Agent, ApprovalMode, ChatCommand, HttpModel, LineRenderer, Outcome, Renderer,
-    SqliteRecorder, Store, Verifier,
+    cancel_token, join_url, load_instructions, new_session_id, parse_command,
+    render_change_summary, resolve_scoped, seed_context, Agent, ApprovalMode, ChatCommand, Flavor,
+    HttpModel, LineRenderer, Outcome, Policy, Preset, Renderer, SqliteRecorder, Store, Verifier,
 };
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -18,10 +18,28 @@ struct Cli {
     yes: bool,
     #[arg(long, global = true)]
     no_verify: bool,
+    #[arg(long, global = true)]
+    flavor: Option<String>,
+    #[arg(long, global = true)]
+    model: Option<String>,
+    #[arg(long, global = true)]
+    base_url: Option<String>,
+    #[arg(long, global = true)]
+    max_steps: Option<usize>,
+    #[arg(long, global = true)]
+    approval: Option<String>,
     #[command(subcommand)]
     command: Option<Command>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     task: Vec<String>,
+}
+
+struct Overrides {
+    flavor: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+    max_steps: Option<usize>,
+    approval: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -38,9 +56,16 @@ enum Command {
 
 fn main() {
     let cli = Cli::parse();
+    let overrides = Overrides {
+        flavor: cli.flavor.clone(),
+        model: cli.model.clone(),
+        base_url: cli.base_url.clone(),
+        max_steps: cli.max_steps,
+        approval: cli.approval.clone(),
+    };
     match cli.command {
-        Some(Command::Chat) => chat(cli.yes, cli.no_verify),
-        Some(Command::Resume { id }) => resume(&id, cli.yes, cli.no_verify),
+        Some(Command::Chat) => chat(cli.yes, cli.no_verify, &overrides),
+        Some(Command::Resume { id }) => resume(&id, cli.yes, cli.no_verify, &overrides),
         Some(Command::Undo) => undo(),
         Some(Command::Diff) => diff(),
         None => {
@@ -48,7 +73,7 @@ fn main() {
                 eprintln!("usage: quecto-agent [--yes] [--no-verify] \"<task>\"");
                 std::process::exit(2);
             }
-            run(cli.task.join(" "), cli.yes, cli.no_verify);
+            run(cli.task.join(" "), cli.yes, cli.no_verify, &overrides);
         }
     }
 }
@@ -84,16 +109,67 @@ fn compose_system(cwd: &Path) -> String {
     system
 }
 
-fn max_steps() -> usize {
-    std::env::var("QUECTO_MAX_STEPS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(20)
+fn compose_system_with_persona(cwd: &Path, persona: Option<&str>) -> String {
+    let mut system = String::new();
+    if let Some(p) = persona {
+        if !p.trim().is_empty() {
+            system.push_str("# Persona\n");
+            system.push_str(p.trim());
+            system.push_str("\n\n");
+        }
+    }
+    system.push_str(&compose_system(cwd));
+    system
 }
 
-fn attach_verifier(mut agent: Agent, no_verify: bool) -> Agent {
+fn resolve_flavor(overrides: &Overrides) -> (Flavor, Flavor) {
+    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    match resolve_scoped(&home, &cwd, overrides.flavor.as_deref()) {
+        Ok(pair) => pair,
+        Err(e) => {
+            eprintln!("quecto-agent: flavor error: {e}");
+            std::process::exit(1);
+        }
+    }
+}
+
+fn pick(flag: Option<&str>, env: &str, flavor: Option<&str>, default: &str) -> String {
+    flag.map(str::to_string)
+        .or_else(|| std::env::var(env).ok().filter(|s| !s.is_empty()))
+        .or_else(|| flavor.map(str::to_string))
+        .unwrap_or_else(|| default.to_string())
+}
+
+fn build_policy(flag: Option<&str>, user: &Flavor) -> Policy {
+    let preset_name = flag
+        .map(str::to_string)
+        .or_else(|| user.approval.preset.clone());
+    let mut policy = match preset_name.as_deref().and_then(Preset::parse) {
+        Some(p) => Policy::from_preset(p),
+        None => Policy::default(),
+    };
+    for (op, decision) in &user.approval.overrides {
+        policy = policy.with_override(op, decision);
+    }
+    policy
+}
+
+fn persona(cwd: &Path, flavor: &Flavor) -> Option<String> {
+    flavor.system_prompt.clone().or_else(|| {
+        flavor
+            .system_prompt_file
+            .as_deref()
+            .and_then(|path| std::fs::read_to_string(cwd.join(path)).ok())
+    })
+}
+
+fn attach_verifier(mut agent: Agent, no_verify: bool, user_flavor: &Flavor) -> Agent {
     if !no_verify {
-        if let Some(verifier) = Verifier::from_env() {
+        let commands = user_flavor.verify_commands();
+        if !commands.is_empty() {
+            agent = agent.with_verifier(Verifier::new(commands));
+        } else if let Some(verifier) = Verifier::from_env() {
             agent = agent.with_verifier(verifier);
         }
     }
@@ -131,24 +207,55 @@ fn finish(outcome: Outcome, store_status: Option<(&Store, &str)>) {
     }
 }
 
-fn run(task: String, auto_approve: bool, no_verify: bool) {
+fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
     let approval = ApprovalMode::terminal(auto_approve);
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    let system = compose_system(&cwd);
-    let model = HttpModel::from_env();
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let merged = user_flavor.clone().merge(project_flavor);
+    let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
+    let base_url = pick(
+        overrides.base_url.as_deref(),
+        "QUECTO_BASE_URL",
+        merged.base_url.as_deref(),
+        "http://localhost:11434/v1",
+    );
+    let model_name = pick(
+        overrides.model.as_deref(),
+        "QUECTO_MODEL",
+        merged.model.as_deref(),
+        "",
+    );
+    let api_key = std::env::var("QUECTO_API_KEY")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let model = HttpModel {
+        url: join_url(&base_url, "chat/completions"),
+        api_key,
+        model: model_name,
+    };
+    let steps = overrides
+        .max_steps
+        .or_else(|| {
+            std::env::var("QUECTO_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_steps)
+        .unwrap_or(20);
 
     let session_id = new_session_id();
     let mut agent = Agent::new(
         Box::new(model),
         system,
-        max_steps(),
+        steps,
         cwd.clone(),
         cancel,
         approval,
     )
-    .register_builtins();
-    agent = attach_verifier(agent, no_verify);
+    .register_builtins_filtered(merged.tools.enabled.as_deref())
+    .with_policy(build_policy(overrides.approval.as_deref(), &user_flavor));
+    agent = attach_verifier(agent, no_verify, &user_flavor);
 
     // Attach a recorder when the store is available; the run proceeds regardless.
     let recorder_store = open_store();
@@ -183,12 +290,40 @@ commands:
   /clear             forget the conversation (keep system prompt)
   /exit              leave chat";
 
-fn chat(auto_approve: bool, no_verify: bool) {
+fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    let system = compose_system(&cwd);
-    let model = HttpModel::from_env();
-    let model_name = std::env::var("QUECTO_MODEL").unwrap_or_default();
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let merged = user_flavor.clone().merge(project_flavor);
+    let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
+    let base_url = pick(
+        overrides.base_url.as_deref(),
+        "QUECTO_BASE_URL",
+        merged.base_url.as_deref(),
+        "http://localhost:11434/v1",
+    );
+    let model_name = pick(
+        overrides.model.as_deref(),
+        "QUECTO_MODEL",
+        merged.model.as_deref(),
+        "",
+    );
+    let model = HttpModel {
+        url: join_url(&base_url, "chat/completions"),
+        api_key: std::env::var("QUECTO_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        model: model_name.clone(),
+    };
+    let steps = overrides
+        .max_steps
+        .or_else(|| {
+            std::env::var("QUECTO_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_steps)
+        .unwrap_or(20);
 
     let color = std::io::stdout().is_terminal();
     let approval = if auto_approve {
@@ -200,14 +335,15 @@ fn chat(auto_approve: bool, no_verify: bool) {
     let mut agent = Agent::new(
         Box::new(model),
         system,
-        max_steps(),
+        steps,
         cwd.clone(),
         cancel,
         approval,
     )
-    .register_builtins()
+    .register_builtins_filtered(merged.tools.enabled.as_deref())
+    .with_policy(build_policy(overrides.approval.as_deref(), &user_flavor))
     .with_renderer(Box::new(LineRenderer::new(std::io::stdout(), color)));
-    agent = attach_verifier(agent, no_verify);
+    agent = attach_verifier(agent, no_verify, &user_flavor);
 
     let store = open_store();
     if let Some(s) = &store {
@@ -323,7 +459,7 @@ fn chat_undo(
     }
 }
 
-fn resume(id: &str, auto_approve: bool, no_verify: bool) {
+fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let store = match open_store() {
         Some(s) => s,
         None => std::process::exit(1),
@@ -342,21 +478,44 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool) {
     let cancel = install_cancel();
     let approval = ApprovalMode::terminal(auto_approve);
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    let model = HttpModel::from_env();
+    let (user_flavor, project_flavor) = resolve_flavor(overrides);
+    let merged = user_flavor.clone().merge(project_flavor);
+    let base_url = pick(
+        overrides.base_url.as_deref(),
+        "QUECTO_BASE_URL",
+        merged.base_url.as_deref(),
+        "http://localhost:11434/v1",
+    );
+    let model_name = pick(
+        overrides.model.as_deref(),
+        "QUECTO_MODEL",
+        merged.model.as_deref(),
+        "",
+    );
+    let model = HttpModel {
+        url: join_url(&base_url, "chat/completions"),
+        api_key: std::env::var("QUECTO_API_KEY")
+            .ok()
+            .filter(|s| !s.is_empty()),
+        model: model_name,
+    };
+    let steps = overrides
+        .max_steps
+        .or_else(|| {
+            std::env::var("QUECTO_MAX_STEPS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_steps)
+        .unwrap_or(20);
 
     let msg_seq = store.message_count(id).unwrap_or(0);
     let change_seq = store.change_count(id).unwrap_or(0);
-    let mut agent = Agent::new(
-        Box::new(model),
-        String::new(),
-        max_steps(),
-        cwd,
-        cancel,
-        approval,
-    )
-    .register_builtins()
-    .with_messages(messages);
-    agent = attach_verifier(agent, no_verify);
+    let mut agent = Agent::new(Box::new(model), String::new(), steps, cwd, cancel, approval)
+        .register_builtins_filtered(merged.tools.enabled.as_deref())
+        .with_policy(build_policy(overrides.approval.as_deref(), &user_flavor))
+        .with_messages(messages);
+    agent = attach_verifier(agent, no_verify, &user_flavor);
     if let Ok(rec_store) = Store::open_default() {
         agent = agent.with_recorder(Box::new(SqliteRecorder::new(
             rec_store,

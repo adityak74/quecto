@@ -234,3 +234,75 @@ fn chat_runs_a_turn_and_records_it() {
     );
     assert!(String::from_utf8_lossy(&out.stdout).contains("hello there"));
 }
+
+#[test]
+fn flavor_model_is_used_when_env_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".quecto")).unwrap();
+    std::fs::write(
+        dir.path().join(".quecto/flavor.toml"),
+        "system_prompt = \"PERSONA_MARKER\"",
+    )
+    .unwrap();
+    let (base, request) = mock_capture(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+    );
+    let out = Command::new(bin())
+        .args(["do", "it"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("QUECTO_BASE_URL", &base)
+        .env("QUECTO_MODEL", "m")
+        .env("QUECTO_STATE_DB", dir.path().join("s.db"))
+        .env_remove("QUECTO_API_KEY")
+        .env_remove("QUECTO_SYSTEM")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let body = request
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    assert!(
+        body.contains("PERSONA_MARKER"),
+        "persona should be in the system prompt: {body}"
+    );
+}
+
+#[test]
+fn model_flag_overrides_env_and_flavor() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path().join(".quecto")).unwrap();
+    std::fs::write(
+        dir.path().join(".quecto/flavor.toml"),
+        "model = \"flavor-model\"",
+    )
+    .unwrap();
+    let (base, request) = mock_capture(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+    );
+    let out = Command::new(bin())
+        .args(["--model", "flag-model", "do", "it"])
+        .current_dir(dir.path())
+        .env("HOME", dir.path())
+        .env("QUECTO_BASE_URL", &base)
+        .env("QUECTO_MODEL", "env-model")
+        .env("QUECTO_STATE_DB", dir.path().join("s.db"))
+        .env_remove("QUECTO_API_KEY")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let body = request
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    assert!(body.contains("flag-model"), "flag must win: {body}");
+    assert!(!body.contains("flavor-model"));
+    assert!(!body.contains("env-model"));
+}
