@@ -25,6 +25,31 @@ pub fn mock(status: u16, content_type: &str, body: &str) -> String {
     format!("http://{addr}")
 }
 
+/// Mock server that serves a queued list of 200 JSON response bodies, one per
+/// connection, in order — for multi-turn agent runs. Returns the base URL.
+#[allow(dead_code)]
+pub fn mock_script(bodies: Vec<&str>) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let owned: Vec<String> = bodies.into_iter().map(|s| s.to_string()).collect();
+    thread::spawn(move || {
+        for body in owned {
+            if let Ok((mut stream, _)) = listener.accept() {
+                read_request(&mut stream);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Write);
+            }
+        }
+    });
+    format!("http://{addr}")
+}
+
 #[allow(dead_code)]
 pub fn mock_capture(
     status: u16,
