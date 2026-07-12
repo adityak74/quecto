@@ -13,13 +13,24 @@ use std::sync::atomic::Ordering;
 pub enum Outcome {
     Complete(String),
     StepLimit,
-    VerificationFailed { attempts: usize },
+    VerificationFailed {
+        attempts: usize,
+    },
     Cancelled,
     RepeatedAction,
+    /// Stopped early because several consecutive actions were denied by policy
+    /// or approval, so the run cannot make progress unattended.
+    Blocked,
     Error(BoxErr),
 }
 
 const VERIFY_NO_PROGRESS_ATTEMPTS: usize = 3;
+
+/// Consecutive denied tool results that end a run early with `Outcome::Blocked`.
+/// Distinct from the repeat guard: denials that vary in tool/arguments never
+/// trip the repeat guard, but a run that keeps hitting the approval wall should
+/// still stop promptly instead of grinding to the step limit.
+const DENIAL_STREAK_LIMIT: usize = 3;
 
 /// Receives the transcript and file mutations of a run in order, for
 /// persistence. Recording is best-effort and must never fail the run.
@@ -237,6 +248,7 @@ impl Agent {
         let mut repeats = RepeatGuard::default();
         let mut failed_verify_changes: Option<usize> = None;
         let mut failed_verify_attempts = 0;
+        let mut denial_streak = 0usize;
         let outcome = loop {
             self.sync();
             if step >= self.max_steps {
@@ -302,14 +314,22 @@ impl Agent {
                     break;
                 }
                 self.renderer.tool(&call.name, &out.summary);
-                if repeats.observe(call, &out.content, self.cx.changes().len()) {
-                    self.messages
-                        .push(Message::tool_result(&call.id, out.content));
+                if out.summary == "denied" {
+                    denial_streak += 1;
+                } else {
+                    denial_streak = 0;
+                }
+                let repeated = repeats.observe(call, &out.content, self.cx.changes().len());
+                self.messages
+                    .push(Message::tool_result(&call.id, out.content));
+                if repeated {
                     stop = Some(Outcome::RepeatedAction);
                     break;
                 }
-                self.messages
-                    .push(Message::tool_result(&call.id, out.content));
+                if denial_streak >= DENIAL_STREAK_LIMIT {
+                    stop = Some(Outcome::Blocked);
+                    break;
+                }
             }
             if let Some(outcome) = stop {
                 break outcome;
@@ -679,6 +699,39 @@ mod tests {
         ];
         let mut a = configured_agent(Scripted::new(replies), ApprovalMode::AutoApprove);
         assert!(matches!(a.run("hi"), Outcome::RepeatedAction));
+    }
+
+    #[test]
+    fn varying_denials_stop_early_with_blocked() {
+        // Edits vary (write_file, apply_patch, write_file), so the repeat guard
+        // never trips, but three consecutive approval denials should still stop
+        // the run promptly instead of grinding to the step limit.
+        let replies = vec![
+            wants_tool("write_file"),
+            wants_tool("apply_patch"),
+            wants_tool("write_file"),
+            wants_tool("write_file"),
+        ];
+        let mut a = configured_agent(Scripted::new(replies), ApprovalMode::NonInteractive);
+        assert!(matches!(a.run("hi"), Outcome::Blocked));
+    }
+
+    #[test]
+    fn a_successful_action_resets_the_denial_streak() {
+        // Two denials, then an allowed read, then a text answer: the allowed
+        // action resets the streak so the run completes normally.
+        let replies = vec![
+            wants_tool("write_file"),
+            wants_tool("apply_patch"),
+            wants_tool("read_file"),
+            text("done"),
+        ];
+        let mut a = configured_agent(Scripted::new(replies), ApprovalMode::NonInteractive)
+            .register(Box::new(RecordingNamed {
+                name: "read_file",
+                ran: Arc::new(AtomicBool::new(false)),
+            }));
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
     }
 
     #[test]
