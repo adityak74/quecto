@@ -116,7 +116,7 @@ impl Agent {
             cx: Context::new(repo_root, cancel.clone()),
             messages: vec![Message::system(system.into())],
             max_steps,
-            policy: Policy,
+            policy: Policy::default(),
             approval,
             verifier: None,
             recorder: None,
@@ -131,6 +131,12 @@ impl Agent {
     /// whenever the model stops with edits present.
     pub fn with_verifier(mut self, verifier: Verifier) -> Self {
         self.verifier = Some(verifier);
+        self
+    }
+
+    /// Replace the approval policy (default: read-only preset).
+    pub fn with_policy(mut self, policy: Policy) -> Self {
+        self.policy = policy;
         self
     }
 

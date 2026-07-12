@@ -28,7 +28,7 @@ pub use instructions::load as load_instructions;
 pub use model::{
     messages_to_body, parse_assistant, AssistantMessage, HttpModel, Message, Model, ToolCall,
 };
-pub use policy::{Decision, Policy};
+pub use policy::{Decision, Policy, Preset};
 pub use recorder::SqliteRecorder;
 pub use render::{stderr_renderer, stdout_renderer, LineRenderer, Renderer};
 pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};

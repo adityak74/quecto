@@ -8,25 +8,96 @@ pub enum Decision {
     Deny(String),
 }
 
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Policy;
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Preset {
+    ReadOnly,
+    Editor,
+    Full,
+}
+
+impl Preset {
+    pub fn parse(name: &str) -> Option<Preset> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "read-only" | "read_only" | "readonly" => Some(Preset::ReadOnly),
+            "editor" => Some(Preset::Editor),
+            "full" => Some(Preset::Full),
+            _ => None,
+        }
+    }
+}
+
+/// Per-operation approval policy. Reads are always allowed and unknown tools are
+/// always denied; the `run_command` denylist always denies regardless of preset.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Policy {
+    edit: Decision,
+    run: Decision,
+}
+
+impl Default for Policy {
+    fn default() -> Self {
+        Policy::from_preset(Preset::ReadOnly)
+    }
+}
+
+fn parse_decision(word: &str) -> Option<Decision> {
+    match word.trim().to_ascii_lowercase().as_str() {
+        "allow" => Some(Decision::Allow),
+        "ask" => Some(Decision::Ask),
+        "deny" => Some(Decision::Deny("denied by flavor policy".to_string())),
+        _ => None,
+    }
+}
 
 impl Policy {
+    pub fn from_preset(preset: Preset) -> Policy {
+        match preset {
+            Preset::ReadOnly => Policy {
+                edit: Decision::Ask,
+                run: Decision::Ask,
+            },
+            Preset::Editor => Policy {
+                edit: Decision::Allow,
+                run: Decision::Ask,
+            },
+            Preset::Full => Policy {
+                edit: Decision::Allow,
+                run: Decision::Allow,
+            },
+        }
+    }
+
+    /// Apply one `[approval]` override key. Unknown operations or decisions are
+    /// ignored (a manifest typo cannot silently loosen policy).
+    pub fn with_override(mut self, op: &str, decision: &str) -> Policy {
+        let Some(decision) = parse_decision(decision) else {
+            return self;
+        };
+        match op.trim().to_ascii_lowercase().as_str() {
+            "write_file" | "apply_patch" | "edit" => self.edit = decision,
+            "run_command" => self.run = decision,
+            _ => {}
+        }
+        self
+    }
+
     pub fn decide(&self, call: &ToolCall) -> Decision {
         match call.name.as_str() {
             "read_file" | "list_files" | "search_text" | "git_diff" | "git_status" => {
                 Decision::Allow
             }
-            "write_file" | "apply_patch" => Decision::Ask,
+            "write_file" | "apply_patch" => self.edit.clone(),
             "run_command" => {
                 let command = call
                     .arguments
                     .get("command")
                     .and_then(Value::as_str)
                     .unwrap_or("");
-                deny_reason(command)
-                    .map(Decision::Deny)
-                    .unwrap_or(Decision::Ask)
+                if let Some(reason) = deny_reason(command) {
+                    Decision::Deny(reason)
+                } else {
+                    self.run.clone()
+                }
             }
             _ => Decision::Deny(format!(
                 "tool '{}' is not permitted by the built-in policy",
@@ -252,7 +323,7 @@ mod tests {
 
     #[test]
     fn reads_are_allowed_and_mutations_ask() {
-        let p = Policy;
+        let p = Policy::default();
         assert!(matches!(
             p.decide(&call("read_file", json!({}))),
             Decision::Allow
@@ -273,7 +344,7 @@ mod tests {
 
     #[test]
     fn unknown_and_dangerous_commands_are_denied() {
-        let p = Policy;
+        let p = Policy::default();
         assert!(matches!(
             p.decide(&call("custom", json!({}))),
             Decision::Deny(_)
@@ -299,7 +370,7 @@ mod tests {
 
     #[test]
     fn compound_wrapped_and_split_flag_commands_are_denied() {
-        let p = Policy;
+        let p = Policy::default();
         for command in [
             "echo ok; sudo true",
             "env git push origin main",
@@ -320,7 +391,7 @@ mod tests {
 
     #[test]
     fn path_qualified_and_common_wrapper_bypasses_are_denied() {
-        let p = Policy;
+        let p = Policy::default();
         for command in [
             "/usr/bin/sudo true",
             "/usr/bin/git push origin main",
@@ -343,7 +414,7 @@ mod tests {
 
     #[test]
     fn ambiguous_shell_wrappers_are_denied_conservatively() {
-        let p = Policy;
+        let p = Policy::default();
         for command in [
             "sh -c",
             "bash -c 'git push origin main",
@@ -361,7 +432,7 @@ mod tests {
 
     #[test]
     fn assignment_variable_exec_and_eval_bypasses_are_denied() {
-        let p = Policy;
+        let p = Policy::default();
         for command in [
             "FOO=1 /usr/bin/sudo true",
             "FOO=1 /usr/bin/git push origin main",
@@ -385,7 +456,7 @@ mod tests {
 
     #[test]
     fn benign_leading_assignment_remains_approval_gated() {
-        let p = Policy;
+        let p = Policy::default();
         assert!(matches!(
             p.decide(&call(
                 "run_command",
@@ -397,7 +468,7 @@ mod tests {
 
     #[test]
     fn exec_argv0_option_cannot_hide_dangerous_executable() {
-        let p = Policy;
+        let p = Policy::default();
         for command in [
             "exec -a harmless sudo true",
             "exec -a harmless /usr/bin/git push origin main",
@@ -417,5 +488,64 @@ mod tests {
             )),
             Decision::Ask
         ));
+    }
+
+    #[test]
+    fn editor_preset_allows_edits_but_still_asks_run() {
+        let p = Policy::from_preset(Preset::Editor);
+        assert!(matches!(
+            p.decide(&call("write_file", json!({}))),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            p.decide(&call("apply_patch", json!({}))),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            p.decide(&call("run_command", json!({"command":"cargo test"}))),
+            Decision::Ask
+        ));
+    }
+
+    #[test]
+    fn full_preset_allows_run_but_denylist_still_wins() {
+        let p = Policy::from_preset(Preset::Full);
+        assert!(matches!(
+            p.decide(&call("run_command", json!({"command":"cargo test"}))),
+            Decision::Allow
+        ));
+        assert!(matches!(
+            p.decide(&call("run_command", json!({"command":"sudo rm -rf /"}))),
+            Decision::Deny(_)
+        ));
+        assert!(matches!(
+            p.decide(&call(
+                "run_command",
+                json!({"command":"git push origin main"})
+            )),
+            Decision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn overrides_tighten_or_loosen_individual_operations() {
+        let p = Policy::from_preset(Preset::ReadOnly).with_override("run_command", "allow");
+        assert!(matches!(
+            p.decide(&call("run_command", json!({"command":"cargo test"}))),
+            Decision::Allow
+        ));
+        let p2 = Policy::from_preset(Preset::Editor).with_override("write_file", "deny");
+        assert!(matches!(
+            p2.decide(&call("write_file", json!({}))),
+            Decision::Deny(_)
+        ));
+    }
+
+    #[test]
+    fn preset_parse_accepts_known_names() {
+        assert!(matches!(Preset::parse("read-only"), Some(Preset::ReadOnly)));
+        assert!(matches!(Preset::parse("editor"), Some(Preset::Editor)));
+        assert!(matches!(Preset::parse("full"), Some(Preset::Full)));
+        assert!(Preset::parse("bogus").is_none());
     }
 }
