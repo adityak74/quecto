@@ -7,11 +7,13 @@ mod context;
 mod instructions;
 mod model;
 mod policy;
+mod recorder;
 mod sandbox;
+mod session;
 mod tools;
 mod verify;
 
-pub use agent::{Agent, Outcome};
+pub use agent::{Agent, Outcome, RunRecorder};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
 pub use context::seed as seed_context;
 pub use instructions::load as load_instructions;
@@ -19,7 +21,9 @@ pub use model::{
     messages_to_body, parse_assistant, AssistantMessage, HttpModel, Message, Model, ToolCall,
 };
 pub use policy::{Decision, Policy};
+pub use recorder::SqliteRecorder;
 pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};
+pub use session::{new_session_id, render_change_summary, SessionRow, Store};
 pub use tools::fs::{ListFiles, ReadFile, WriteFile};
 pub use tools::git::{GitDiff, GitStatus};
 pub use tools::patch::ApplyPatch;
