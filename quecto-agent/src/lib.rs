@@ -21,8 +21,8 @@ pub use approval::{ApprovalMode, Approver, TerminalApprover};
 pub use chat::{parse_command, ChatCommand};
 pub use context::seed as seed_context;
 pub use flavor::{
-    layer_paths, resolve, resolve_scoped, ApprovalSection, Flavor, Scope, ToolsSection,
-    VerifySection,
+    content_hash, layer_paths, project_raw, resolve, resolve_scoped, ApprovalSection, Flavor,
+    Scope, ToolsSection, VerifySection,
 };
 pub use instructions::load as load_instructions;
 pub use model::{
