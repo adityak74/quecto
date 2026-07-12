@@ -102,6 +102,22 @@ fn unknown_long_flag_later_in_task_still_runs() {
 }
 
 #[test]
+fn help_documents_global_flags() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(bin())
+        .arg("--help")
+        .env("QUECTO_STATE_DB", dir.path().join("s.db"))
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("Override the model name"),
+        "model help text expected: {stdout}"
+    );
+}
+
+#[test]
 fn yes_flag_is_removed_from_the_user_task() {
     // Run in a fresh directory so the seeded repository context (git diff of the
     // working tree) cannot vary the captured request body.
