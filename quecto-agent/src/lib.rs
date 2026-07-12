@@ -8,6 +8,7 @@ mod instructions;
 mod model;
 mod policy;
 mod recorder;
+mod render;
 mod sandbox;
 mod session;
 mod tools;
@@ -22,6 +23,7 @@ pub use model::{
 };
 pub use policy::{Decision, Policy};
 pub use recorder::SqliteRecorder;
+pub use render::{stderr_renderer, stdout_renderer, LineRenderer, Renderer};
 pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};
 pub use session::{new_session_id, render_change_summary, SessionRow, Store};
 pub use tools::fs::{ListFiles, ReadFile, WriteFile};
