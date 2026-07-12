@@ -364,3 +364,34 @@ fn untrusted_project_verify_is_not_applied_noninteractively() {
         String::from_utf8_lossy(&out2.stderr)
     );
 }
+
+#[test]
+fn new_scaffolds_a_manifest_starter() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = Command::new(bin())
+        .args(["new", "reviewer"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = dir.path().join(".quecto/flavors/reviewer.toml");
+    assert!(path.exists(), "scaffold file should exist");
+    let text = std::fs::read_to_string(&path).unwrap();
+    assert!(text.contains("name = \"reviewer\""));
+    assert!(text.contains("[approval]"));
+
+    // Refuses to overwrite.
+    let again = Command::new(bin())
+        .args(["new", "reviewer"])
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(
+        !again.status.success(),
+        "second scaffold must not overwrite"
+    );
+}

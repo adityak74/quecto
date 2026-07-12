@@ -2,8 +2,8 @@ use clap::{Parser, Subcommand};
 use quecto_agent::{
     cancel_token, content_hash, join_url, load_instructions, new_session_id, parse_command,
     project_raw, render_change_summary, resolve_scoped, seed_context, Agent, ApprovalMode,
-    ChatCommand, Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, Renderer, SqliteRecorder,
-    Store, TrustStore, Verifier,
+    ChatCommand, Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, Renderer,
+    SqliteRecorder, Store, TrustStore, Verifier,
 };
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -53,6 +53,8 @@ enum Command {
     Undo,
     /// Print a summary of the latest session's file changes.
     Diff,
+    /// Scaffold a new flavor manifest at ./.quecto/flavors/<name>.toml.
+    New { name: String },
 }
 
 fn main() {
@@ -69,6 +71,7 @@ fn main() {
         Some(Command::Resume { id }) => resume(&id, cli.yes, cli.no_verify, &overrides),
         Some(Command::Undo) => undo(),
         Some(Command::Diff) => diff(),
+        Some(Command::New { name }) => scaffold(&name),
         None => {
             if cli.task.is_empty() {
                 eprintln!("usage: quecto-agent [--yes] [--no-verify] \"<task>\"");
@@ -77,6 +80,50 @@ fn main() {
             run(cli.task.join(" "), cli.yes, cli.no_verify, &overrides);
         }
     }
+}
+
+const SCAFFOLD_TEMPLATE: &str = r#"name = "{name}"
+
+# All keys are optional; omitted keys inherit from the layer below.
+# api_key is NEVER read from a manifest — set QUECTO_API_KEY in the environment.
+# model         = "qwen3.6:35b"
+# base_url      = "http://localhost:11434/v1"
+# max_steps     = 30
+# auto_verify   = true
+# system_prompt = "You are a terse senior reviewer."
+
+[tools]
+# Allow-list over all built-in tools. Omit to enable all.
+# enabled = ["read_file", "search_text", "list_files", "git_diff"]
+
+[approval]
+# preset = "read-only"   # read-only | editor | full
+# run_command = "ask"    # allow | ask | deny
+
+[verify]
+# Commands run as a completion gate (project flavors require trust-on-first-use).
+# test = "cargo test"
+# lint = "cargo clippy -- -D warnings"
+"#;
+
+fn scaffold(name: &str) {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
+    let dir = cwd.join(".quecto").join("flavors");
+    let path = dir.join(format!("{name}.toml"));
+    if path.exists() {
+        eprintln!("quecto-agent: {} already exists", path.display());
+        std::process::exit(1);
+    }
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(1);
+    }
+    let body = SCAFFOLD_TEMPLATE.replace("{name}", name);
+    if let Err(e) = std::fs::write(&path, body) {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(1);
+    }
+    println!("created {}", path.display());
 }
 
 fn open_store() -> Option<Store> {
@@ -145,9 +192,7 @@ fn gated_flavor(
     flavor_name: Option<&str>,
     auto_approve: bool,
 ) -> Flavor {
-    let home = std::env::var("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let Some(raw) = project_raw(&home, &cwd, flavor_name) else {
         return user.clone();
@@ -161,18 +206,14 @@ fn gated_flavor(
     if store.is_trusted(&hash) {
         return user.clone().merge(project.clone());
     }
-    let trusted = if auto_approve {
+    let trusted = auto_approve || prompt_trust(project);
+    if trusted {
         store.trust(&hash);
-        true
-    } else if prompt_trust(project) {
-        store.trust(&hash);
-        true
     } else {
         eprintln!(
             "quecto-agent: project flavor not trusted; its verify/approval settings are ignored"
         );
-        false
-    };
+    }
     if trusted {
         user.clone().merge(project.clone())
     } else {
