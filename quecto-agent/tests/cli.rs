@@ -173,3 +173,64 @@ fn yes_without_task_is_usage_error() {
     let out = Command::new(bin()).arg("--yes").output().unwrap();
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn chat_help_and_exit_without_model() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let mut child = Command::new(bin())
+        .arg("chat")
+        .current_dir(dir.path())
+        .env("QUECTO_STATE_DB", dir.path().join("s.db"))
+        .env("QUECTO_MODEL", "m")
+        .env("QUECTO_BASE_URL", "http://127.0.0.1:1") // unused: no plain-text turn
+        .env_remove("QUECTO_API_KEY")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"/help\n/exit\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("/help"), "help listing expected: {stdout}");
+}
+
+#[test]
+fn chat_runs_a_turn_and_records_it() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("s.db");
+    let base = mock_script(vec![
+        r#"{"choices":[{"message":{"content":"hello there"},"finish_reason":"stop"}]}"#,
+    ]);
+    let mut child = Command::new(bin())
+        .args(["chat", "--yes"])
+        .current_dir(dir.path())
+        .env("QUECTO_STATE_DB", &db)
+        .env("QUECTO_MODEL", "m")
+        .env("QUECTO_BASE_URL", &base)
+        .env_remove("QUECTO_API_KEY")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"say hello\n/exit\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("hello there"));
+}
