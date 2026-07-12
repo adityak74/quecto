@@ -5,6 +5,7 @@ mod agent;
 mod approval;
 mod chat;
 mod context;
+mod flavor;
 mod instructions;
 mod model;
 mod policy;
@@ -19,6 +20,7 @@ pub use agent::{Agent, Outcome, RunRecorder};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
 pub use chat::{parse_command, ChatCommand};
 pub use context::seed as seed_context;
+pub use flavor::{layer_paths, ApprovalSection, Flavor, Scope, ToolsSection, VerifySection};
 pub use instructions::load as load_instructions;
 pub use model::{
     messages_to_body, parse_assistant, AssistantMessage, HttpModel, Message, Model, ToolCall,
