@@ -1,6 +1,7 @@
 use crate::approval::ApprovalMode;
 use crate::model::{Message, Model};
 use crate::policy::{Decision, Policy};
+use crate::render::{stderr_renderer, Renderer};
 use crate::sandbox::CancelToken;
 use crate::tools::{builtin_tools, Context, FileChange, Registry, Tool, ToolOutput};
 use crate::verify::Verifier;
@@ -93,6 +94,7 @@ pub struct Agent {
     recorder: Option<Box<dyn RunRecorder>>,
     recorded_messages: usize,
     recorded_changes: usize,
+    renderer: Box<dyn Renderer>,
     #[allow(dead_code)]
     cancel: CancelToken,
 }
@@ -120,6 +122,7 @@ impl Agent {
             recorder: None,
             recorded_messages: 0,
             recorded_changes: 0,
+            renderer: stderr_renderer(),
             cancel,
         }
     }
@@ -135,6 +138,24 @@ impl Agent {
     pub fn with_recorder(mut self, recorder: Box<dyn RunRecorder>) -> Self {
         self.recorder = Some(recorder);
         self
+    }
+
+    /// Replace the activity renderer (default: plain stderr).
+    pub fn with_renderer(mut self, renderer: Box<dyn Renderer>) -> Self {
+        self.renderer = renderer;
+        self
+    }
+
+    /// Change the approval mode mid-session (used by the chat REPL).
+    pub fn set_approval(&mut self, approval: ApprovalMode) {
+        self.approval = approval;
+    }
+
+    /// Drop the conversation history, keeping only the system message. The
+    /// recording cursor is reset so a fresh turn records from the new baseline.
+    pub fn clear_history(&mut self) {
+        self.messages.truncate(1);
+        self.recorded_messages = self.messages.len();
     }
 
     /// Replace the seed transcript (used by `resume`). The provided messages are
@@ -218,11 +239,7 @@ impl Agent {
                     if !verifier.is_empty() && !self.cx.changes().is_empty() {
                         let report = verifier.run(&self.cx);
                         for r in &report.results {
-                            eprintln!(
-                                "● verify {}  {}",
-                                r.command,
-                                if r.passed { "passed" } else { "failed" }
-                            );
+                            self.renderer.verify(&r.command, r.passed);
                         }
                         if !report.all_passed() {
                             self.messages.push(Message::user(report.observation()));
@@ -253,7 +270,7 @@ impl Agent {
                     stop = Some(Outcome::Cancelled);
                     break;
                 }
-                eprintln!("● {}  {}", call.name, out.summary);
+                self.renderer.tool(&call.name, &out.summary);
                 if repeats.observe(call, &out.content, self.cx.changes().len()) {
                     self.messages
                         .push(Message::tool_result(&call.id, out.content));
@@ -347,6 +364,58 @@ mod tests {
     struct RecordingNamed {
         name: &'static str,
         ran: Arc<AtomicBool>,
+    }
+
+    struct CaptureRenderer {
+        tools: Arc<Mutex<Vec<String>>>,
+    }
+    impl crate::render::Renderer for CaptureRenderer {
+        fn tool(&mut self, name: &str, summary: &str) {
+            self.tools.lock().unwrap().push(format!("{name}:{summary}"));
+        }
+        fn verify(&mut self, _command: &str, _passed: bool) {}
+        fn notice(&mut self, _text: &str) {}
+        fn assistant(&mut self, _text: &str) {}
+    }
+
+    #[test]
+    fn renderer_receives_tool_activity() {
+        let tools = Arc::new(Mutex::new(Vec::new()));
+        let model = Scripted::new(vec![wants_tool("read_file"), text("done")]);
+        let mut a = agent(model)
+            .register(Box::new(RecordingNamed {
+                name: "read_file",
+                ran: Arc::new(AtomicBool::new(false)),
+            }))
+            .with_renderer(Box::new(CaptureRenderer {
+                tools: tools.clone(),
+            }));
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        assert_eq!(tools.lock().unwrap().clone(), vec!["read_file:ok".to_string()]);
+    }
+
+    #[test]
+    fn set_approval_switches_gate_behavior() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let model = Scripted::new(vec![wants_tool("write_file"), text("done")]);
+        let mut a = configured_agent(model, ApprovalMode::NonInteractive).register(Box::new(
+            RecordingNamed {
+                name: "write_file",
+                ran: ran.clone(),
+            },
+        ));
+        a.set_approval(ApprovalMode::AutoApprove);
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        assert!(ran.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn clear_history_keeps_only_the_system_message() {
+        let mut a = agent(Scripted::new(vec![text("done"), text("again")]));
+        assert!(matches!(a.run("first"), Outcome::Complete(_)));
+        a.clear_history();
+        // Second run starts fresh from the system-only baseline and still completes.
+        assert!(matches!(a.run("second"), Outcome::Complete(_)));
     }
 
     struct StaticNamed {
