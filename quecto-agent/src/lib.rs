@@ -39,8 +39,8 @@ pub use tools::patch::ApplyPatch;
 pub use tools::search::SearchText;
 pub use tools::shell::RunCommand;
 pub use tools::{
-    builtin_tools, cap_output, Context, FileChange, Registry, Tool, ToolError, ToolOutput,
-    ToolResult,
+    builtin_tools, builtin_tools_filtered, cap_output, Context, FileChange, Registry, Tool,
+    ToolError, ToolOutput, ToolResult,
 };
 pub use verify::{Verifier, VerifyReport, VerifyResult};
 

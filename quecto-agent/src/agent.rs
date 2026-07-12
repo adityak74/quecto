@@ -184,6 +184,14 @@ impl Agent {
         self
     }
 
+    /// Register the built-in tools filtered by an allow-list (`None` = all).
+    pub fn register_builtins_filtered(mut self, enabled: Option<&[String]>) -> Self {
+        for tool in crate::tools::builtin_tools_filtered(enabled) {
+            self.registry.register(tool);
+        }
+        self
+    }
+
     /// Run one task to completion (or a limit/error). Appends the task as a user
     /// message and loops: call the model with the available tool schemas, execute
     /// any tool calls, feed results back, and finish when the model stops

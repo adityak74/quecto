@@ -209,6 +209,18 @@ pub fn builtin_tools() -> Vec<Box<dyn Tool>> {
     ]
 }
 
+/// Built-in tools filtered by an optional allow-list of tool names. `None`
+/// enables all; `Some(list)` keeps only the named ones.
+pub fn builtin_tools_filtered(enabled: Option<&[String]>) -> Vec<Box<dyn Tool>> {
+    match enabled {
+        None => builtin_tools(),
+        Some(list) => builtin_tools()
+            .into_iter()
+            .filter(|t| list.iter().any(|n| n == t.name()))
+            .collect(),
+    }
+}
+
 pub fn cap_output(s: &str, max: usize) -> String {
     if s.len() <= max {
         return s.to_string();
@@ -332,5 +344,23 @@ mod tests {
         let capped = cap_output(&big, 10);
         assert!(capped.len() < big.len());
         assert!(capped.contains("truncated"));
+    }
+
+    #[test]
+    fn filtered_builtins_default_to_all() {
+        let all = builtin_tools().len();
+        let same = builtin_tools_filtered(None).len();
+        assert_eq!(all, same);
+    }
+
+    #[test]
+    fn filtered_builtins_respect_allow_list() {
+        let enabled = vec!["read_file".to_string(), "search_text".to_string()];
+        let tools = builtin_tools_filtered(Some(&enabled));
+        let names: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+        assert_eq!(names.len(), 2);
+        assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"search_text"));
+        assert!(!names.contains(&"run_command"));
     }
 }
