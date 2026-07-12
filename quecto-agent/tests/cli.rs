@@ -37,6 +37,71 @@ fn no_args_is_usage_error() {
 }
 
 #[test]
+fn unknown_leading_long_flag_is_usage_error() {
+    let out = Command::new(bin())
+        .arg("--definitely-not-a-real-flag")
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("Usage: quecto-agent"));
+}
+
+#[test]
+fn normal_bare_task_still_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = mock(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+    );
+    let out = Command::new(bin())
+        .args(["summarize", "this"])
+        .current_dir(dir.path())
+        .env("QUECTO_BASE_URL", &base)
+        .env("QUECTO_MODEL", "m")
+        .env("QUECTO_STATE_DB", dir.path().join("s.db"))
+        .env_remove("QUECTO_API_KEY")
+        .env_remove("QUECTO_SYSTEM")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "ok\n");
+}
+
+#[test]
+fn unknown_long_flag_later_in_task_still_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let (base, request) = mock_capture(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+    );
+    let out = Command::new(bin())
+        .args(["explain", "the", "--foo", "option"])
+        .current_dir(dir.path())
+        .env("QUECTO_BASE_URL", &base)
+        .env("QUECTO_MODEL", "m")
+        .env("QUECTO_STATE_DB", dir.path().join("s.db"))
+        .env_remove("QUECTO_API_KEY")
+        .env_remove("QUECTO_SYSTEM")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let body = request
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    assert!(body.contains("explain the --foo option"));
+}
+
+#[test]
 fn yes_flag_is_removed_from_the_user_task() {
     // Run in a fresh directory so the seeded repository context (git diff of the
     // working tree) cannot vary the captured request body.

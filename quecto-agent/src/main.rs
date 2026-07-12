@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use quecto_agent::{
     cancel_token, content_hash, join_url, load_instructions, new_session_id, parse_command,
     project_raw, render_change_summary, resolve_scoped, seed_context, Agent, ApprovalMode,
@@ -76,6 +76,14 @@ fn main() {
             if cli.task.is_empty() {
                 eprintln!("usage: quecto-agent [--yes] [--no-verify] \"<task>\"");
                 std::process::exit(2);
+            }
+            if let Some(flag) = cli.task.first().filter(|arg| arg.starts_with("--")) {
+                Cli::command()
+                    .error(
+                        ErrorKind::UnknownArgument,
+                        format!("unexpected argument '{flag}' found"),
+                    )
+                    .exit();
             }
             run(cli.task.join(" "), cli.yes, cli.no_verify, &overrides);
         }
