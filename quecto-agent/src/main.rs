@@ -15,18 +15,25 @@ const DEFAULT_SYSTEM: &str =
 #[derive(Parser)]
 #[command(args_conflicts_with_subcommands = true)]
 struct Cli {
+    /// Approve trusted prompts without asking.
     #[arg(long, global = true)]
     yes: bool,
+    /// Skip configured verification commands.
     #[arg(long, global = true)]
     no_verify: bool,
+    /// Select a named flavor profile.
     #[arg(long, global = true)]
     flavor: Option<String>,
+    /// Override the model name.
     #[arg(long, global = true)]
     model: Option<String>,
+    /// Override the OpenAI-compatible base URL.
     #[arg(long, global = true)]
     base_url: Option<String>,
+    /// Limit the number of agent steps.
     #[arg(long, global = true)]
     max_steps: Option<usize>,
+    /// Select the approval preset.
     #[arg(long, global = true)]
     approval: Option<String>,
     #[command(subcommand)]
@@ -666,6 +673,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
 
     let outcome = agent.resume();
     finish(outcome, Some((&store, id)));
+    eprintln!("quecto-agent: resumed session {id}");
 }
 
 fn undo() {
