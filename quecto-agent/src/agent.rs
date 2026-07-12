@@ -13,10 +13,13 @@ use std::sync::atomic::Ordering;
 pub enum Outcome {
     Complete(String),
     StepLimit,
+    VerificationFailed { attempts: usize },
     Cancelled,
     RepeatedAction,
     Error(BoxErr),
 }
+
+const VERIFY_NO_PROGRESS_ATTEMPTS: usize = 3;
 
 /// Receives the transcript and file mutations of a run in order, for
 /// persistence. Recording is best-effort and must never fail the run.
@@ -232,6 +235,8 @@ impl Agent {
         let schemas = self.registry.schemas();
         let mut step = 0;
         let mut repeats = RepeatGuard::default();
+        let mut failed_verify_changes: Option<usize> = None;
+        let mut failed_verify_attempts = 0;
         let outcome = loop {
             self.sync();
             if step >= self.max_steps {
@@ -256,6 +261,18 @@ impl Agent {
                             self.renderer.verify(&r.command, r.passed);
                         }
                         if !report.all_passed() {
+                            let changes = self.cx.changes().len();
+                            if failed_verify_changes == Some(changes) {
+                                failed_verify_attempts += 1;
+                            } else {
+                                failed_verify_changes = Some(changes);
+                                failed_verify_attempts = 1;
+                            }
+                            if failed_verify_attempts >= VERIFY_NO_PROGRESS_ATTEMPTS {
+                                break Outcome::VerificationFailed {
+                                    attempts: failed_verify_attempts,
+                                };
+                            }
                             self.messages.push(Message::user(report.observation()));
                             step += 1;
                             continue;
@@ -726,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn verify_gate_failure_loops_until_step_limit() {
+    fn verify_gate_failure_stops_after_bounded_no_progress_attempts() {
         use crate::tools::fs::WriteFile;
         let dir = tempfile::tempdir().unwrap();
         let write = AssistantMessage {
@@ -739,19 +756,65 @@ mod tests {
             finish_reason: "tool_calls".into(),
         };
         // After the edit the model keeps trying to stop; the failing gate
-        // re-prompts each time until max_steps is hit.
+        // should stop cleanly before the step limit.
         let model = Scripted::new(vec![write, text("done"), text("still"), text("more")]);
         let mut a = Agent::new(
             Box::new(model),
             "sys",
-            3,
+            10,
             dir.path().to_path_buf(),
             cancel_token(),
             ApprovalMode::AutoApprove,
         )
         .register(Box::new(WriteFile))
         .with_verifier(crate::verify::Verifier::new(vec!["exit 1".into()]));
-        assert!(matches!(a.run("edit"), Outcome::StepLimit));
+        assert!(matches!(
+            a.run("edit"),
+            Outcome::VerificationFailed {
+                attempts: VERIFY_NO_PROGRESS_ATTEMPTS
+            }
+        ));
+    }
+
+    #[test]
+    fn verify_gate_that_passes_after_an_edit_returns_complete() {
+        use crate::tools::fs::WriteFile;
+        let dir = tempfile::tempdir().unwrap();
+        let write_bad = AssistantMessage {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "write_file".into(),
+                arguments: json!({"path":"a.txt","content":"bad\n"}),
+            }],
+            finish_reason: "tool_calls".into(),
+        };
+        let write_good = AssistantMessage {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "2".into(),
+                name: "write_file".into(),
+                arguments: json!({"path":"a.txt","content":"good\n"}),
+            }],
+            finish_reason: "tool_calls".into(),
+        };
+        let model = Scripted::new(vec![write_bad, text("not yet"), write_good, text("done")]);
+        let mut a = Agent::new(
+            Box::new(model),
+            "sys",
+            10,
+            dir.path().to_path_buf(),
+            cancel_token(),
+            ApprovalMode::AutoApprove,
+        )
+        .register(Box::new(WriteFile))
+        .with_verifier(crate::verify::Verifier::new(vec![
+            "grep -q good a.txt".into()
+        ]));
+        match a.run("edit") {
+            Outcome::Complete(s) => assert_eq!(s, "done"),
+            _ => panic!("expected Complete after verification passes"),
+        }
     }
 
     #[test]
