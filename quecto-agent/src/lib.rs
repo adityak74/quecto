@@ -3,6 +3,7 @@
 
 mod agent;
 mod approval;
+mod chat;
 mod context;
 mod instructions;
 mod model;
@@ -16,6 +17,7 @@ mod verify;
 
 pub use agent::{Agent, Outcome, RunRecorder};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
+pub use chat::{parse_command, ChatCommand};
 pub use context::seed as seed_context;
 pub use instructions::load as load_instructions;
 pub use model::{
