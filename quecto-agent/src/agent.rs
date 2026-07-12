@@ -2,7 +2,7 @@ use crate::approval::ApprovalMode;
 use crate::model::{Message, Model};
 use crate::policy::{Decision, Policy};
 use crate::sandbox::CancelToken;
-use crate::tools::{builtin_tools, Context, Registry, Tool, ToolOutput};
+use crate::tools::{builtin_tools, Context, FileChange, Registry, Tool, ToolOutput};
 use crate::verify::Verifier;
 use crate::BoxErr;
 use std::path::PathBuf;
@@ -15,6 +15,13 @@ pub enum Outcome {
     Cancelled,
     RepeatedAction,
     Error(BoxErr),
+}
+
+/// Receives the transcript and file mutations of a run in order, for
+/// persistence. Recording is best-effort and must never fail the run.
+pub trait RunRecorder: Send {
+    fn message(&mut self, m: &Message);
+    fn change(&mut self, c: &FileChange);
 }
 
 #[derive(Default)]
@@ -83,6 +90,9 @@ pub struct Agent {
     policy: Policy,
     approval: ApprovalMode,
     verifier: Option<Verifier>,
+    recorder: Option<Box<dyn RunRecorder>>,
+    recorded_messages: usize,
+    recorded_changes: usize,
     #[allow(dead_code)]
     cancel: CancelToken,
 }
@@ -107,6 +117,9 @@ impl Agent {
             policy: Policy,
             approval,
             verifier: None,
+            recorder: None,
+            recorded_messages: 0,
+            recorded_changes: 0,
             cancel,
         }
     }
@@ -115,6 +128,20 @@ impl Agent {
     /// whenever the model stops with edits present.
     pub fn with_verifier(mut self, verifier: Verifier) -> Self {
         self.verifier = Some(verifier);
+        self
+    }
+
+    /// Attach a recorder for session persistence.
+    pub fn with_recorder(mut self, recorder: Box<dyn RunRecorder>) -> Self {
+        self.recorder = Some(recorder);
+        self
+    }
+
+    /// Replace the seed transcript (used by `resume`). The provided messages are
+    /// treated as already recorded so `resume` only persists new turns.
+    pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
+        self.recorded_messages = messages.len();
+        self.messages = messages;
         self
     }
 
@@ -136,19 +163,51 @@ impl Agent {
     /// requesting tools. Unknown tools are reported back as an error observation.
     pub fn run(&mut self, task: &str) -> Outcome {
         self.messages.push(Message::user(task));
+        self.run_loop()
+    }
+
+    /// Continue a seeded transcript (from `with_messages`) without appending a
+    /// new task.
+    pub fn resume(&mut self) -> Outcome {
+        self.run_loop()
+    }
+
+    /// Flush any newly-appended messages and file changes to the recorder.
+    fn sync(&mut self) {
+        if self.recorder.is_none() {
+            return;
+        }
+        while self.recorded_messages < self.messages.len() {
+            let m = self.messages[self.recorded_messages].clone();
+            if let Some(r) = self.recorder.as_mut() {
+                r.message(&m);
+            }
+            self.recorded_messages += 1;
+        }
+        while self.recorded_changes < self.cx.changes().len() {
+            let c = self.cx.changes()[self.recorded_changes].clone();
+            if let Some(r) = self.recorder.as_mut() {
+                r.change(&c);
+            }
+            self.recorded_changes += 1;
+        }
+    }
+
+    fn run_loop(&mut self) -> Outcome {
         let schemas = self.registry.schemas();
         let mut step = 0;
         let mut repeats = RepeatGuard::default();
-        loop {
+        let outcome = loop {
+            self.sync();
             if step >= self.max_steps {
-                return Outcome::StepLimit;
+                break Outcome::StepLimit;
             }
             if self.cancel.load(Ordering::SeqCst) {
-                return Outcome::Cancelled;
+                break Outcome::Cancelled;
             }
             let msg = match self.model.complete(&self.messages, &schemas) {
                 Ok(m) => m,
-                Err(e) => return Outcome::Error(e),
+                Err(e) => break Outcome::Error(e),
             };
             self.messages.push(Message::assistant_with_calls(
                 msg.content.clone(),
@@ -172,11 +231,13 @@ impl Agent {
                         }
                     }
                 }
-                return Outcome::Complete(msg.content);
+                break Outcome::Complete(msg.content);
             }
+            let mut stop: Option<Outcome> = None;
             for call in &msg.tool_calls {
                 if self.cancel.load(Ordering::SeqCst) {
-                    return Outcome::Cancelled;
+                    stop = Some(Outcome::Cancelled);
+                    break;
                 }
                 let out = match self.policy.decide(call) {
                     Decision::Allow => self.registry.dispatch(call, &mut self.cx),
@@ -189,19 +250,26 @@ impl Agent {
                     }
                 };
                 if self.cancel.load(Ordering::SeqCst) {
-                    return Outcome::Cancelled;
+                    stop = Some(Outcome::Cancelled);
+                    break;
                 }
                 eprintln!("● {}  {}", call.name, out.summary);
                 if repeats.observe(call, &out.content, self.cx.changes().len()) {
                     self.messages
                         .push(Message::tool_result(&call.id, out.content));
-                    return Outcome::RepeatedAction;
+                    stop = Some(Outcome::RepeatedAction);
+                    break;
                 }
                 self.messages
                     .push(Message::tool_result(&call.id, out.content));
             }
+            if let Some(outcome) = stop {
+                break outcome;
+            }
             step += 1;
-        }
+        };
+        self.sync();
+        outcome
     }
 }
 
@@ -609,6 +677,105 @@ mod tests {
             Outcome::Complete(s) => assert_eq!(s, "hi"),
             _ => panic!("no edits means the gate must not run"),
         }
+    }
+
+    #[derive(Default)]
+    struct FakeRecorder {
+        roles: Arc<Mutex<Vec<String>>>,
+        changed: Arc<Mutex<Vec<String>>>,
+    }
+    impl RunRecorder for FakeRecorder {
+        fn message(&mut self, m: &Message) {
+            self.roles.lock().unwrap().push(m.role.clone());
+        }
+        fn change(&mut self, c: &FileChange) {
+            self.changed.lock().unwrap().push(c.path.clone());
+        }
+    }
+
+    #[test]
+    fn recorder_captures_seed_task_and_turns() {
+        let roles = Arc::new(Mutex::new(Vec::new()));
+        let changed = Arc::new(Mutex::new(Vec::new()));
+        let model = Scripted::new(vec![text("done")]);
+        let mut a = Agent::new(
+            Box::new(model),
+            "sys",
+            10,
+            PathBuf::from("."),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        )
+        .with_recorder(Box::new(FakeRecorder {
+            roles: roles.clone(),
+            changed: changed.clone(),
+        }));
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        let got = roles.lock().unwrap().clone();
+        assert_eq!(got, vec!["system", "user", "assistant"]);
+        assert!(changed.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn recorder_captures_file_changes() {
+        use crate::tools::fs::WriteFile;
+        let changed = Arc::new(Mutex::new(Vec::new()));
+        let dir = tempfile::tempdir().unwrap();
+        let write = AssistantMessage {
+            content: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "1".into(),
+                name: "write_file".into(),
+                arguments: json!({"path":"a.txt","content":"hi\n"}),
+            }],
+            finish_reason: "tool_calls".into(),
+        };
+        let model = Scripted::new(vec![write, text("done")]);
+        let mut a = Agent::new(
+            Box::new(model),
+            "sys",
+            10,
+            dir.path().to_path_buf(),
+            cancel_token(),
+            ApprovalMode::AutoApprove,
+        )
+        .register(Box::new(WriteFile))
+        .with_recorder(Box::new(FakeRecorder {
+            roles: Arc::new(Mutex::new(Vec::new())),
+            changed: changed.clone(),
+        }));
+        assert!(matches!(a.run("edit"), Outcome::Complete(_)));
+        assert_eq!(changed.lock().unwrap().clone(), vec!["a.txt".to_string()]);
+    }
+
+    #[test]
+    fn resume_continues_a_seeded_transcript_without_re_recording() {
+        let roles = Arc::new(Mutex::new(Vec::new()));
+        let seed = vec![
+            Message::system("sys"),
+            Message::user("original"),
+            Message::assistant_with_calls("partial", vec![]),
+        ];
+        let model = Scripted::new(vec![text("resumed")]);
+        let mut a = Agent::new(
+            Box::new(model),
+            "unused",
+            10,
+            PathBuf::from("."),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        )
+        .with_messages(seed)
+        .with_recorder(Box::new(FakeRecorder {
+            roles: roles.clone(),
+            changed: Arc::new(Mutex::new(Vec::new())),
+        }));
+        match a.resume() {
+            Outcome::Complete(s) => assert_eq!(s, "resumed"),
+            _ => panic!("expected Complete"),
+        }
+        // Only the new assistant turn is recorded; the three seeded messages are not.
+        assert_eq!(roles.lock().unwrap().clone(), vec!["assistant"]);
     }
 
     #[test]
