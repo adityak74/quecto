@@ -292,6 +292,10 @@ fn finish(outcome: Outcome, store_status: Option<(&Store, &str)>) {
             eprintln!("quecto-agent: step limit reached");
             "step_limit"
         }
+        Outcome::VerificationFailed { attempts } => {
+            eprintln!("quecto-agent: verification still failing after {attempts} attempts");
+            "verification_failed"
+        }
         Outcome::Error(e) => {
             eprintln!("quecto-agent: {e}");
             "error"
@@ -536,6 +540,9 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                 match agent.run(&text) {
                     Outcome::Complete(answer) => out.assistant(&answer),
                     Outcome::StepLimit => out.notice("(step limit reached)"),
+                    Outcome::VerificationFailed { attempts } => out.notice(&format!(
+                        "(verification still failing after {attempts} attempts)"
+                    )),
                     Outcome::Cancelled => out.notice("(cancelled)"),
                     Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
                     Outcome::Error(e) => out.notice(&format!("(error: {e})")),
