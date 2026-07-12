@@ -116,11 +116,7 @@ pub enum Scope {
 
 /// The ordered flavor files to merge, low → high precedence, tagged by scope.
 /// `home` and `cwd` are injected for testability.
-pub fn layer_paths(
-    home: &Path,
-    cwd: &Path,
-    flavor_name: Option<&str>,
-) -> Vec<(Scope, PathBuf)> {
+pub fn layer_paths(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Vec<(Scope, PathBuf)> {
     let user = home.join(".config").join("quecto");
     let project = cwd.join(".quecto");
     let mut paths = vec![(Scope::User, user.join("flavor.toml"))];
@@ -138,6 +134,37 @@ pub fn layer_paths(
         ));
     }
     paths
+}
+
+/// Merge every existing layer, low → high precedence, into one flavor.
+pub fn resolve(home: &Path, cwd: &Path, flavor_name: Option<&str>) -> Result<Flavor, BoxErr> {
+    let mut merged = Flavor::default();
+    for (_scope, path) in layer_paths(home, cwd, flavor_name) {
+        if let Some(layer) = Flavor::load(&path)? {
+            merged = merged.merge(layer);
+        }
+    }
+    Ok(merged)
+}
+
+/// Resolve user-scope and project-scope layers separately so a caller can apply
+/// project command-bearing fields only when trusted (M7b).
+pub fn resolve_scoped(
+    home: &Path,
+    cwd: &Path,
+    flavor_name: Option<&str>,
+) -> Result<(Flavor, Flavor), BoxErr> {
+    let mut user = Flavor::default();
+    let mut project = Flavor::default();
+    for (scope, path) in layer_paths(home, cwd, flavor_name) {
+        if let Some(layer) = Flavor::load(&path)? {
+            match scope {
+                Scope::User => user = user.merge(layer),
+                Scope::Project => project = project.merge(layer),
+            }
+        }
+    }
+    Ok((user, project))
 }
 
 #[cfg(test)]
@@ -178,10 +205,7 @@ required = ["test"]
         );
         assert_eq!(f.approval.preset.as_deref(), Some("read-only"));
         assert_eq!(
-            f.approval
-                .overrides
-                .get("run_command")
-                .map(String::as_str),
+            f.approval.overrides.get("run_command").map(String::as_str),
             Some("ask")
         );
         assert_eq!(f.verify_commands(), vec!["cargo test".to_string()]);
@@ -233,10 +257,7 @@ system_prompt = "base""#,
     #[test]
     fn layer_paths_are_ordered_user_then_project() {
         let paths = layer_paths(Path::new("/home/u"), Path::new("/repo"), Some("rev"));
-        let shown: Vec<String> = paths
-            .iter()
-            .map(|(_, p)| p.display().to_string())
-            .collect();
+        let shown: Vec<String> = paths.iter().map(|(_, p)| p.display().to_string()).collect();
         assert_eq!(
             shown,
             vec![
@@ -248,5 +269,58 @@ system_prompt = "base""#,
         );
         assert_eq!(paths[0].0, Scope::User);
         assert_eq!(paths[3].0, Scope::Project);
+    }
+
+    #[test]
+    fn resolve_merges_existing_layers_low_to_high() {
+        use std::fs;
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".config/quecto")).unwrap();
+        fs::create_dir_all(repo.path().join(".quecto")).unwrap();
+        fs::write(
+            home.path().join(".config/quecto/flavor.toml"),
+            "model = \"user-model\"\nmax_steps = 5",
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join(".quecto/flavor.toml"),
+            "model = \"project-model\"",
+        )
+        .unwrap();
+        let f = resolve(home.path(), repo.path(), None).unwrap();
+        assert_eq!(f.model.as_deref(), Some("project-model"));
+        assert_eq!(f.max_steps, Some(5));
+    }
+
+    #[test]
+    fn resolve_returns_default_when_no_layers_exist() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let f = resolve(home.path(), repo.path(), None).unwrap();
+        assert!(f.model.is_none());
+        assert!(f.tools.enabled.is_none());
+    }
+
+    #[test]
+    fn resolve_scoped_separates_user_and_project() {
+        use std::fs;
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".config/quecto")).unwrap();
+        fs::create_dir_all(repo.path().join(".quecto")).unwrap();
+        fs::write(
+            home.path().join(".config/quecto/flavor.toml"),
+            "model = \"u\"",
+        )
+        .unwrap();
+        fs::write(
+            repo.path().join(".quecto/flavor.toml"),
+            "[verify]\ntest = \"cargo test\"",
+        )
+        .unwrap();
+        let (user, project) = resolve_scoped(home.path(), repo.path(), None).unwrap();
+        assert_eq!(user.model.as_deref(), Some("u"));
+        assert_eq!(project.verify.test.as_deref(), Some("cargo test"));
     }
 }
