@@ -60,8 +60,8 @@ The whole harness is a **single self-contained binary** — no runtime, no inter
 | Build | Size |
 |---|---:|
 | Default `--release` | 2.6 MB |
-| Stripped | 2.2 MB |
-| **Size-optimized profile** (shipped) | **~1.2 MB** |
+| Stripped | 2.3 MB |
+| **Size-optimized profile** (shipped) | **~1.2 MB** (1,300,896 bytes) |
 
 Two direct dependencies (`ureq` + `serde_json`), ~30 transitive crates, **no `tokio`, no `reqwest`, no async runtime.** Small is the feature.
 
