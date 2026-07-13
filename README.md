@@ -178,6 +178,14 @@ See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test resu
 
 **A note on approval in `chat`:** by default `quecto-agent chat` asks for approval before writes/commands and shows `● tool_name  denied` if none is given (there's no way to approve mid-turn over a non-interactive pipe, so the model typically falls back to a manual snippet). Type `/approve` inside the session to approve edits and commands for the rest of that session, or start with `quecto-agent chat --yes` to skip asking entirely.
 
+### Session storage — what's kept and where
+
+**In memory (per run):** the `Agent` holds the full transcript — system prompt, every user message, assistant reply, tool call, and tool result — and resends all of it to the model on each turn. This is what gives `chat` its conversational context.
+
+**On disk (persisted, plaintext):** when a session store is available (default `~/.local/state/quecto/sessions.db`, or `$QUECTO_STATE_DB`), every message is written to a SQLite `messages` table keyed by session id — role, content, tool calls, and tool results included. File edits are recorded separately in a `file_changes` table. This is what powers `resume`, `undo`, and `diff`.
+
+There's no encryption or expiry on that store — it's a local dev database, not a hardened secrets store. Avoid pasting anything sensitive into a session, or point `QUECTO_STATE_DB` at somewhere ephemeral (e.g. `/tmp`) if you need to.
+
 ---
 
 ## Library API
