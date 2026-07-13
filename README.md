@@ -174,7 +174,9 @@ export QUECTO_MODEL="gpt-4o"
 
 See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test results, and `docs/superpowers/` for the milestone specs and plans (M1–M7b).
 
-**A note on small local models:** tool-call reliability is the model's job, not the agent's — `quecto-agent` executes whatever `tool_calls` the model returns and does nothing when it returns none. Small quantized models (e.g. 2B-parameter local models) are inconsistent at this: the same prompt may get answered with plain text ("I'll create the file...") instead of an actual `write_file` call, or may target the wrong path. Watch for a `● tool_name ...` activity line to confirm a tool actually ran. For reliable multi-step tool use, prefer a 7B+ tool-tuned model (e.g. `qwen2.5-coder`, `qwen2.5:7b-instruct`).
+**A note on small local models:** tool-call reliability is the model's job, not the agent's — `quecto-agent` executes whatever `tool_calls` the model returns and does nothing when it returns none. Small quantized models (e.g. 2B-parameter local models) are inconsistent at this: the same prompt may get answered with plain text ("I'll create the file...") instead of an actual `write_file` call, or may target the wrong path. Watch for a `● tool_name ...` activity line to confirm a tool actually ran. For reliable multi-step tool use, prefer a larger tool-tuned model (e.g. `qwen2.5-coder`, `qwen2.5:7b-instruct`, or a 30B+ model like `qwen3.6:35b`).
+
+**A note on approval in `chat`:** by default `quecto-agent chat` asks for approval before writes/commands and shows `● tool_name  denied` if none is given (there's no way to approve mid-turn over a non-interactive pipe, so the model typically falls back to a manual snippet). Type `/approve` inside the session to approve edits and commands for the rest of that session, or start with `quecto-agent chat --yes` to skip asking entirely.
 
 ---
 
