@@ -81,7 +81,11 @@ git clone https://github.com/adityak74/quecto
 cd quecto
 cargo build --release      # → target/release/quecto
 
-# One-shot
+# target/release isn't on $PATH by default — either call it directly:
+./target/release/quecto "write me a haiku about small things"
+
+# ...or install it onto $PATH first, then call it as `quecto`:
+cargo install --path . --force
 quecto "write me a haiku about small things"
 
 # Interactive REPL (Ctrl-D to quit)
@@ -124,7 +128,11 @@ Built entirely on the core's `quecto_raw` primitive: same zero-async, statically
 ```bash
 cargo build --release -p quecto-agent   # → target/release/quecto-agent (~3.3 MB)
 
-# One-shot task
+# target/release isn't on $PATH by default — either call it directly:
+./target/release/quecto-agent "add a test for the parse_args function"
+
+# ...or install it onto $PATH first, then call it as `quecto-agent`:
+cargo install --path quecto-agent --force
 quecto-agent "add a test for the parse_args function"
 
 # Interactive chat
