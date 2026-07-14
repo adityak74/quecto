@@ -491,6 +491,29 @@ mod tests {
     }
 
     #[test]
+    fn model_error_stops_renderer_working_state() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut a = Agent::new(
+            Box::new(Scripted::new(vec![])),
+            "sys",
+            10,
+            PathBuf::from("."),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        )
+        .with_renderer(Box::new(CaptureRenderer {
+            tools: Arc::new(Mutex::new(Vec::new())),
+            events: events.clone(),
+        }));
+
+        assert!(matches!(a.run("hi"), Outcome::Error(_)));
+        assert_eq!(
+            events.lock().unwrap().clone(),
+            vec!["working", "working_done"]
+        );
+    }
+
+    #[test]
     fn set_approval_switches_gate_behavior() {
         let ran = Arc::new(AtomicBool::new(false));
         let model = Scripted::new(vec![wants_tool("write_file"), text("done")]);

@@ -1,9 +1,6 @@
 use crossterm::style::Stylize;
 use std::io::{self, IsTerminal, Write};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -43,7 +40,7 @@ fn format_spinner_frame(frame: &str, verb: &str) -> String {
 
 struct SpinnerState {
     verbs: Vec<String>,
-    stop: Arc<AtomicBool>,
+    stop: Option<mpsc::Sender<()>>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -64,76 +61,11 @@ pub trait Renderer: Send {
 pub struct LineRenderer<W: Write> {
     out: W,
     color: bool,
-    spinner: Option<SpinnerState>,
 }
 
 impl<W: Write> LineRenderer<W> {
     pub fn new(out: W, color: bool) -> Self {
-        LineRenderer {
-            out,
-            color,
-            spinner: None,
-        }
-    }
-
-    /// Constructs a renderer with an enabled spinner. Callers should only
-    /// use this for a TTY-backed stdout renderer.
-    pub fn with_spinner(out: W, color: bool, verbs: Vec<String>) -> Self {
-        LineRenderer {
-            out,
-            color,
-            spinner: Some(SpinnerState {
-                verbs: if verbs.is_empty() {
-                    parse_spinner_verbs(None)
-                } else {
-                    verbs
-                },
-                stop: Arc::new(AtomicBool::new(false)),
-                thread: None,
-            }),
-        }
-    }
-
-    fn stop_spinner(&mut self) {
-        let Some(mut spinner) = self.spinner.take() else {
-            return;
-        };
-        if let Some(thread) = spinner.thread.take() {
-            spinner.stop.store(true, Ordering::Release);
-            let _ = thread.join();
-            let _ = write!(self.out, "{SPINNER_CLEAR}");
-            let _ = self.out.flush();
-        }
-        self.spinner = Some(spinner);
-    }
-
-    fn start_spinner(&mut self, verbs: Vec<String>) {
-        let Some(spinner) = self.spinner.as_mut() else {
-            return;
-        };
-        if spinner.thread.is_some() {
-            return;
-        }
-        spinner.stop.store(false, Ordering::Release);
-        let stop = Arc::clone(&spinner.stop);
-        let verbs = if verbs.is_empty() {
-            spinner.verbs.clone()
-        } else {
-            verbs
-        };
-        spinner.thread = Some(thread::spawn(move || {
-            let mut stdout = io::stdout();
-            let mut frame = 0;
-            let mut verb = 0;
-            while !stop.load(Ordering::Acquire) {
-                let text = format_spinner_frame(SPINNER_FRAMES[frame], &verbs[verb]);
-                let _ = write!(stdout, "{text}");
-                let _ = stdout.flush();
-                frame = (frame + 1) % SPINNER_FRAMES.len();
-                verb = (verb + 1) % verbs.len();
-                thread::sleep(Duration::from_millis(120));
-            }
-        }));
+        LineRenderer { out, color }
     }
 
     fn bullet(&self) -> String {
@@ -145,30 +77,12 @@ impl<W: Write> LineRenderer<W> {
     }
 }
 
-impl<W: Write> Drop for LineRenderer<W> {
-    fn drop(&mut self) {
-        self.stop_spinner();
-    }
-}
-
 impl<W: Write + Send> Renderer for LineRenderer<W> {
-    fn working(&mut self) {
-        if let Some(spinner) = self.spinner.as_ref() {
-            self.start_spinner(spinner.verbs.clone());
-        }
-    }
-
-    fn working_done(&mut self) {
-        self.stop_spinner();
-    }
-
     fn tool(&mut self, name: &str, summary: &str) {
-        self.stop_spinner();
         let _ = writeln!(self.out, "{} {name}  {summary}", self.bullet());
     }
 
     fn verify(&mut self, command: &str, passed: bool) {
-        self.stop_spinner();
         let word = if passed { "passed" } else { "failed" };
         let shown = if self.color {
             if passed {
@@ -183,7 +97,6 @@ impl<W: Write + Send> Renderer for LineRenderer<W> {
     }
 
     fn notice(&mut self, text: &str) {
-        self.stop_spinner();
         let shown = if self.color {
             format!("{}", text.dark_grey())
         } else {
@@ -193,8 +106,148 @@ impl<W: Write + Send> Renderer for LineRenderer<W> {
     }
 
     fn assistant(&mut self, text: &str) {
-        self.stop_spinner();
         let _ = writeln!(self.out, "{text}");
+    }
+}
+
+struct SpinnerRenderer<W: Write + Send + 'static> {
+    out: Arc<Mutex<W>>,
+    color: bool,
+    spinner: SpinnerState,
+}
+
+impl<W: Write + Send + 'static> SpinnerRenderer<W> {
+    fn new(out: W, color: bool, verbs: Vec<String>) -> Self {
+        Self {
+            out: Arc::new(Mutex::new(out)),
+            color,
+            spinner: SpinnerState {
+                verbs: if verbs.is_empty() {
+                    parse_spinner_verbs(None)
+                } else {
+                    verbs
+                },
+                stop: None,
+                thread: None,
+            },
+        }
+    }
+
+    fn write_raw(&self, text: &str) {
+        if let Ok(mut out) = self.out.lock() {
+            let _ = write!(out, "{text}");
+            let _ = out.flush();
+        }
+    }
+
+    fn stop_spinner(&mut self) {
+        if let Some(thread) = self.spinner.thread.take() {
+            if let Some(stop) = self.spinner.stop.take() {
+                let _ = stop.send(());
+            }
+            let _ = thread.join();
+            self.write_raw(SPINNER_CLEAR);
+        }
+    }
+
+    fn start_spinner(&mut self) {
+        if self.spinner.thread.is_some() {
+            return;
+        }
+        let (stop, wakeup) = mpsc::channel();
+        let (started, started_rx) = mpsc::sync_channel(0);
+        let out = Arc::clone(&self.out);
+        let verbs = self.spinner.verbs.clone();
+        self.spinner.thread = Some(thread::spawn(move || {
+            let mut frame = 0;
+            let mut verb = 0;
+            loop {
+                let text = format_spinner_frame(SPINNER_FRAMES[frame], &verbs[verb]);
+                let wrote = out
+                    .lock()
+                    .ok()
+                    .is_some_and(|mut out| write!(out, "{text}").and_then(|_| out.flush()).is_ok());
+                if !wrote {
+                    break;
+                }
+                frame = (frame + 1) % SPINNER_FRAMES.len();
+                verb = (verb + 1) % verbs.len();
+                let _ = started.send(());
+                match wakeup.recv_timeout(Duration::from_millis(120)) {
+                    Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                }
+            }
+        }));
+        self.spinner.stop = Some(stop);
+        let _ = started_rx.recv();
+    }
+
+    fn bullet(&self) -> String {
+        if self.color {
+            format!("{}", "●".cyan())
+        } else {
+            "●".to_string()
+        }
+    }
+}
+
+impl<W: Write + Send + 'static> Drop for SpinnerRenderer<W> {
+    fn drop(&mut self) {
+        self.stop_spinner();
+    }
+}
+
+impl<W: Write + Send + 'static> Renderer for SpinnerRenderer<W> {
+    fn working(&mut self) {
+        self.start_spinner();
+    }
+
+    fn working_done(&mut self) {
+        self.stop_spinner();
+    }
+
+    fn tool(&mut self, name: &str, summary: &str) {
+        self.stop_spinner();
+        if let Ok(mut out) = self.out.lock() {
+            let _ = writeln!(out, "{} {name}  {summary}", self.bullet());
+        }
+    }
+
+    fn verify(&mut self, command: &str, passed: bool) {
+        self.stop_spinner();
+        let word = if passed { "passed" } else { "failed" };
+        let shown = if self.color {
+            if passed {
+                format!("{}", word.green())
+            } else {
+                format!("{}", word.red())
+            }
+        } else {
+            word.to_string()
+        };
+        if let Ok(mut out) = self.out.lock() {
+            let _ = writeln!(out, "{} verify {command}  {shown}", self.bullet());
+        }
+    }
+
+    fn notice(&mut self, text: &str) {
+        self.stop_spinner();
+        let shown = if self.color {
+            format!("{}", text.dark_grey())
+        } else {
+            text.to_string()
+        };
+        if let Ok(mut out) = self.out.lock() {
+            let _ = writeln!(out, "{shown}");
+        }
+    }
+
+    fn assistant(&mut self, text: &str) {
+        self.stop_spinner();
+        if let Ok(mut out) = self.out.lock() {
+            let _ = writeln!(out, "{text}");
+        }
     }
 }
 
@@ -210,9 +263,51 @@ pub fn stdout_renderer() -> Box<dyn Renderer> {
     Box::new(LineRenderer::new(io::stdout(), color))
 }
 
+/// A spinner renderer for the interactive chat's TTY-backed stdout path.
+pub fn chat_spinner_renderer(verbs: Vec<String>) -> Box<dyn Renderer> {
+    Box::new(SpinnerRenderer::new(io::stdout(), true, verbs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Clone)]
+    struct Capture(Arc<Mutex<Vec<u8>>>);
+
+    impl Capture {
+        fn new() -> Self {
+            Self(Arc::new(Mutex::new(Vec::new())))
+        }
+
+        fn contents(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    impl Write for Capture {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct FailingWriter;
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> io::Result<usize> {
+            Err(io::Error::other("write failed"))
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn render_plain(f: impl FnOnce(&mut LineRenderer<&mut Vec<u8>>)) -> String {
         let mut buf = Vec::new();
@@ -315,5 +410,54 @@ mod tests {
             String::from_utf8(buf).unwrap(),
             "● read_file  1 lines\nhello\nanswer\n"
         );
+    }
+
+    #[test]
+    fn enabled_spinner_writes_to_its_renderer_sink_and_clears_before_output() {
+        let capture = Capture::new();
+        let mut renderer =
+            SpinnerRenderer::new(capture.clone(), false, vec!["Brewing".to_string()]);
+
+        renderer.working();
+        renderer.notice("ready");
+
+        assert_eq!(capture.contents(), "\r⠋ Brewing…\r\x1b[2Kready\n");
+    }
+
+    #[test]
+    fn enabled_spinner_ignores_repeated_starts() {
+        let capture = Capture::new();
+        let mut renderer =
+            SpinnerRenderer::new(capture.clone(), false, vec!["Brewing".to_string()]);
+
+        renderer.working();
+        let first_frame = capture.contents();
+        renderer.working();
+        renderer.working_done();
+
+        assert_eq!(first_frame, "\r⠋ Brewing…");
+        assert_eq!(capture.contents(), "\r⠋ Brewing…\r\x1b[2K");
+    }
+
+    #[test]
+    fn dropping_an_active_spinner_stops_and_clears_its_sink() {
+        let capture = Capture::new();
+        {
+            let mut renderer =
+                SpinnerRenderer::new(capture.clone(), false, vec!["Brewing".to_string()]);
+            renderer.working();
+        }
+
+        assert_eq!(capture.contents(), "\r⠋ Brewing…\r\x1b[2K");
+    }
+
+    #[test]
+    fn spinner_worker_write_error_is_joined_during_cleanup() {
+        let mut renderer = SpinnerRenderer::new(FailingWriter, false, vec!["Brewing".to_string()]);
+
+        renderer.working();
+        assert!(renderer.spinner.thread.as_ref().unwrap().is_finished());
+        renderer.working_done();
+        assert!(renderer.spinner.thread.is_none());
     }
 }
