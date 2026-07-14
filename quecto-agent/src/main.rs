@@ -13,6 +13,7 @@ const DEFAULT_SYSTEM: &str =
     "You are quecto-agent, a helpful coding assistant. Answer concisely and accurately.";
 
 #[derive(Parser)]
+#[command(version)]
 #[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     /// Approve trusted prompts without asking.
@@ -415,7 +416,7 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
     finish(outcome, status_target);
 }
 
-const HELP: &str = "/commands            list available tools (same as /tools)\n/exit                leave chat\n/help                show this help\n/model               show the active model\n/context             show transcript size\n/diff                summarize this session's file changes\n/status              show session id and status\n/undo                revert the last recorded file change\n/approve             auto-approve edits and commands this session\n/deny                deny edits and commands this session\n/clear               forget the conversation (keep system prompt)";
+const HELP: &str = "/commands            list available tools (same as /tools)\n/exit, /quit, /q     leave chat\n/help, /h, /?        show this help\n/model               show the active model\n/context             show transcript size\n/diff                summarize this session's file changes\n/status              show session id and status\n/undo                revert the last recorded file change\n/approve             auto-approve edits and commands this session\n/deny                deny edits and commands this session\n/clear               forget the conversation (keep system prompt)";
 
 fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
@@ -508,7 +509,13 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         match parse_command(&line) {
             ChatCommand::Exit => break,
             ChatCommand::Help => out.notice(HELP),
-            ChatCommand::Model => out.notice(&format!("model: {model_name}")),
+            ChatCommand::Model => {
+                if model_name.is_empty() {
+                    out.notice("model: (not set)");
+                } else {
+                    out.notice(&format!("model: {model_name}"));
+                }
+            }
             ChatCommand::Context => {
                 let msg_n = agent.messages.len().saturating_sub(1);
                 let char_count: usize = agent.messages.iter().map(|m| m.content.len()).sum();
@@ -673,9 +680,9 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         )));
     }
 
+    eprintln!("quecto-agent: resuming session {id}...");
     let outcome = agent.resume();
     finish(outcome, Some((&store, id)));
-    eprintln!("quecto-agent: resumed session {id}");
 }
 
 fn undo() {
