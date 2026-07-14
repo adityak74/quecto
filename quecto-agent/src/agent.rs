@@ -100,7 +100,7 @@ pub struct Agent {
     model: Box<dyn Model>,
     registry: Registry,
     cx: Context,
-    messages: Vec<Message>,
+    pub messages: Vec<Message>,
     max_steps: usize,
     policy: Policy,
     approval: ApprovalMode,

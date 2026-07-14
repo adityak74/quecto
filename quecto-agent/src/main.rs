@@ -510,7 +510,9 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
             ChatCommand::Help => out.notice(HELP),
             ChatCommand::Model => out.notice(&format!("model: {model_name}")),
             ChatCommand::Context => {
-                out.notice(&format!("session: {session_id}"));
+                let msg_n = agent.messages.len().saturating_sub(1);
+                let char_count: usize = agent.messages.iter().map(|m| m.content.len()).sum();
+                out.notice(&format!("session: {} ({} messages, ~{} chars)", session_id, msg_n, char_count));
             }
             ChatCommand::Status => {
                 let status = store
