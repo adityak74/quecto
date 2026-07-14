@@ -166,9 +166,9 @@ impl Store {
         Ok(())
     }
 
-    pub fn record_message(&self, id: &str, seq: i64, m: &Message) -> Result<(), BoxErr> {
-        self.conn.execute("BEGIN TRANSACTION", [])?;
-        let res1 = self.conn.execute(
+    pub fn record_message(&mut self, id: &str, seq: i64, m: &Message) -> Result<(), BoxErr> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             (
@@ -179,20 +179,12 @@ impl Store {
                 calls_to_json(&m.tool_calls),
                 &m.tool_call_id,
             ),
-        );
-        if let Err(e) = res1 {
-            let _ = self.conn.execute("ROLLBACK", []);
-            return Err(e.into());
-        }
-        let res2 = self.conn.execute(
+        )?;
+        tx.execute(
             "UPDATE sessions SET updated = ?2 WHERE id = ?1",
             (id, now()),
-        );
-        if let Err(e) = res2 {
-            let _ = self.conn.execute("ROLLBACK", []);
-            return Err(e.into());
-        }
-        self.conn.execute("COMMIT", [])?;
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -344,7 +336,7 @@ mod tests {
 
     #[test]
     fn messages_round_trip_with_tool_calls() {
-        let store = Store::open_in_memory().unwrap();
+        let mut store = Store::open_in_memory().unwrap();
         store.create_session("s1", "task", "/repo", "m").unwrap();
         store
             .record_message("s1", 0, &Message::system("sys"))
