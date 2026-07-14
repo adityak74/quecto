@@ -416,7 +416,18 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
     finish(outcome, status_target);
 }
 
-const HELP: &str = "/commands            list available tools (same as /tools)\n/exit, /quit, /q     leave chat\n/help, /h, /?        show this help\n/model               show the active model\n/context             show transcript size\n/diff                summarize this session's file changes\n/status              show session id and status\n/undo                revert the last recorded file change\n/approve             auto-approve edits and commands this session\n/deny                deny edits and commands this session\n/clear               forget the conversation (keep system prompt)";
+const HELP: &str = "\
+/commands            list available tools (same as /tools)
+/exit, /quit, /q     leave chat
+/help, /h, /?        show this help
+/model               show the active model
+/context             show transcript size
+/diff                summarize this session's file changes
+/status              show session id and status
+/undo                revert the last recorded file change
+/approve             auto-approve edits and commands this session
+/deny                deny edits and commands this session
+/clear               forget the conversation (keep system prompt)";
 
 fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
@@ -518,7 +529,13 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
             }
             ChatCommand::Context => {
                 let msg_n = agent.messages.len().saturating_sub(1);
-                let char_count: usize = agent.messages.iter().map(|m| m.content.len()).sum();
+                let char_count: usize = agent.messages.iter().map(|m| {
+                    m.content.len()
+                        + m.tool_calls
+                            .iter()
+                            .map(|tc| tc.name.len() + tc.arguments.to_string().len())
+                            .sum::<usize>()
+                }).sum();
                 out.notice(&format!("session: {} ({} messages, ~{} chars)", session_id, msg_n, char_count));
             }
             ChatCommand::Status => {
