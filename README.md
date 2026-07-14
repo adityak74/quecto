@@ -178,6 +178,7 @@ Reads the same core env vars as `quecto`, plus a few agent-specific ones:
 | `QUECTO_SYSTEM` | built-in agent system prompt | Overrides the base system prompt (repo rules + seed context are still appended after it) |
 | `QUECTO_MAX_STEPS` | `20` | Cap on agent loop steps |
 | `QUECTO_VERIFY` | *(unset)* | Newline-separated shell commands run as a post-edit verification gate |
+| `QUECTO_SPINNER_VERBS` | `Thinking, Working, Crafting, Computing, Pondering, Wrangling` | Comma-separated replacement verbs for the interactive chat spinner |
 | `QUECTO_STATE_DB` | `$XDG_STATE_HOME/quecto/sessions.db` (falls back to `~/.local/state/...`) | SQLite session store path |
 | `QUECTO_TRUST_FILE` | `$XDG_STATE_HOME/quecto/trust` (falls back to `~/.local/state/...`) | Trust-on-first-use hash store for flavor manifests |
 
@@ -190,6 +191,10 @@ quecto-agent "add a test for the parse_args function"
 export QUECTO_BASE_URL="https://api.openai.com/v1"
 export QUECTO_API_KEY="sk-..."
 export QUECTO_MODEL="gpt-4o"
+
+# Customize the interactive chat spinner (replaces the compact defaults)
+export QUECTO_SPINNER_VERBS="Thinking,Planning,Coding"
+quecto-agent chat
 ```
 
 See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test results, and `docs/superpowers/` for the milestone specs and plans (M1–M7b).
