@@ -34,3 +34,11 @@
 ## Concerns
 
 - Task 2 must call `with_spinner` only for TTY stdout and pass `parse_spinner_verbs(std::env::var("QUECTO_SPINNER_VERBS").ok().as_deref())`; the constructor intentionally does not read environment state or perform TTY detection.
+
+## Handoff visibility fix
+
+- Root cause: `main.rs` is a separate binary target, so `pub(crate)` in the library's `render` module was not callable across the crate boundary.
+- Fix: made `parse_spinner_verbs` public and re-exported it from `quecto-agent/src/lib.rs`; no behavior changed.
+- Command: `rtk cargo test -p quecto-agent render::tests`
+- Output: `cargo test: 10 passed, 155 filtered out (4 suites, 0.00s)`
+- Result: focused renderer tests pass with the public handoff API.
