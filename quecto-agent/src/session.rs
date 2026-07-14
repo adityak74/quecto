@@ -167,7 +167,8 @@ impl Store {
     }
 
     pub fn record_message(&self, id: &str, seq: i64, m: &Message) -> Result<(), BoxErr> {
-        self.conn.execute(
+        self.conn.execute("BEGIN TRANSACTION", [])?;
+        let res1 = self.conn.execute(
             "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id) \
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             (
@@ -178,11 +179,20 @@ impl Store {
                 calls_to_json(&m.tool_calls),
                 &m.tool_call_id,
             ),
-        )?;
-        self.conn.execute(
+        );
+        if let Err(e) = res1 {
+            let _ = self.conn.execute("ROLLBACK", []);
+            return Err(e.into());
+        }
+        let res2 = self.conn.execute(
             "UPDATE sessions SET updated = ?2 WHERE id = ?1",
             (id, now()),
-        )?;
+        );
+        if let Err(e) = res2 {
+            let _ = self.conn.execute("ROLLBACK", []);
+            return Err(e.into());
+        }
+        self.conn.execute("COMMIT", [])?;
         Ok(())
     }
 
