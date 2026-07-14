@@ -141,6 +141,10 @@ impl Context {
     pub fn changes(&self) -> &[FileChange] {
         &self.changes
     }
+
+    pub fn clear_changes(&mut self) {
+        self.changes.clear();
+    }
 }
 
 pub struct Registry {
@@ -158,6 +162,11 @@ impl Registry {
 
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+
+    /// Return the names of all registered tools.
+    pub fn tool_names(&self) -> Vec<String> {
+        self.tools.iter().map(|t| t.name().to_string()).collect()
     }
 
     pub fn schemas(&self) -> Vec<Value> {
