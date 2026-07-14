@@ -13,6 +13,7 @@ const DEFAULT_SYSTEM: &str =
     "You are quecto-agent, a helpful coding assistant. Answer concisely and accurately.";
 
 #[derive(Parser)]
+#[command(version)]
 #[command(args_conflicts_with_subcommands = true)]
 struct Cli {
     /// Approve trusted prompts without asking.
@@ -416,17 +417,17 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
 }
 
 const HELP: &str = "\
-commands:
-  /help              show this help
-  /model             show the active model
-  /context           show transcript size
-  /diff              summarize this session's file changes
-  /status            show session id and status
-  /undo              revert the last recorded file change
-  /approve           auto-approve edits and commands this session
-  /deny              deny edits and commands this session
-  /clear             forget the conversation (keep system prompt)
-  /exit              leave chat";
+/commands            list available tools (same as /tools)
+/exit, /quit, /q     leave chat
+/help, /h, /?        show this help
+/model               show the active model
+/context             show transcript size
+/diff                summarize this session's file changes
+/status              show session id and status
+/undo                revert the last recorded file change
+/approve             auto-approve edits and commands this session
+/deny                deny edits and commands this session
+/clear               forget the conversation (keep system prompt)";
 
 fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
@@ -519,15 +520,28 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         match parse_command(&line) {
             ChatCommand::Exit => break,
             ChatCommand::Help => out.notice(HELP),
-            ChatCommand::Model => out.notice(&format!("model: {model_name}")),
+            ChatCommand::Model => {
+                if model_name.is_empty() {
+                    out.notice("model: (not set)");
+                } else {
+                    out.notice(&format!("model: {model_name}"));
+                }
+            }
             ChatCommand::Context => {
-                out.notice(&format!("session: {session_id}"));
+                let msg_n = agent.messages.len().saturating_sub(1);
+                let char_count: usize = agent.messages.iter().map(|m| {
+                    m.content.len()
+                        + m.tool_calls
+                            .iter()
+                            .map(|tc| tc.name.len() + tc.arguments.to_string().len())
+                            .sum::<usize>()
+                }).sum();
+                out.notice(&format!("session: {} ({} messages, ~{} chars)", session_id, msg_n, char_count));
             }
             ChatCommand::Status => {
                 let status = store
                     .as_ref()
-                    .and_then(|s| s.latest_session().ok().flatten())
-                    .map(|r| r.status)
+                    .and_then(|s| s.session_status(&session_id).ok().flatten())
                     .unwrap_or_else(|| "unknown".to_string());
                 out.notice(&format!("session {session_id} [{status}]"));
             }
@@ -550,8 +564,9 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
             }
             ChatCommand::Clear => {
                 agent.clear_history();
-                out.notice("conversation cleared");
+                out.notice(&format!("session {} conversation cleared", session_id));
             }
+            ChatCommand::Tools => { out.notice(&agent.tool_names().join("\n")); }
             ChatCommand::Unknown(name) => {
                 out.notice(&format!("unknown command '/{name}' — try /help"));
             }
@@ -636,6 +651,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         auto_approve,
     );
     let merged = user_flavor.clone().merge(project_flavor);
+    let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let base_url = pick(
         overrides.base_url.as_deref(),
         "QUECTO_BASE_URL",
@@ -667,7 +683,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
 
     let msg_seq = store.message_count(id).unwrap_or(0);
     let change_seq = store.change_count(id).unwrap_or(0);
-    let mut agent = Agent::new(Box::new(model), String::new(), steps, cwd, cancel, approval)
+    let mut agent = Agent::new(Box::new(model), system, steps, cwd, cancel, approval)
         .register_builtins_filtered(merged.tools.enabled.as_deref())
         .with_policy(build_policy(overrides.approval.as_deref(), &gated))
         .with_messages(messages);
@@ -681,9 +697,9 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         )));
     }
 
+    eprintln!("quecto-agent: resuming session {id}...");
     let outcome = agent.resume();
     finish(outcome, Some((&store, id)));
-    eprintln!("quecto-agent: resumed session {id}");
 }
 
 fn undo() {

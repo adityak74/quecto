@@ -230,6 +230,17 @@ impl Store {
         }
     }
 
+    pub fn session_status(&self, id: &str) -> Result<Option<String>, BoxErr> {
+        let mut stmt = self.conn.prepare("SELECT status FROM sessions WHERE id = ?1")?;
+        let mut rows = stmt.query([id])?;
+        if let Some(row) = rows.next()? {
+            let status: String = row.get(0)?;
+            Ok(Some(status))
+        } else {
+            Ok(None)
+        }
+    }
+
     pub fn load_messages(&self, id: &str) -> Result<Vec<Message>, BoxErr> {
         let mut stmt = self.conn.prepare(
             "SELECT role, content, tool_calls, tool_call_id FROM messages \
@@ -361,6 +372,16 @@ mod tests {
         store.create_session("b", "second", "/r", "m").unwrap();
         store.set_status("b", "done").unwrap();
         assert_eq!(store.latest_session().unwrap().unwrap().id, "b");
+    }
+
+    #[test]
+    fn session_status_retrieves_correct_status() {
+        let store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        assert_eq!(store.session_status("s1").unwrap(), Some("running".to_string()));
+        store.set_status("s1", "done").unwrap();
+        assert_eq!(store.session_status("s1").unwrap(), Some("done".to_string()));
+        assert_eq!(store.session_status("nonexistent").unwrap(), None);
     }
 
     #[test]
