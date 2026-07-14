@@ -51,7 +51,7 @@ pub struct Store {
 fn now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos() as i64)
+        .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
 
@@ -357,7 +357,9 @@ mod tests {
     fn latest_session_picks_most_recent() {
         let store = Store::open_in_memory().unwrap();
         store.create_session("a", "first", "/r", "m").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
         store.create_session("b", "second", "/r", "m").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
         store.set_status("b", "done").unwrap();
         assert_eq!(store.latest_session().unwrap().unwrap().id, "b");
     }
