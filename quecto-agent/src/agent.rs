@@ -176,6 +176,8 @@ impl Agent {
     pub fn clear_history(&mut self) {
         self.messages.truncate(1);
         self.recorded_messages = self.messages.len();
+        self.recorded_changes = 0;
+        self.cx.clear_changes();
     }
 
     /// Replace the seed transcript (used by `resume`). The provided messages are
@@ -475,6 +477,21 @@ mod tests {
         a.clear_history();
         // Second run starts fresh from the system-only baseline and still completes.
         assert!(matches!(a.run("second"), Outcome::Complete(_)));
+    }
+
+    #[test]
+    fn clear_history_resets_recorded_changes() {
+        let mut a = agent(Scripted::new(vec![text("done")]));
+        a.cx.record_change("foo.rs", None, "content".to_string());
+        a.recorded_changes = 1;
+        assert_eq!(a.cx.changes().len(), 1);
+        assert_eq!(a.recorded_changes, 1);
+
+        a.clear_history();
+        assert_eq!(a.messages.len(), 1); // only system message
+        assert_eq!(a.recorded_messages, 1);
+        assert_eq!(a.cx.changes().len(), 0);
+        assert_eq!(a.recorded_changes, 0);
     }
 
     struct StaticNamed {

@@ -141,6 +141,10 @@ impl Context {
     pub fn changes(&self) -> &[FileChange] {
         &self.changes
     }
+
+    pub fn clear_changes(&mut self) {
+        self.changes.clear();
+    }
 }
 
 pub struct Registry {

@@ -538,7 +538,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
             }
             ChatCommand::Clear => {
                 agent.clear_history();
-                out.notice("conversation cleared");
+                out.notice(&format!("session {} conversation cleared", session_id));
             }
             ChatCommand::Tools => { out.notice(&agent.tool_names().join("\n")); }
             ChatCommand::Unknown(name) => {
