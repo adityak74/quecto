@@ -206,6 +206,11 @@ impl Agent {
         self
     }
 
+     /// Return the names of registered tools (used by /commands in chat).
+    pub fn tool_names(&self) -> Vec<String> {
+        self.registry.tool_names()
+    }
+
     /// Run one task to completion (or a limit/error). Appends the task as a user
     /// message and loops: call the model with the available tool schemas, execute
     /// any tool calls, feed results back, and finish when the model stops

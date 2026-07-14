@@ -186,6 +186,18 @@ See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test resu
 
 There's no encryption or expiry on that store — it's a local dev database, not a hardened secrets store. Avoid pasting anything sensitive into a session, or point `QUECTO_STATE_DB` at somewhere ephemeral (e.g. `/tmp`) if you need to.
 
+### BYOC — Bring Your Own Config
+
+Nothing in quecto is hardcoded to a vendor, a model, or a persona. Every layer is swappable via plain env vars and files, no forking required:
+
+- **System prompt** — `QUECTO_SYSTEM` overrides the default persona entirely (repo rules and seed context still get appended after it for `quecto-agent`).
+- **Model & endpoint** — `QUECTO_BASE_URL` + `QUECTO_MODEL` point at any OpenAI-compatible server: local (Ollama, LM Studio, vLLM) or cloud (OpenAI, or anything else speaking the same API shape).
+- **Behavior presets** — `.quecto/flavors/*.toml` manifests bundle a system prompt, tool policy, and defaults into a named, trust-on-first-use profile you can switch between per project.
+- **Verification gate** — `QUECTO_VERIFY` runs your own shell commands (tests, linters, type checks) as a post-edit gate before the agent calls a step done.
+- **Storage locations** — `QUECTO_STATE_DB` and `QUECTO_TRUST_FILE` relocate session and trust state anywhere you want (ephemeral, encrypted volume, shared path).
+
+Because the core primitives (`quecto_raw`, `quecto_stream`) shape nothing and discard nothing, none of this is a special case — it's the same config surface the library itself is built from.
+
 ---
 
 ## Library API

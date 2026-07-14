@@ -11,6 +11,7 @@ pub enum ChatCommand {
     Deny,
     Clear,
     Exit,
+    Tools,
     Say(String),
     Unknown(String),
 }
@@ -34,6 +35,7 @@ pub fn parse_command(line: &str) -> ChatCommand {
         "deny" => ChatCommand::Deny,
         "clear" => ChatCommand::Clear,
         "exit" | "quit" | "q" => ChatCommand::Exit,
+        "tools" => ChatCommand::Tools,
         other => ChatCommand::Unknown(other.to_string()),
     }
 }
@@ -57,6 +59,7 @@ mod tests {
         assert_eq!(parse_command("/diff"), ChatCommand::Diff);
         assert_eq!(parse_command("/undo"), ChatCommand::Undo);
         assert_eq!(parse_command("/approve"), ChatCommand::Approve);
+        assert_eq!(parse_command("/tools"), ChatCommand::Tools);
         assert_eq!(parse_command("/deny"), ChatCommand::Deny);
     }
 

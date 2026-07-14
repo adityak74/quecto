@@ -415,18 +415,7 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
     finish(outcome, status_target);
 }
 
-const HELP: &str = "\
-commands:
-  /help              show this help
-  /model             show the active model
-  /context           show transcript size
-  /diff              summarize this session's file changes
-  /status            show session id and status
-  /undo              revert the last recorded file change
-  /approve           auto-approve edits and commands this session
-  /deny              deny edits and commands this session
-  /clear             forget the conversation (keep system prompt)
-  /exit              leave chat";
+const HELP: &str = "/commands            list available tools (same as /tools)\n/exit                leave chat\n/help                show this help\n/model               show the active model\n/context             show transcript size\n/diff                summarize this session's file changes\n/status              show session id and status\n/undo                revert the last recorded file change\n/approve             auto-approve edits and commands this session\n/deny                deny edits and commands this session\n/clear               forget the conversation (keep system prompt)";
 
 fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
@@ -552,6 +541,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                 agent.clear_history();
                 out.notice("conversation cleared");
             }
+            ChatCommand::Tools => { out.notice(&agent.tool_names().join("\n")); }
             ChatCommand::Unknown(name) => {
                 out.notice(&format!("unknown command '/{name}' — try /help"));
             }
@@ -636,6 +626,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         auto_approve,
     );
     let merged = user_flavor.clone().merge(project_flavor);
+    let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let base_url = pick(
         overrides.base_url.as_deref(),
         "QUECTO_BASE_URL",
@@ -667,7 +658,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
 
     let msg_seq = store.message_count(id).unwrap_or(0);
     let change_seq = store.change_count(id).unwrap_or(0);
-    let mut agent = Agent::new(Box::new(model), String::new(), steps, cwd, cancel, approval)
+    let mut agent = Agent::new(Box::new(model), system, steps, cwd, cancel, approval)
         .register_builtins_filtered(merged.tools.enabled.as_deref())
         .with_policy(build_policy(overrides.approval.as_deref(), &gated))
         .with_messages(messages);
