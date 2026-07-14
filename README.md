@@ -14,7 +14,7 @@
 [![Dependencies](https://img.shields.io/badge/core%20dependencies-2-brightgreen?style=flat-square)](#dependencies)
 [![Async](https://img.shields.io/badge/async-zero-black?style=flat-square)](#philosophy)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-179%20passing-success?style=flat-square)](#testing)
+[![Tests](https://img.shields.io/badge/tests-183%20passing-success?style=flat-square)](#testing)
 [![Status](https://img.shields.io/badge/status-M1--M7b%20shipped-success?style=flat-square)](#status)
 
 </div>
@@ -50,6 +50,7 @@
 
 ## 📣 Announcements
 
+- **`2026-07-14` — Bug-fix release.** Seven issues from a post-UAT audit fixed: CRLF patch compatibility (with double-conversion guard), `take_last_change` DB error propagation, millisecond timestamps, `record_message` transaction safety, `/status` session-specific querying, `/context` character count, and REPL UX polish (aliases, `--version`, clear confirmation). 183 tests, 0 failures.
 - **`2026-07-12` — `quecto-agent` shipped (M1–M7b).** The full coding agent — tool use, editing under approval, sandbox denylist, verification gates, session persistence (resume/undo/diff), and manifest flavors with trust-on-first-use — is complete and merged to `main`.
 - **`2026-07-12` — UAT accepted.** 41 black-box scenarios across CLI, chat, tools, persistence, and flavors run against a live model: 34 pass, 7 minor polish partials, **0 failures, 0 blocking defects**. See [`docs/UAT-report.md`](docs/UAT-report.md).
 - **`2026-07-10` — Core crate landed.** The full `quecto` core: four-function library API, streaming with SSE + non-SSE fallback, and a one-shot / REPL / `--init` CLI. 24 tests, clippy-clean, two dependencies.
@@ -142,7 +143,26 @@ quecto-agent chat
 quecto-agent resume <session-id>
 quecto-agent undo
 quecto-agent diff
+
+# Show version
+quecto-agent --version
 ```
+
+**Chat REPL commands** (type inside an active `chat` session):
+
+| Command | Aliases | Description |
+|---|---|---|
+| `/help` | `/h`, `/?` | Show this command list |
+| `/commands` | `/tools` | List available tools registered for this session |
+| `/model` | — | Show the active model name |
+| `/context` | — | Show session ID, message count, and approx. character count |
+| `/status` | — | Show session ID and current status |
+| `/diff` | — | Summarise file changes made this session |
+| `/undo` | — | Revert the last recorded file change |
+| `/approve` | — | Auto-approve all edits and shell commands for this session |
+| `/deny` | — | Deny all edits and shell commands for this session |
+| `/clear` | — | Forget the conversation (keeps the system prompt) |
+| `/exit` | `/quit`, `/q` | Leave chat |
 
 **What's in it:** multi-step tool use (file read/write/patch, search, git, shell), edits gated by an approval preset, a hard-denylist sandbox (blocks `sudo`, `rm -rf /`, `git push`, etc. even under `--yes`), configurable verification commands, SQLite-backed session persistence, and named flavor manifests (`.quecto/flavors/*.toml`) with content-hash trust-on-first-use.
 
@@ -273,7 +293,7 @@ serde_json = "1"                                 # build bodies, parse responses
 ## Testing
 
 ```bash
-cargo test --workspace   # 179 tests across both crates, clippy-clean
+cargo test --workspace   # 183 tests across both crates, clippy-clean
 cargo test               # 24 tests: unit + HTTP + streaming + CLI (core only, dependency-free mock server)
 cargo clippy --all-targets --workspace
 ```
