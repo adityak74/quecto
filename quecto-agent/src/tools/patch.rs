@@ -165,7 +165,13 @@ fn apply_block(cx: &mut Context, block: &PatchBlock) -> (bool, String) {
             Err(err) => return (false, format!("{}: {}", block.path, err.message)),
         };
         let before = std::fs::read_to_string(&abs).ok();
-        if let Err(err) = std::fs::write(&abs, &block.replace) {
+        let has_crlf = before.as_ref().map(|s| s.contains("\r\n")).unwrap_or(false);
+        let replace = if has_crlf {
+            block.replace.replace('\n', "\r\n")
+        } else {
+            block.replace.clone()
+        };
+        if let Err(err) = std::fs::write(&abs, &replace) {
             return (false, format!("{}: write failed: {err}", block.path));
         }
         let verb = if before.is_some() {
@@ -173,8 +179,8 @@ fn apply_block(cx: &mut Context, block: &PatchBlock) -> (bool, String) {
         } else {
             "created"
         };
-        let line_count = block.replace.lines().count();
-        cx.record_change(block.path.clone(), before, block.replace.clone());
+        let line_count = replace.lines().count();
+        cx.record_change(block.path.clone(), before, replace);
         return (true, format!("{}: {verb} ({line_count} lines)", block.path));
     }
 
@@ -187,7 +193,14 @@ fn apply_block(cx: &mut Context, block: &PatchBlock) -> (bool, String) {
         Err(err) => return (false, format!("{}: {err}", block.path)),
     };
 
-    match apply_to_text(&content, &block.search, &block.replace) {
+    let has_crlf = content.contains("\r\n");
+    let (search, replace) = if has_crlf {
+        (block.search.replace('\n', "\r\n"), block.replace.replace('\n', "\r\n"))
+    } else {
+        (block.search.clone(), block.replace.clone())
+    };
+
+    match apply_to_text(&content, &search, &replace) {
         Err(ApplyErr::NotFound) => (
             false,
             format!(
@@ -328,5 +341,32 @@ let x = 2;
         assert!(ApplyPatch
             .run(&json!({"patch":"garbage with no blocks"}), &mut cx)
             .is_err());
+    }
+
+    #[test]
+    fn apply_patch_crlf_compatibility() {
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        // File with CRLF line endings
+        fs::write(dir.path().join("src/a.rs"), "let x = 1;\r\nlet y = 2;\r\n").unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+
+        // Patch with LF line endings in SEARCH/REPLACE
+        let crlf_patch = "\
+------ src/a.rs
+<<<<<<< SEARCH
+let x = 1;
+let y = 2;
+=======
+let x = 3;
+let y = 4;
+>>>>>>> REPLACE";
+
+        let out = ApplyPatch.run(&json!({"patch": crlf_patch}), &mut cx).unwrap();
+        assert!(out.content.contains("applied"));
+
+        let updated_content = fs::read_to_string(dir.path().join("src/a.rs")).unwrap();
+        // Assert that the patch is applied and uses CRLF endings
+        assert_eq!(updated_content, "let x = 3;\r\nlet y = 4;\r\n");
     }
 }
