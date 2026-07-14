@@ -274,17 +274,16 @@ impl Store {
     }
 
     pub fn take_last_change(&self, id: &str) -> Result<Option<FileChange>, BoxErr> {
-        let row: Option<(i64, String, Option<String>, String)> = self
-            .conn
-            .query_row(
-                "SELECT id, path, before, after FROM file_changes \
-                 WHERE session_id = ?1 ORDER BY seq DESC, id DESC LIMIT 1",
-                [id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-            )
-            .ok();
-        let Some((row_id, path, before, after)) = row else {
-            return Ok(None);
+        let query_result: Result<(i64, String, Option<String>, String), rusqlite::Error> = self.conn.query_row(
+            "SELECT id, path, before, after FROM file_changes \
+             WHERE session_id = ?1 ORDER BY seq DESC, id DESC LIMIT 1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        );
+        let (row_id, path, before, after) = match query_result {
+            Ok(val) => val,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(e.into()),
         };
         self.conn
             .execute("DELETE FROM file_changes WHERE id = ?1", [row_id])?;
