@@ -16,7 +16,7 @@ const DEFAULT_SPINNER_VERBS: &[&str] = &[
     "Wrangling",
 ];
 
-pub(crate) fn parse_spinner_verbs(raw: Option<&str>) -> Vec<String> {
+pub fn parse_spinner_verbs(raw: Option<&str>) -> Vec<String> {
     let verbs: Vec<String> = raw
         .into_iter()
         .flat_map(|value| value.split(','))
