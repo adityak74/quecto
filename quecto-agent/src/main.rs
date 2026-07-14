@@ -515,8 +515,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
             ChatCommand::Status => {
                 let status = store
                     .as_ref()
-                    .and_then(|s| s.latest_session().ok().flatten())
-                    .map(|r| r.status)
+                    .and_then(|s| s.session_status(&session_id).ok().flatten())
                     .unwrap_or_else(|| "unknown".to_string());
                 out.notice(&format!("session {session_id} [{status}]"));
             }
