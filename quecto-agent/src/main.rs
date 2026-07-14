@@ -1,9 +1,9 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use quecto_agent::{
-    cancel_token, content_hash, join_url, load_instructions, new_session_id, parse_command,
-    parse_spinner_verbs, project_raw, render_change_summary, resolve_scoped, seed_context, Agent,
-    ApprovalMode, ChatCommand, Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, Renderer,
-    SqliteRecorder, Store, TrustStore, Verifier,
+    cancel_token, chat_spinner_renderer, content_hash, join_url, load_instructions, new_session_id,
+    parse_command, parse_spinner_verbs, project_raw, render_change_summary, resolve_scoped,
+    seed_context, Agent, ApprovalMode, ChatCommand, Flavor, HttpModel, LineRenderer, Outcome,
+    Policy, Preset, Renderer, SqliteRecorder, Store, TrustStore, Verifier,
 };
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -489,11 +489,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     .register_builtins_filtered(merged.tools.enabled.as_deref())
     .with_policy(build_policy(overrides.approval.as_deref(), &gated))
     .with_renderer(if color {
-        Box::new(LineRenderer::with_spinner(
-            std::io::stdout(),
-            color,
-            spinner_verbs,
-        ))
+        chat_spinner_renderer(spinner_verbs)
     } else {
         Box::new(LineRenderer::new(std::io::stdout(), color))
     });

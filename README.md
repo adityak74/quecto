@@ -182,6 +182,11 @@ Reads the same core env vars as `quecto`, plus a few agent-specific ones:
 | `QUECTO_STATE_DB` | `$XDG_STATE_HOME/quecto/sessions.db` (falls back to `~/.local/state/...`) | SQLite session store path |
 | `QUECTO_TRUST_FILE` | `$XDG_STATE_HOME/quecto/trust` (falls back to `~/.local/state/...`) | Trust-on-first-use hash store for flavor manifests |
 
+`QUECTO_SPINNER_VERBS` replaces the six defaults. Entries are trimmed, empty
+entries are ignored, and an empty-only value falls back to the defaults. The
+spinner is enabled only for `quecto-agent chat` when stdout is a TTY; it stays
+off for piped/non-TTY output.
+
 ```bash
 # Local (Ollama / LM Studio / vLLM) — QUECTO_BASE_URL already defaults here
 export QUECTO_MODEL="qwen2.5-coder"
