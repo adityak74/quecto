@@ -264,7 +264,10 @@ impl Agent {
             if self.cancel.load(Ordering::SeqCst) {
                 break Outcome::Cancelled;
             }
-            let msg = match self.model.complete(&self.messages, &schemas) {
+            self.renderer.working();
+            let completed = self.model.complete(&self.messages, &schemas);
+            self.renderer.working_done();
+            let msg = match completed {
                 Ok(m) => m,
                 Err(e) => break Outcome::Error(e),
             };
@@ -426,8 +429,15 @@ mod tests {
 
     struct CaptureRenderer {
         tools: Arc<Mutex<Vec<String>>>,
+        events: Arc<Mutex<Vec<String>>>,
     }
     impl crate::render::Renderer for CaptureRenderer {
+        fn working(&mut self) {
+            self.events.lock().unwrap().push("working".to_string());
+        }
+        fn working_done(&mut self) {
+            self.events.lock().unwrap().push("working_done".to_string());
+        }
         fn tool(&mut self, name: &str, summary: &str) {
             self.tools.lock().unwrap().push(format!("{name}:{summary}"));
         }
@@ -439,6 +449,7 @@ mod tests {
     #[test]
     fn renderer_receives_tool_activity() {
         let tools = Arc::new(Mutex::new(Vec::new()));
+        let events = Arc::new(Mutex::new(Vec::new()));
         let model = Scripted::new(vec![wants_tool("read_file"), text("done")]);
         let mut a = agent(model)
             .register(Box::new(RecordingNamed {
@@ -447,11 +458,35 @@ mod tests {
             }))
             .with_renderer(Box::new(CaptureRenderer {
                 tools: tools.clone(),
+                events,
             }));
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
         assert_eq!(
             tools.lock().unwrap().clone(),
             vec!["read_file:ok".to_string()]
+        );
+    }
+
+    #[test]
+    fn model_call_brackets_renderer_working_state() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut a = Agent::new(
+            Box::new(Scripted::new(vec![text("done")])),
+            "sys",
+            10,
+            PathBuf::from("."),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        )
+        .with_renderer(Box::new(CaptureRenderer {
+            tools: Arc::new(Mutex::new(Vec::new())),
+            events: events.clone(),
+        }));
+
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        assert_eq!(
+            events.lock().unwrap().clone(),
+            vec!["working", "working_done"]
         );
     }
 
