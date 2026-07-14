@@ -167,7 +167,7 @@ fn apply_block(cx: &mut Context, block: &PatchBlock) -> (bool, String) {
         let before = std::fs::read_to_string(&abs).ok();
         let has_crlf = before.as_ref().map(|s| s.contains("\r\n")).unwrap_or(false);
         let replace = if has_crlf {
-            block.replace.replace('\n', "\r\n")
+            block.replace.replace("\r\n", "\n").replace('\n', "\r\n")
         } else {
             block.replace.clone()
         };
@@ -195,7 +195,10 @@ fn apply_block(cx: &mut Context, block: &PatchBlock) -> (bool, String) {
 
     let has_crlf = content.contains("\r\n");
     let (search, replace) = if has_crlf {
-        (block.search.replace('\n', "\r\n"), block.replace.replace('\n', "\r\n"))
+        (
+            block.search.replace("\r\n", "\n").replace('\n', "\r\n"),
+            block.replace.replace("\r\n", "\n").replace('\n', "\r\n"),
+        )
     } else {
         (block.search.clone(), block.replace.clone())
     };
@@ -368,5 +371,32 @@ let y = 4;
         let updated_content = fs::read_to_string(dir.path().join("src/a.rs")).unwrap();
         // Assert that the patch is applied and uses CRLF endings
         assert_eq!(updated_content, "let x = 3;\r\nlet y = 4;\r\n");
+    }
+
+    #[test]
+    fn apply_patch_crlf_double_conversion() {
+        // File on disk uses CRLF line endings.
+        // The patch blocks themselves already contain \r\n (Windows-pasted patch),
+        // which should NOT produce \r\r\n in the output.
+        let dir = tempdir().unwrap();
+        fs::create_dir(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("src/b.rs"),
+            "fn foo() {\r\n    let x = 1;\r\n}\r\n",
+        )
+        .unwrap();
+        let mut cx = Context::new(dir.path().to_path_buf(), cancel_token());
+        // Patch blocks already contain \r\n inside them (simulating a Windows-pasted patch).
+        let patch = "------ src/b.rs\n<<<<<<< SEARCH\nfn foo() {\r\n    let x = 1;\r\n}\n=======\nfn foo() {\r\n    let x = 99;\r\n}\n>>>>>>> REPLACE";
+        let out = ApplyPatch.run(&json!({"patch": patch}), &mut cx).unwrap();
+        assert!(out.content.contains("applied"), "patch did not apply: {}", out.content);
+        let result = fs::read_to_string(dir.path().join("src/b.rs")).unwrap();
+        // Must not have double CRLF.
+        assert!(
+            !result.contains("\r\r\n"),
+            "double CRLF detected in output: {:?}",
+            result
+        );
+        assert_eq!(result, "fn foo() {\r\n    let x = 99;\r\n}\r\n");
     }
 }
