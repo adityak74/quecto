@@ -32,6 +32,8 @@ mod otel_init {
 
         let _guard = rt.enter();
 
+        let _ = opentelemetry::global::set_error_handler(|_| {});
+
         let tracer = opentelemetry_otlp::new_pipeline()
             .tracing()
             .with_exporter(opentelemetry_otlp::new_exporter().http())

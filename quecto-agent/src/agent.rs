@@ -347,7 +347,7 @@ impl Agent {
                     tracing::Level::INFO,
                     "tool_execute",
                     quecto.tool_name = call.name.as_str(),
-                    quecto.tool_arguments = %call.arguments,
+                    quecto.tool_arguments = %sanitize_arguments(&call.name, &call.arguments),
                     quecto.tool_summary = tracing::field::Empty
                 );
                 #[cfg(feature = "otel")]
@@ -399,6 +399,28 @@ impl Agent {
         };
         self.sync();
         outcome
+    }
+}
+
+#[cfg(feature = "otel")]
+fn sanitize_arguments(name: &str, args: &serde_json::Value) -> String {
+    match name {
+        "run_command" | "write_file" | "apply_patch" => {
+            let mut redacted = args.clone();
+            if let Some(obj) = redacted.as_object_mut() {
+                if obj.contains_key("command") {
+                    obj.insert("command".to_string(), serde_json::Value::String("<redacted>".to_string()));
+                }
+                if obj.contains_key("content") {
+                    obj.insert("content".to_string(), serde_json::Value::String("<redacted>".to_string()));
+                }
+                if obj.contains_key("patch") {
+                    obj.insert("patch".to_string(), serde_json::Value::String("<redacted>".to_string()));
+                }
+            }
+            redacted.to_string()
+        }
+        _ => args.to_string(),
     }
 }
 

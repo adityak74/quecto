@@ -183,9 +183,6 @@ fn message_to_json(m: &Message) -> Value {
     if let Some(id) = &m.tool_call_id {
         obj.insert("tool_call_id".into(), json!(id));
     }
-    if let Some(reasoning) = &m.reasoning_content {
-        obj.insert("reasoning_content".into(), json!(reasoning));
-    }
     Value::Object(obj)
 }
 
