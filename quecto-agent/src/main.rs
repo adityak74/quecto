@@ -9,6 +9,47 @@ use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
+#[cfg(feature = "otel")]
+mod otel_init {
+    pub struct OtelGuard {
+        _rt: tokio::runtime::Runtime,
+    }
+
+    impl Drop for OtelGuard {
+        fn drop(&mut self) {
+            opentelemetry::global::shutdown_tracer_provider();
+        }
+    }
+
+    pub fn init_otel() -> Option<OtelGuard> {
+        // gRPC/HTTP OTLP exporter batch processor runs asynchronously.
+        // Create a dedicated single-threaded runtime to orchestrate exports.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .ok()?;
+
+        let _guard = rt.enter();
+
+        let _ = opentelemetry::global::set_error_handler(|_| {});
+
+        let tracer = opentelemetry_otlp::new_pipeline()
+            .tracing()
+            .with_exporter(opentelemetry_otlp::new_exporter().http())
+            .install_batch(opentelemetry_sdk::runtime::Tokio)
+            .ok()?;
+
+        use tracing_subscriber::prelude::*;
+        let telemetry = tracing_opentelemetry::layer().with_tracer(tracer);
+        let subscriber = tracing_subscriber::registry().with(telemetry);
+
+        tracing::subscriber::set_global_default(subscriber).ok()?;
+
+        Some(OtelGuard { _rt: rt })
+    }
+}
+
 const DEFAULT_SYSTEM: &str =
     "You are quecto-agent, a helpful coding assistant. Answer concisely and accurately.";
 
@@ -66,6 +107,9 @@ enum Command {
 }
 
 fn main() {
+    #[cfg(feature = "otel")]
+    let _otel_guard = otel_init::init_otel();
+
     let cli = Cli::parse();
     let overrides = Overrides {
         flavor: cli.flavor.clone(),
@@ -534,14 +578,21 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
             }
             ChatCommand::Context => {
                 let msg_n = agent.messages.len().saturating_sub(1);
-                let char_count: usize = agent.messages.iter().map(|m| {
-                    m.content.len()
-                        + m.tool_calls
-                            .iter()
-                            .map(|tc| tc.name.len() + tc.arguments.to_string().len())
-                            .sum::<usize>()
-                }).sum();
-                out.notice(&format!("session: {} ({} messages, ~{} chars)", session_id, msg_n, char_count));
+                let char_count: usize = agent
+                    .messages
+                    .iter()
+                    .map(|m| {
+                        m.content.len()
+                            + m.tool_calls
+                                .iter()
+                                .map(|tc| tc.name.len() + tc.arguments.to_string().len())
+                                .sum::<usize>()
+                    })
+                    .sum();
+                out.notice(&format!(
+                    "session: {} ({} messages, ~{} chars)",
+                    session_id, msg_n, char_count
+                ));
             }
             ChatCommand::Status => {
                 let status = store
@@ -571,7 +622,9 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                 agent.clear_history();
                 out.notice(&format!("session {} conversation cleared", session_id));
             }
-            ChatCommand::Tools => { out.notice(&agent.tool_names().join("\n")); }
+            ChatCommand::Tools => {
+                out.notice(&agent.tool_names().join("\n"));
+            }
             ChatCommand::Unknown(name) => {
                 out.notice(&format!("unknown command '/{name}' — try /help"));
             }
@@ -767,5 +820,16 @@ fn diff() {
             eprintln!("quecto-agent: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+#[cfg(test)]
+mod main_tests {
+    #[test]
+    #[cfg(feature = "otel")]
+    fn test_otel_initialization() {
+        // init_otel might return None if a global default subscriber has already been set,
+        // but we want to check that if we call it, it doesn't panic.
+        let _guard = super::otel_init::init_otel();
     }
 }

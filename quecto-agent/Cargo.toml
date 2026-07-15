@@ -19,5 +19,27 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 sha2 = "0.10"
 
+# Optional OpenTelemetry and Tracing Dependencies
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "registry"], optional = true }
+tracing-opentelemetry = { version = "0.22", optional = true }
+opentelemetry = { version = "0.21", features = ["trace"], optional = true }
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio"], optional = true }
+opentelemetry-otlp = { version = "0.14", features = ["http-proto", "reqwest-client"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread"], optional = true }
+
+[features]
+default = []
+otel = [
+    "dep:tracing",
+    "dep:tracing-subscriber",
+    "dep:tracing-opentelemetry",
+    "dep:opentelemetry",
+    "dep:opentelemetry_sdk",
+    "dep:opentelemetry-otlp",
+    "dep:tokio"
+]
+
 [dev-dependencies]
 tempfile = "3"
+
