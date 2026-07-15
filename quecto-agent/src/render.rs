@@ -160,9 +160,9 @@ impl<W: Write + Send + 'static> SpinnerRenderer<W> {
         let verbs = self.spinner.verbs.clone();
         self.spinner.thread = Some(thread::spawn(move || {
             let mut frame = 0;
-            let mut verb = 0;
+            let verb = verbs.first().expect("spinner verbs are never empty");
             loop {
-                let text = format_spinner_frame(SPINNER_FRAMES[frame], &verbs[verb]);
+                let text = format_spinner_frame(SPINNER_FRAMES[frame], verb);
                 let wrote = out
                     .lock()
                     .ok()
@@ -171,7 +171,6 @@ impl<W: Write + Send + 'static> SpinnerRenderer<W> {
                     break;
                 }
                 frame = (frame + 1) % SPINNER_FRAMES.len();
-                verb = (verb + 1) % verbs.len();
                 let _ = started.send(());
                 match wakeup.recv_timeout(Duration::from_millis(120)) {
                     Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -422,6 +421,30 @@ mod tests {
         renderer.notice("ready");
 
         assert_eq!(capture.contents(), "\r⠋ Brewing…\r\x1b[2Kready\n");
+    }
+
+    #[test]
+    fn enabled_spinner_keeps_one_verb_for_the_whole_model_wait() {
+        let capture = Capture::new();
+        let mut renderer = SpinnerRenderer::new(
+            capture.clone(),
+            false,
+            vec!["Brewing".to_string(), "Cooking".to_string()],
+        );
+
+        renderer.working();
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        while !capture.contents().contains("⠙ Brewing…")
+            && std::time::Instant::now() < deadline
+        {
+            thread::yield_now();
+        }
+        renderer.working_done();
+
+        let output = capture.contents();
+        assert!(output.contains("⠋ Brewing…"));
+        assert!(output.contains("⠙ Brewing…"));
+        assert!(!output.contains("Cooking"));
     }
 
     #[test]
