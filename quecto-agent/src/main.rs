@@ -1,9 +1,9 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use quecto_agent::{
-    cancel_token, content_hash, join_url, load_instructions, new_session_id, parse_command,
-    project_raw, render_change_summary, resolve_scoped, seed_context, Agent, ApprovalMode,
-    ChatCommand, Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, Renderer,
-    SqliteRecorder, Store, TrustStore, Verifier,
+    cancel_token, chat_spinner_renderer, content_hash, join_url, load_instructions, new_session_id,
+    parse_command, parse_spinner_verbs, project_raw, render_change_summary, resolve_scoped,
+    seed_context, Agent, ApprovalMode, ChatCommand, Flavor, HttpModel, LineRenderer, Outcome,
+    Policy, Preset, Renderer, SqliteRecorder, Store, TrustStore, Verifier,
 };
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -471,6 +471,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         .unwrap_or(20);
 
     let color = std::io::stdout().is_terminal();
+    let spinner_verbs = parse_spinner_verbs(std::env::var("QUECTO_SPINNER_VERBS").ok().as_deref());
     let approval = if auto_approve {
         ApprovalMode::AutoApprove
     } else {
@@ -487,7 +488,11 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
     .with_policy(build_policy(overrides.approval.as_deref(), &gated))
-    .with_renderer(Box::new(LineRenderer::new(std::io::stdout(), color)));
+    .with_renderer(if color {
+        chat_spinner_renderer(spinner_verbs)
+    } else {
+        Box::new(LineRenderer::new(std::io::stdout(), color))
+    });
     agent = attach_verifier(agent, no_verify, &gated);
 
     let store = open_store();
