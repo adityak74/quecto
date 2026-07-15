@@ -8,6 +8,7 @@ pub struct Message {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
     pub tool_call_id: Option<String>,
+    pub reasoning_content: Option<String>,
 }
 
 impl Message {
@@ -17,6 +18,7 @@ impl Message {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 
@@ -34,6 +36,7 @@ impl Message {
             content: c.into(),
             tool_calls: Vec::new(),
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 
@@ -43,6 +46,7 @@ impl Message {
             content: content.into(),
             tool_calls,
             tool_call_id: None,
+            reasoning_content: None,
         }
     }
 
@@ -52,6 +56,7 @@ impl Message {
             content: content.into(),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
+            reasoning_content: None,
         }
     }
 }
@@ -70,6 +75,18 @@ pub struct AssistantMessage {
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: String,
+    pub reasoning_content: Option<String>,
+}
+
+pub fn extract_think_tags(content: &str) -> (Option<String>, String) {
+    if let (Some(start), Some(end)) = (content.find("<think>"), content.find("</think>")) {
+        if start < end {
+            let reasoning = content[start + 7..end].trim().to_string();
+            let cleaned_content = format!("{}{}", &content[..start], &content[end + 8..]).trim().to_string();
+            return (Some(reasoning), cleaned_content);
+        }
+    }
+    (None, content.to_string())
 }
 
 /// Parse an OpenAI-compatible buffered chat response (native tool-call protocol)
@@ -81,7 +98,7 @@ pub fn parse_assistant(resp: &Value) -> Result<AssistantMessage, BoxErr> {
         .and_then(|a| a.first())
         .ok_or("no choices in response")?;
     let message = choice.get("message").ok_or("no message in choice")?;
-    let content = message
+    let content_raw = message
         .get("content")
         .and_then(|c| c.as_str())
         .unwrap_or("")
@@ -91,6 +108,17 @@ pub fn parse_assistant(resp: &Value) -> Result<AssistantMessage, BoxErr> {
         .and_then(|f| f.as_str())
         .unwrap_or("")
         .to_string();
+
+    let mut reasoning_content = message
+        .get("reasoning_content")
+        .or_else(|| message.get("thinking"))
+        .and_then(|r| r.as_str())
+        .map(|s| s.to_string());
+
+    let (extracted_reasoning, content) = extract_think_tags(&content_raw);
+    if reasoning_content.is_none() {
+        reasoning_content = extracted_reasoning;
+    }
 
     let mut tool_calls = Vec::new();
     if let Some(calls) = message.get("tool_calls").and_then(|t| t.as_array()) {
@@ -124,6 +152,7 @@ pub fn parse_assistant(resp: &Value) -> Result<AssistantMessage, BoxErr> {
         content,
         tool_calls,
         finish_reason,
+        reasoning_content,
     })
 }
 
@@ -153,6 +182,9 @@ fn message_to_json(m: &Message) -> Value {
     }
     if let Some(id) = &m.tool_call_id {
         obj.insert("tool_call_id".into(), json!(id));
+    }
+    if let Some(reasoning) = &m.reasoning_content {
+        obj.insert("reasoning_content".into(), json!(reasoning));
     }
     Value::Object(obj)
 }
@@ -260,5 +292,21 @@ mod tests {
         assert_eq!(body["messages"][0]["role"], "tool");
         assert_eq!(body["messages"][0]["tool_call_id"], "c1");
         assert_eq!(body["messages"][0]["content"], "file contents");
+    }
+
+    #[test]
+    fn parses_reasoning_content_field() {
+        let r = json!({"choices":[{"message":{"content":"hello", "reasoning_content":"thinking 123"},"finish_reason":"stop"}]});
+        let m = parse_assistant(&r).unwrap();
+        assert_eq!(m.content, "hello");
+        assert_eq!(m.reasoning_content, Some("thinking 123".to_string()));
+    }
+
+    #[test]
+    fn parses_think_tags_in_content() {
+        let r = json!({"choices":[{"message":{"content":"<think>\nthinking 456\n</think>\nhello"},"finish_reason":"stop"}]});
+        let m = parse_assistant(&r).unwrap();
+        assert_eq!(m.content, "hello");
+        assert_eq!(m.reasoning_content, Some("thinking 456".to_string()));
     }
 }
