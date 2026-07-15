@@ -406,19 +406,19 @@ impl Agent {
 fn sanitize_arguments(name: &str, args: &serde_json::Value) -> String {
     match name {
         "run_command" | "write_file" | "apply_patch" => {
-            let mut redacted = args.clone();
-            if let Some(obj) = redacted.as_object_mut() {
-                if obj.contains_key("command") {
-                    obj.insert("command".to_string(), serde_json::Value::String("<redacted>".to_string()));
+            if let Some(obj) = args.as_object() {
+                let mut map = serde_json::Map::new();
+                for (k, v) in obj {
+                    if k == "command" || k == "content" || k == "patch" {
+                        map.insert(k.clone(), serde_json::Value::String("<redacted>".to_string()));
+                    } else {
+                        map.insert(k.clone(), v.clone());
+                    }
                 }
-                if obj.contains_key("content") {
-                    obj.insert("content".to_string(), serde_json::Value::String("<redacted>".to_string()));
-                }
-                if obj.contains_key("patch") {
-                    obj.insert("patch".to_string(), serde_json::Value::String("<redacted>".to_string()));
-                }
+                serde_json::Value::Object(map).to_string()
+            } else {
+                args.to_string()
             }
-            redacted.to_string()
         }
         _ => args.to_string(),
     }
