@@ -148,6 +148,10 @@ quecto-agent diff
 quecto-agent --version
 ```
 
+Interactive chat with the rotating loading verbs:
+
+![quecto-agent chat in action](quecto-agent-in-action-verbs.png)
+
 **Chat REPL commands** (type inside an active `chat` session):
 
 | Command | Aliases | Description |
