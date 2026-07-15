@@ -178,14 +178,14 @@ Reads the same core env vars as `quecto`, plus a few agent-specific ones:
 | `QUECTO_SYSTEM` | built-in agent system prompt | Overrides the base system prompt (repo rules + seed context are still appended after it) |
 | `QUECTO_MAX_STEPS` | `20` | Cap on agent loop steps |
 | `QUECTO_VERIFY` | *(unset)* | Newline-separated shell commands run as a post-edit verification gate |
-| `QUECTO_SPINNER_VERBS` | `Thinking, Working, Crafting, Computing, Pondering, Wrangling` | Comma-separated replacement verbs for the interactive chat spinner |
+| `QUECTO_SPINNER_VERBS` | built-in verb list | Comma-separated replacement verbs for the interactive chat spinner |
 | `QUECTO_STATE_DB` | `$XDG_STATE_HOME/quecto/sessions.db` (falls back to `~/.local/state/...`) | SQLite session store path |
 | `QUECTO_TRUST_FILE` | `$XDG_STATE_HOME/quecto/trust` (falls back to `~/.local/state/...`) | Trust-on-first-use hash store for flavor manifests |
 
-`QUECTO_SPINNER_VERBS` replaces the six defaults. Entries are trimmed, empty
-entries are ignored, and an empty-only value falls back to the defaults. The
-spinner is enabled only for `quecto-agent chat` when stdout is a TTY; it stays
-off for piped/non-TTY output.
+`QUECTO_SPINNER_VERBS` replaces the built-in verb list. Entries are trimmed,
+empty entries are ignored, and an empty-only value falls back to the defaults.
+The spinner is enabled only for `quecto-agent chat` when stdout is a TTY; it
+stays off for piped/non-TTY output.
 
 ```bash
 # Local (Ollama / LM Studio / vLLM) — QUECTO_BASE_URL already defaults here
@@ -197,7 +197,7 @@ export QUECTO_BASE_URL="https://api.openai.com/v1"
 export QUECTO_API_KEY="sk-..."
 export QUECTO_MODEL="gpt-4o"
 
-# Customize the interactive chat spinner (replaces the compact defaults)
+# Customize the interactive chat spinner (replaces the built-in defaults)
 export QUECTO_SPINNER_VERBS="Thinking,Planning,Coding"
 quecto-agent chat
 ```

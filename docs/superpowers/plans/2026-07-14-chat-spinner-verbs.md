@@ -13,7 +13,7 @@
 - Scope is only `quecto-agent chat`; do not alter the core `quecto` REPL.
 - Do not add a dependency or async runtime.
 - `QUECTO_SPINNER_VERBS` is a comma-separated replacement list; trim whitespace, ignore empty entries, and fall back to built-in defaults when no usable entries remain.
-- Built-in verbs remain the compact list `Thinking, Working, Crafting, Computing, Pondering, Wrangling`.
+- Built-in verbs use the full supplied playful verb list stored in `DEFAULT_SPINNER_VERBS`.
 - Spinner output is disabled for non-TTY output and is never recorded or sent to the model.
 
 ---
