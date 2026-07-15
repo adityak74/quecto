@@ -79,10 +79,16 @@ pub struct AssistantMessage {
 }
 
 pub fn extract_think_tags(content: &str) -> (Option<String>, String) {
-    if let (Some(start), Some(end)) = (content.find("<think>"), content.find("</think>")) {
-        if start < end {
-            let reasoning = content[start + 7..end].trim().to_string();
-            let cleaned_content = format!("{}{}", &content[..start], &content[end + 8..]).trim().to_string();
+    if let Some(start) = content.find("<think>") {
+        if let Some(end) = content.find("</think>") {
+            if start < end {
+                let reasoning = content[start + 7..end].trim().to_string();
+                let cleaned_content = format!("{}{}", &content[..start], &content[end + 8..]).trim().to_string();
+                return (Some(reasoning), cleaned_content);
+            }
+        } else {
+            let reasoning = content[start + 7..].trim().to_string();
+            let cleaned_content = content[..start].trim().to_string();
             return (Some(reasoning), cleaned_content);
         }
     }
@@ -165,7 +171,12 @@ pub fn messages_to_body(model: &str, messages: &[Message]) -> Value {
 fn message_to_json(m: &Message) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("role".into(), json!(m.role));
-    obj.insert("content".into(), json!(m.content));
+    let content = if let Some(reasoning) = &m.reasoning_content {
+        format!("<think>\n{}\n</think>\n{}", reasoning, m.content)
+    } else {
+        m.content.clone()
+    };
+    obj.insert("content".into(), json!(content));
     if !m.tool_calls.is_empty() {
         let calls: Vec<Value> = m
             .tool_calls
@@ -239,10 +250,12 @@ impl Model for HttpModel {
         #[cfg(feature = "otel")]
         if let Ok(msg) = &parsed {
             if let Some(reasoning) = &msg.reasoning_content {
-                tracing::event!(tracing::Level::INFO, name = "model_thinking", content = %reasoning);
+                let redacted_reasoning = crate::sandbox::redact_secrets(reasoning);
+                tracing::event!(tracing::Level::INFO, name = "model_thinking", content = %redacted_reasoning);
             }
             if !msg.content.is_empty() {
-                tracing::event!(tracing::Level::INFO, name = "model_response", content = %msg.content);
+                let redacted_content = crate::sandbox::redact_secrets(&msg.content);
+                tracing::event!(tracing::Level::INFO, name = "model_response", content = %redacted_content);
             }
         }
 
@@ -328,5 +341,24 @@ mod tests {
         let m = parse_assistant(&r).unwrap();
         assert_eq!(m.content, "hello");
         assert_eq!(m.reasoning_content, Some("thinking 456".to_string()));
+    }
+
+    #[test]
+    fn serializes_reasoning_content_with_think_tags() {
+        let mut m = Message::assistant("hello");
+        m.reasoning_content = Some("thinking 123".to_string());
+        let body = messages_to_body("m", &[m]);
+        assert_eq!(
+            body["messages"][0]["content"],
+            "<think>\nthinking 123\n</think>\nhello"
+        );
+    }
+
+    #[test]
+    fn parses_think_tags_missing_closing_tag() {
+        let r = json!({"choices":[{"message":{"content":"<think>\nthinking 789\n"},"finish_reason":"length"}]});
+        let m = parse_assistant(&r).unwrap();
+        assert_eq!(m.content, "");
+        assert_eq!(m.reasoning_content, Some("thinking 789".to_string()));
     }
 }
