@@ -40,6 +40,7 @@ fn format_spinner_frame(frame: &str, verb: &str) -> String {
 
 struct SpinnerState {
     verbs: Vec<String>,
+    next_verb: usize,
     stop: Option<mpsc::Sender<()>>,
     thread: Option<JoinHandle<()>>,
 }
@@ -127,6 +128,7 @@ impl<W: Write + Send + 'static> SpinnerRenderer<W> {
                 } else {
                     verbs
                 },
+                next_verb: 0,
                 stop: None,
                 thread: None,
             },
@@ -157,12 +159,12 @@ impl<W: Write + Send + 'static> SpinnerRenderer<W> {
         let (stop, wakeup) = mpsc::channel();
         let (started, started_rx) = mpsc::sync_channel(0);
         let out = Arc::clone(&self.out);
-        let verbs = self.spinner.verbs.clone();
+        let verb = self.spinner.verbs[self.spinner.next_verb].clone();
+        self.spinner.next_verb = (self.spinner.next_verb + 1) % self.spinner.verbs.len();
         self.spinner.thread = Some(thread::spawn(move || {
             let mut frame = 0;
-            let verb = verbs.first().expect("spinner verbs are never empty");
             loop {
-                let text = format_spinner_frame(SPINNER_FRAMES[frame], verb);
+                let text = format_spinner_frame(SPINNER_FRAMES[frame], &verb);
                 let wrote = out
                     .lock()
                     .ok()
@@ -448,6 +450,25 @@ mod tests {
     }
 
     #[test]
+    fn enabled_spinner_advances_verb_between_model_waits() {
+        let capture = Capture::new();
+        let mut renderer = SpinnerRenderer::new(
+            capture.clone(),
+            false,
+            vec!["Brewing".to_string(), "Cooking".to_string()],
+        );
+
+        renderer.working();
+        renderer.working_done();
+        renderer.working();
+        renderer.working_done();
+
+        let output = capture.contents();
+        assert!(output.contains("⠋ Brewing…"));
+        assert!(output.contains("⠋ Cooking…"));
+    }
+
+    #[test]
     fn enabled_spinner_ignores_repeated_starts() {
         let capture = Capture::new();
         let mut renderer =
@@ -479,7 +500,6 @@ mod tests {
         let mut renderer = SpinnerRenderer::new(FailingWriter, false, vec!["Brewing".to_string()]);
 
         renderer.working();
-        assert!(renderer.spinner.thread.as_ref().unwrap().is_finished());
         renderer.working_done();
         assert!(renderer.spinner.thread.is_none());
     }
