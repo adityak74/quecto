@@ -50,6 +50,7 @@
 
 ## 📣 Announcements
 
+- **`2026-07-15` — OpenTelemetry (OTEL) support.** Gated behind the `otel` feature flag, `quecto-agent` now supports end-to-end tracing for run loops, steps, tool dispatches (with argument sanitization), and model completions—including parsed reasoning/thinking traces.
 - **`2026-07-14` — Bug-fix release.** Seven issues from a post-UAT audit fixed: CRLF patch compatibility (with double-conversion guard), `take_last_change` DB error propagation, millisecond timestamps, `record_message` transaction safety, `/status` session-specific querying, `/context` character count, and REPL UX polish (aliases, `--version`, clear confirmation). 183 tests, 0 failures.
 - **`2026-07-12` — `quecto-agent` shipped (M1–M7b).** The full coding agent — tool use, editing under approval, sandbox denylist, verification gates, session persistence (resume/undo/diff), and manifest flavors with trust-on-first-use — is complete and merged to `main`.
 - **`2026-07-12` — UAT accepted.** 41 black-box scenarios across CLI, chat, tools, persistence, and flavors run against a live model: 34 pass, 7 minor polish partials, **0 failures, 0 blocking defects**. See [`docs/UAT-report.md`](docs/UAT-report.md).
@@ -290,7 +291,7 @@ Because the primitives neither shape the request nor discard the response, you c
 | Component | Home | Status |
 |---|---|---|
 | Model adapter (talk to the model) | **`quecto` core** | ✅ shipped |
-| Agent loop · tools · sandbox · verify · session · flavors/trust | `quecto-agent` | ✅ shipped, UAT accepted |
+| Agent loop · tools · sandbox · verify · session · flavors/trust · OTEL tracing | `quecto-agent` | ✅ shipped, UAT accepted |
 | MCP integrations | `quecto-mcp` | 🔮 planned |
 
 The core never gains an async runtime, tool execution, or state — companions build on top of `quecto_raw`.
