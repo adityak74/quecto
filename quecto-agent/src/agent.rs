@@ -218,6 +218,16 @@ impl Agent {
     /// any tool calls, feed results back, and finish when the model stops
     /// requesting tools. Unknown tools are reported back as an error observation.
     pub fn run(&mut self, task: &str) -> Outcome {
+        #[cfg(feature = "otel")]
+        let span = tracing::span!(
+            tracing::Level::INFO,
+            "agent_run",
+            quecto.task = task,
+            quecto.max_steps = self.max_steps
+        );
+        #[cfg(feature = "otel")]
+        let _guard = span.enter();
+
         self.messages.push(Message::user(task));
         self.run_loop()
     }
@@ -225,6 +235,15 @@ impl Agent {
     /// Continue a seeded transcript (from `with_messages`) without appending a
     /// new task.
     pub fn resume(&mut self) -> Outcome {
+        #[cfg(feature = "otel")]
+        let span = tracing::span!(
+            tracing::Level::INFO,
+            "agent_run",
+            quecto.max_steps = self.max_steps
+        );
+        #[cfg(feature = "otel")]
+        let _guard = span.enter();
+
         self.run_loop()
     }
 
@@ -264,6 +283,16 @@ impl Agent {
             if self.cancel.load(Ordering::SeqCst) {
                 break Outcome::Cancelled;
             }
+
+            #[cfg(feature = "otel")]
+            let step_span = tracing::span!(
+                tracing::Level::INFO,
+                "agent_step",
+                quecto.step_number = step
+            );
+            #[cfg(feature = "otel")]
+            let _step_guard = step_span.enter();
+
             self.renderer.working();
             let completed = self.model.complete(&self.messages, &schemas);
             self.renderer.working_done();
@@ -271,10 +300,13 @@ impl Agent {
                 Ok(m) => m,
                 Err(e) => break Outcome::Error(e),
             };
-            self.messages.push(Message::assistant_with_calls(
+            let mut assistant_msg = Message::assistant_with_calls(
                 msg.content.clone(),
                 msg.tool_calls.clone(),
-            ));
+            );
+            assistant_msg.reasoning_content = msg.reasoning_content.clone();
+            self.messages.push(assistant_msg);
+
             if msg.tool_calls.is_empty() {
                 if let Some(verifier) = &self.verifier {
                     if !verifier.is_empty() && !self.cx.changes().is_empty() {
@@ -309,6 +341,18 @@ impl Agent {
                     stop = Some(Outcome::Cancelled);
                     break;
                 }
+
+                #[cfg(feature = "otel")]
+                let tool_span = tracing::span!(
+                    tracing::Level::INFO,
+                    "tool_execute",
+                    quecto.tool_name = call.name.as_str(),
+                    quecto.tool_arguments = %call.arguments,
+                    quecto.tool_summary = tracing::field::Empty
+                );
+                #[cfg(feature = "otel")]
+                let _tool_guard = tool_span.enter();
+
                 let out = match self.policy.decide(call) {
                     Decision::Allow => self.registry.dispatch(call, &mut self.cx),
                     Decision::Ask if self.approval.allows(call) => {
@@ -324,6 +368,13 @@ impl Agent {
                     break;
                 }
                 self.renderer.tool(&call.name, &out.summary);
+
+                #[cfg(feature = "otel")]
+                {
+                    tool_span.record("quecto.tool_summary", &out.summary);
+                    tracing::event!(tracing::Level::INFO, name = "tool_output", content = %out.content);
+                }
+
                 if out.summary == "denied" {
                     denial_streak += 1;
                 } else {
@@ -1100,6 +1151,27 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dir.path().join("hello.txt")).unwrap(),
             "hi there\n"
+        );
+    }
+
+    #[test]
+    fn propagates_reasoning_content() {
+        let msg = AssistantMessage {
+            content: "hello".to_string(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            reasoning_content: Some("I am thinking".to_string()),
+        };
+        let model = Scripted::new(vec![msg]);
+        let mut a = agent(model);
+        match a.run("hi") {
+            Outcome::Complete(s) => assert_eq!(s, "hello"),
+            _ => panic!("expected Complete"),
+        }
+        assert_eq!(a.messages.len(), 3);
+        assert_eq!(
+            a.messages[2].reasoning_content,
+            Some("I am thinking".to_string())
         );
     }
 }
