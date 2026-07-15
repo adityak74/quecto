@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS messages (
     role TEXT NOT NULL,
     content TEXT NOT NULL,
     tool_calls TEXT,
-    tool_call_id TEXT
+    tool_call_id TEXT,
+    reasoning_content TEXT
 );
 CREATE TABLE IF NOT EXISTS file_changes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,6 +104,8 @@ fn calls_from_json(raw: Option<String>) -> Vec<ToolCall> {
 impl Store {
     fn init(conn: Connection) -> Result<Store, BoxErr> {
         conn.execute_batch(SCHEMA)?;
+        // Auto-migrate schema: add reasoning_content to messages if missing in existing DBs
+        let _ = conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT", []);
         Ok(Store { conn })
     }
 
@@ -169,8 +172,8 @@ impl Store {
     pub fn record_message(&mut self, id: &str, seq: i64, m: &Message) -> Result<(), BoxErr> {
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, reasoning_content) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             (
                 id,
                 seq,
@@ -178,6 +181,7 @@ impl Store {
                 &m.content,
                 calls_to_json(&m.tool_calls),
                 &m.tool_call_id,
+                &m.reasoning_content,
             ),
         )?;
         tx.execute(
@@ -245,7 +249,7 @@ impl Store {
 
     pub fn load_messages(&self, id: &str) -> Result<Vec<Message>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, content, tool_calls, tool_call_id FROM messages \
+            "SELECT role, content, tool_calls, tool_call_id, reasoning_content FROM messages \
              WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([id], |row| {
@@ -253,12 +257,13 @@ impl Store {
             let content: String = row.get(1)?;
             let tool_calls: Option<String> = row.get(2)?;
             let tool_call_id: Option<String> = row.get(3)?;
+            let reasoning_content: Option<String> = row.get(4)?;
             Ok(Message {
                 role,
                 content,
                 tool_calls: calls_from_json(tool_calls),
                 tool_call_id,
-                reasoning_content: None,
+                reasoning_content,
             })
         })?;
         let mut out = Vec::new();
@@ -446,5 +451,17 @@ mod tests {
     #[test]
     fn empty_summary_is_explicit() {
         assert_eq!(render_change_summary(&[]), "no recorded changes");
+    }
+
+    #[test]
+    fn messages_round_trip_with_reasoning_content() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        let mut m = Message::assistant("response");
+        m.reasoning_content = Some("thinking trace".to_string());
+        store.record_message("s1", 0, &m).unwrap();
+        let loaded = store.load_messages("s1").unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].reasoning_content, Some("thinking trace".to_string()));
     }
 }

@@ -107,10 +107,13 @@ enum Command {
 }
 
 fn main() {
-    #[cfg(feature = "otel")]
-    let _otel_guard = otel_init::init_otel();
-
     let cli = Cli::parse();
+
+    #[cfg(feature = "otel")]
+    let _otel_guard = match &cli.command {
+        Some(Command::Chat) | Some(Command::Resume { .. }) | None => otel_init::init_otel(),
+        _ => None,
+    };
     let overrides = Overrides {
         flavor: cli.flavor.clone(),
         model: cli.model.clone(),

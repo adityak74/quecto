@@ -219,10 +219,12 @@ impl Agent {
     /// requesting tools. Unknown tools are reported back as an error observation.
     pub fn run(&mut self, task: &str) -> Outcome {
         #[cfg(feature = "otel")]
+        let redacted_task = crate::sandbox::redact_secrets(task);
+        #[cfg(feature = "otel")]
         let span = tracing::span!(
             tracing::Level::INFO,
             "agent_run",
-            quecto.task = task,
+            quecto.task = redacted_task.as_str(),
             quecto.max_steps = self.max_steps
         );
         #[cfg(feature = "otel")]
@@ -343,11 +345,15 @@ impl Agent {
                 }
 
                 #[cfg(feature = "otel")]
+                let sanitized_args = sanitize_arguments(&call.name, &call.arguments);
+                #[cfg(feature = "otel")]
+                let redacted_args = crate::sandbox::redact_secrets(&sanitized_args);
+                #[cfg(feature = "otel")]
                 let tool_span = tracing::span!(
                     tracing::Level::INFO,
                     "tool_execute",
                     quecto.tool_name = call.name.as_str(),
-                    quecto.tool_arguments = %sanitize_arguments(&call.name, &call.arguments),
+                    quecto.tool_arguments = %redacted_args,
                     quecto.tool_summary = tracing::field::Empty
                 );
                 #[cfg(feature = "otel")]
@@ -372,7 +378,8 @@ impl Agent {
                 #[cfg(feature = "otel")]
                 {
                     tool_span.record("quecto.tool_summary", &out.summary);
-                    tracing::event!(tracing::Level::INFO, name = "tool_output", content = %out.content);
+                    let redacted_out = crate::sandbox::redact_secrets(&out.content);
+                    tracing::event!(tracing::Level::INFO, name = "tool_output", content = %redacted_out);
                 }
 
                 if out.summary == "denied" {

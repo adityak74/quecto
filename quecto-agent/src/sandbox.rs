@@ -268,6 +268,19 @@ fn secret_values() -> Vec<Vec<u8>> {
     values
 }
 
+pub(crate) fn redact_secrets(input: &str) -> String {
+    let secrets = secret_values();
+    let mut output = input.to_string();
+    for secret_bytes in &secrets {
+        if let Ok(secret_str) = std::str::from_utf8(secret_bytes) {
+            if !secret_str.is_empty() {
+                output = output.replace(secret_str, "[REDACTED]");
+            }
+        }
+    }
+    output
+}
+
 fn contains_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
