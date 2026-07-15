@@ -216,6 +216,17 @@ impl HttpModel {
 
 impl Model for HttpModel {
     fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
+        #[cfg(feature = "otel")]
+        let span = tracing::span!(
+            tracing::Level::INFO,
+            "model_complete",
+            quecto.model = self.model.as_str(),
+            quecto.messages_sent = messages.len(),
+            quecto.tools_provided = tools.len()
+        );
+        #[cfg(feature = "otel")]
+        let _guard = span.enter();
+
         let mut body = messages_to_body(&self.model, messages);
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
@@ -226,7 +237,19 @@ impl Model for HttpModel {
             headers.push(("Authorization", a.as_str()));
         }
         let resp = quecto::quecto_raw(&self.url, &headers, body)?;
-        parse_assistant(&resp)
+        let parsed = parse_assistant(&resp);
+
+        #[cfg(feature = "otel")]
+        if let Ok(msg) = &parsed {
+            if let Some(reasoning) = &msg.reasoning_content {
+                tracing::event!(tracing::Level::INFO, name = "model_thinking", content = %reasoning);
+            }
+            if !msg.content.is_empty() {
+                tracing::event!(tracing::Level::INFO, name = "model_response", content = %msg.content);
+            }
+        }
+
+        parsed
     }
 }
 
