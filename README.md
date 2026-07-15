@@ -221,6 +221,24 @@ See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test resu
 
 There's no encryption or expiry on that store — it's a local dev database, not a hardened secrets store. Avoid pasting anything sensitive into a session, or point `QUECTO_STATE_DB` at somewhere ephemeral (e.g. `/tmp`) if you need to.
 
+### Telemetry & Tracing (OpenTelemetry)
+
+When compiled with the optional `otel` feature flag, `quecto-agent` supports end-to-end tracing via OpenTelemetry over OTLP/HTTP:
+
+```bash
+# Build the binary with OpenTelemetry support
+cargo build --release -p quecto-agent --features otel
+
+# Run a task; traces are exported to http://localhost:4318/v1/traces by default
+export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
+./target/release/quecto-agent "some task"
+```
+
+The tracing subscriber captures:
+* **Hierarchical Spans**: `agent_run` (overall agent lifecycle), `agent_step` (each loop step), and `tool_execute` (tool dispatching).
+* **Security & GDPR**: Secrets, passwords, and tokens matching standard environment patterns (e.g. `API_KEY`, `PASSWORD`) are automatically redacted from trace attributes and event logs. Large argument payloads (like tool command strings or files) are sanitized to prevent memory overhead and data leakage.
+* **Reasoning traces**: Model-specific intermediate reasoning traces (both DeepSeek-style `reasoning_content` fields and tag-enclosed `<think>...</think>` outputs) are extracted, logged as tracing events (`model_thinking`), persisted in SQLite, and safely re-embedded back to the model on subsequent turns to maintain thinking context.
+
 ### BYOC — Bring Your Own Config
 
 Nothing in quecto is hardcoded to a vendor, a model, or a persona. Every layer is swappable via plain env vars and files, no forking required:
