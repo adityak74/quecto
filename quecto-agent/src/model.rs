@@ -118,6 +118,7 @@ pub fn parse_assistant(resp: &Value) -> Result<AssistantMessage, BoxErr> {
     let mut reasoning_content = message
         .get("reasoning_content")
         .or_else(|| message.get("thinking"))
+        .or_else(|| message.get("reasoning"))
         .and_then(|r| r.as_str())
         .map(|s| s.to_string());
 
