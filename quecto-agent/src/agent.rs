@@ -392,6 +392,7 @@ mod tests {
             content: c.to_string(),
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
+            reasoning_content: None,
         }
     }
 
@@ -404,6 +405,7 @@ mod tests {
                 arguments: json!({}),
             }],
             finish_reason: "tool_calls".to_string(),
+            reasoning_content: None,
         }
     }
 
@@ -832,6 +834,7 @@ mod tests {
                 },
             ],
             finish_reason: "tool_calls".into(),
+            reasoning_content: None,
         };
         let mut a = Agent::new(
             Box::new(Scripted::new(vec![call])),
@@ -857,6 +860,7 @@ mod tests {
                 arguments: json!({"path":"a.txt","content":"hi\n"}),
             }],
             finish_reason: "tool_calls".into(),
+            reasoning_content: None,
         };
         let model = Scripted::new(vec![write, text("done")]);
         let mut a = Agent::new(
@@ -887,6 +891,7 @@ mod tests {
                 arguments: json!({"path":"a.txt","content":"hi\n"}),
             }],
             finish_reason: "tool_calls".into(),
+            reasoning_content: None,
         };
         // After the edit the model keeps trying to stop; the failing gate
         // should stop cleanly before the step limit.
@@ -921,6 +926,7 @@ mod tests {
                 arguments: json!({"path":"a.txt","content":"bad\n"}),
             }],
             finish_reason: "tool_calls".into(),
+            reasoning_content: None,
         };
         let write_good = AssistantMessage {
             content: String::new(),
@@ -930,6 +936,7 @@ mod tests {
                 arguments: json!({"path":"a.txt","content":"good\n"}),
             }],
             finish_reason: "tool_calls".into(),
+            reasoning_content: None,
         };
         let model = Scripted::new(vec![write_bad, text("not yet"), write_good, text("done")]);
         let mut a = Agent::new(
@@ -1011,6 +1018,7 @@ mod tests {
                 arguments: json!({"path":"a.txt","content":"hi\n"}),
             }],
             finish_reason: "tool_calls".into(),
+            reasoning_content: None,
         };
         let model = Scripted::new(vec![write, text("done")]);
         let mut a = Agent::new(
@@ -1073,6 +1081,7 @@ mod tests {
                 arguments: json!({"path":"hello.txt","content":"hi there\n"}),
             }],
             finish_reason: "tool_calls".into(),
+            reasoning_content: None,
         };
         let model = Scripted::new(vec![call, text("done")]);
         let mut a = Agent::new(

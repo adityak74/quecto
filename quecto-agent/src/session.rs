@@ -258,6 +258,7 @@ impl Store {
                 content,
                 tool_calls: calls_from_json(tool_calls),
                 tool_call_id,
+                reasoning_content: None,
             })
         })?;
         let mut out = Vec::new();
