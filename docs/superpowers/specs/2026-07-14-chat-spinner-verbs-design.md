@@ -31,11 +31,11 @@ export QUECTO_SPINNER_VERBS="Brewing,Refactoring,Ship-shaping"
 
 Parsing trims whitespace and ignores empty entries. A configured value with no usable entries falls back to the built-in defaults.
 
-The built-in list is intentionally small to keep the harness lightweight:
+The built-in list contains the full supplied playful verb set; it is stored as
+static strings and adds no dependency or runtime cost beyond the binary data.
 
-```text
-Thinking, Working, Crafting, Computing, Pondering, Wrangling
-```
+The authoritative list lives in `DEFAULT_SPINNER_VERBS` in
+`quecto-agent/src/render.rs`; it includes all verbs supplied for this feature.
 
 ## Design
 

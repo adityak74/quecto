@@ -5,12 +5,36 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 const DEFAULT_SPINNER_VERBS: &[&str] = &[
-    "Thinking",
-    "Working",
-    "Crafting",
-    "Computing",
-    "Pondering",
-    "Wrangling",
+    "Accomplishing", "Actioning", "Actualizing", "Architecting", "Baking", "Beaming",
+    "Beboppin'", "Befuddling", "Billowing", "Blanching", "Bloviating", "Boogieing",
+    "Boondoggling", "Booping", "Bootstrapping", "Brewing", "Burrowing", "Calculating",
+    "Canoodling", "Caramelizing", "Cascading", "Catapulting", "Cerebrating", "Channeling",
+    "Channelling", "Choreographing", "Churning", "Clauding", "Coalescing", "Cogitating",
+    "Combobulating", "Composing", "Computing", "Concocting", "Considering", "Contemplating",
+    "Cooking", "Crafting", "Creating", "Crunching", "Crystallizing", "Cultivating",
+    "Deciphering", "Deliberating", "Determining", "Dilly-dallying", "Discombobulating", "Doing",
+    "Doodling", "Drizzling", "Ebbing", "Effecting", "Elucidating", "Embellishing", "Enchanting",
+    "Envisioning", "Evaporating", "Fermenting", "Fiddle-faddling", "Finagling", "Flambeing",
+    "Flibbertigibbeting", "Flowing", "Flummoxing", "Fluttering", "Forging", "Forming",
+    "Frolicking", "Frosting", "Gallivanting", "Galloping", "Garnishing", "Generating",
+    "Germinating", "Gitifying", "Grooving", "Gusting", "Harmonizing", "Hashing", "Hatching",
+    "Herding", "Honking", "Hullaballooing", "Hyperspacing", "Ideating", "Imagining",
+    "Improvising", "Incubating", "Inferring", "Infusing", "Ionizing", "Jitterbugging",
+    "Julienning", "Kneading", "Leavening", "Levitating", "Lollygagging", "Manifesting",
+    "Marinating", "Meandering", "Metamorphosing", "Misting", "Moonwalking", "Moseying",
+    "Mulling", "Mustering", "Musing", "Nebulizing", "Nesting", "Newspapering", "Noodling",
+    "Nucleating", "Orbiting", "Orchestrating", "Osmosing", "Perambulating", "Percolating",
+    "Perusing", "Philosophising", "Photosynthesizing", "Pollinating", "Pondering", "Pontificating",
+    "Pouncing", "Precipitating", "Prestidigitating", "Processing", "Proofing", "Propagating",
+    "Puttering", "Puzzling", "Quantumizing", "Razzle-dazzling", "Razzmatazzing", "Recombobulating",
+    "Reticulating", "Roosting", "Ruminating", "Sauteing", "Scampering", "Schlepping", "Scurrying",
+    "Seasoning", "Shenaniganing", "Shimmying", "Simmering", "Skedaddling", "Sketching",
+    "Slithering", "Smooshing", "Sock-hopping", "Spelunking", "Spinning", "Sprouting", "Stewing",
+    "Sublimating", "Swirling", "Swooping", "Symbioting", "Synthesizing", "Tempering", "Thinking",
+    "Thundering", "Tinkering", "Tomfoolering", "Topsy-turvying", "Transfiguring", "Transmuting",
+    "Twisting", "Undulating", "Unfurling", "Unravelling", "Vibing", "Waddling", "Wandering",
+    "Warping", "Whatchamacalliting", "Whirlpooling", "Whirring", "Whisking", "Wibbling", "Working",
+    "Wrangling", "Zesting", "Zigzagging",
 ];
 
 pub fn parse_spinner_verbs(raw: Option<&str>) -> Vec<String> {
@@ -359,18 +383,13 @@ mod tests {
     }
 
     #[test]
-    fn spinner_verbs_use_compact_defaults_when_unconfigured() {
-        assert_eq!(
-            parse_spinner_verbs(None),
-            vec![
-                "Thinking",
-                "Working",
-                "Crafting",
-                "Computing",
-                "Pondering",
-                "Wrangling"
-            ]
-        );
+    fn spinner_verbs_use_full_defaults_when_unconfigured() {
+        let verbs = parse_spinner_verbs(None);
+        assert!(verbs.len() > 100);
+        assert_eq!(verbs.first().map(String::as_str), Some("Accomplishing"));
+        assert_eq!(verbs.last().map(String::as_str), Some("Zigzagging"));
+        assert!(verbs.iter().any(|verb| verb == "Beboppin'"));
+        assert!(verbs.iter().any(|verb| verb == "Razzle-dazzling"));
     }
 
     #[test]
@@ -383,7 +402,7 @@ mod tests {
 
     #[test]
     fn spinner_verbs_fall_back_when_custom_value_has_no_entries() {
-        assert_eq!(parse_spinner_verbs(Some(" ,  , "))[0], "Thinking");
+        assert_eq!(parse_spinner_verbs(Some(" ,  , "))[0], "Accomplishing");
     }
 
     #[test]
