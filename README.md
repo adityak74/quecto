@@ -4,11 +4,11 @@
 
 ### The leanest, fastest, smallest AI harness — and the coding agent built on it.
 
-*One endpoint. Zero async. A 1.2 MB core, a 3.3 MB agent — both shipped.*
+*One endpoint. Zero async. A 1.3 MB core, a 3.5 MB agent — both shipped.*
 
 <br/>
 
-[![The Moat](https://img.shields.io/badge/the%20moat-1.2%20MB%20core%20%C2%B7%203.3%20MB%20agent-2ea44f?style=for-the-badge)](#-the-moat-12-mb-core-33-mb-agent)
+[![The Moat](https://img.shields.io/badge/the%20moat-1.3%20MB%20core%20%C2%B7%203.5%20MB%20agent-2ea44f?style=for-the-badge)](#-the-moat-13-mb-core-35-mb-agent)
 
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/core%20dependencies-2-brightgreen?style=flat-square)](#dependencies)
@@ -26,7 +26,7 @@
 **Two crates, one philosophy:**
 
 - **`quecto`** — the core. Take a prompt, run it through any OpenAI-compatible LLM — cloud (OpenAI) or local (Ollama, LM Studio, vLLM) — and return the output, buffered or streamed. One job, zero opinions.
-- **`quecto-agent`** — the coding agent, built entirely on top of the core. Multi-step tool use, file edits under approval, a hard-denylist sandbox, verification gates, session persistence (resume/undo/diff), and named "flavor" manifests with trust-on-first-use — all in a **3.3 MB** binary with **no async runtime**.
+- **`quecto-agent`** — the coding agent, built entirely on top of the core. Multi-step tool use, file edits under approval, a hard-denylist sandbox, verification gates, session persistence (resume/undo/diff), and named "flavor" manifests with trust-on-first-use — all in a **3.5 MB** binary with **no async runtime**.
 
 ---
 
@@ -55,12 +55,12 @@
 - **`2026-07-12` — `quecto-agent` shipped (M1–M7b).** The full coding agent — tool use, editing under approval, sandbox denylist, verification gates, session persistence (resume/undo/diff), and manifest flavors with trust-on-first-use — is complete and merged to `main`.
 - **`2026-07-12` — UAT accepted.** 41 black-box scenarios across CLI, chat, tools, persistence, and flavors run against a live model: 34 pass, 7 minor polish partials, **0 failures, 0 blocking defects**. See [`docs/UAT-report.md`](docs/UAT-report.md).
 - **`2026-07-10` — Core crate landed.** The full `quecto` core: four-function library API, streaming with SSE + non-SSE fallback, and a one-shot / REPL / `--init` CLI. 24 tests, clippy-clean, two dependencies.
-- **`2026-07-10` — Size-optimized build.** A tuned release profile ships both binaries statically-linked, no runtime: the core at **~1.2 MB**, the agent at **~3.3 MB**.
+- **`2026-07-10` — Size-optimized build.** A tuned release profile ships both binaries statically-linked, no runtime: the core at **~1.3 MB**, the agent at **~3.5 MB**.
 - **Next up — `quecto-mcp`.** MCP server/client integrations are planned as the next companion crate.
 
 ---
 
-## 🛡️ The Moat: 1.2 MB core, 3.3 MB agent
+## 🛡️ The Moat: 1.3 MB core, 3.5 MB agent
 
 Both binaries are **self-contained** — no runtime, no interpreter, statically-linked rustls TLS:
 
@@ -68,17 +68,17 @@ Both binaries are **self-contained** — no runtime, no interpreter, statically-
 |---|---:|
 | `quecto` — default `--release` | 2.6 MB |
 | `quecto` — stripped | 2.3 MB |
-| **`quecto` — size-optimized profile (shipped)** | **~1.2 MB** (1,300,896 bytes) |
-| **`quecto-agent` — size-optimized profile (shipped)** | **~3.3 MB** (3,456,240 bytes) |
+| **`quecto` — size-optimized profile (shipped)** | **~1.3 MB** (1,284,392 bytes) |
+| **`quecto-agent` — size-optimized profile (shipped)** | **~3.5 MB** (3,473,072 bytes) |
 
-Two direct dependencies on the core (`ureq` + `serde_json`), ~30 transitive crates, **no `tokio`, no `reqwest`, no async runtime.** The agent adds a full tool loop, sandbox, SQLite-backed session store, and manifest parsing — and still fits in 3.3 MB. Small is the feature, at every layer.
+Two direct dependencies on the core (`ureq` + `serde_json`), ~30 transitive crates, **no `tokio`, no `reqwest`, no async runtime.** The agent adds a full tool loop, sandbox, SQLite-backed session store, and manifest parsing — and still fits in 3.5 MB. Small is the feature, at every layer.
 
 ---
 
 ## Quick start
 
 ```bash
-# Build the ~1.2 MB binary
+# Build the ~1.3 MB binary
 git clone https://github.com/adityak74/quecto
 cd quecto
 cargo build --release      # → target/release/quecto
@@ -128,7 +128,7 @@ export QUECTO_MODEL="gpt-4o"
 Built entirely on the core's `quecto_raw` primitive: same zero-async, statically-linked philosophy, scaled up to a full agent loop.
 
 ```bash
-cargo build --release -p quecto-agent   # → target/release/quecto-agent (~3.3 MB)
+cargo build --release -p quecto-agent   # → target/release/quecto-agent (~3.5 MB)
 
 # target/release isn't on $PATH by default — either call it directly:
 ./target/release/quecto-agent "add a test for the parse_args function"
