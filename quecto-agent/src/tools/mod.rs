@@ -3,6 +3,7 @@ pub mod git;
 pub mod patch;
 pub mod search;
 pub mod shell;
+pub mod subagent;
 
 use crate::model::ToolCall;
 use crate::sandbox::{CancelToken, CommandOutput, Sandbox};
