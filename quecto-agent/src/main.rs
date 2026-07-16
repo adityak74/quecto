@@ -440,26 +440,6 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
         .or(merged.max_steps)
         .unwrap_or(20);
 
-    #[cfg(feature = "mcp")]
-    let mcp_result = {
-        use quecto_mcp::{McpConfig, McpRegistry};
-        use std::sync::{Arc, Mutex};
-        use std::path::Path;
-
-        let file_cfg = McpConfig::from_file(Path::new(".quecto/mcp.toml"))
-            .unwrap_or_else(|e| { eprintln!("quecto-mcp: config warning: {e}"); McpConfig::empty() });
-        let env_cfg = McpConfig::from_env()
-            .unwrap_or_else(|e| { eprintln!("quecto-mcp: env warning: {e}"); McpConfig::empty() });
-        let cli_cfg = mcp_config_from_flags(&overrides.mcp);
-        let merged = McpConfig::merged(file_cfg, env_cfg, cli_cfg);
-
-        let mut registry = McpRegistry::new(merged);
-        let mcp_tools = registry.discover();
-        let prompt_additions = registry.system_prompt_additions();
-        let registry_arc = Arc::new(Mutex::new(registry));
-        (mcp_tools, prompt_additions, registry_arc)
-    };
-
     let session_id = new_session_id();
     let mut agent = Agent::new(
         Box::new(model),
@@ -474,17 +454,7 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
 
     #[cfg(feature = "mcp")]
     {
-        let (mcp_tools, prompt_additions, registry_arc) = mcp_result;
-        for mcp_tool in mcp_tools {
-            let adapter = quecto_agent::mcp_adapter::McpToolAdapter { tool: mcp_tool, registry: std::sync::Arc::clone(&registry_arc) };
-            agent = agent.register(Box::new(adapter));
-        }
-        for addition in &prompt_additions {
-            if let Some(msg) = agent.messages.first_mut() {
-                msg.content.push_str("\n\n");
-                msg.content.push_str(addition);
-            }
-        }
+        agent = attach_mcp_tools(agent, overrides, true);
     }
 
     agent = attach_verifier(agent, no_verify, &gated);
@@ -563,26 +533,6 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         .or(merged.max_steps)
         .unwrap_or(20);
 
-    #[cfg(feature = "mcp")]
-    let mcp_result = {
-        use quecto_mcp::{McpConfig, McpRegistry};
-        use std::sync::{Arc, Mutex};
-        use std::path::Path;
-
-        let file_cfg = McpConfig::from_file(Path::new(".quecto/mcp.toml"))
-            .unwrap_or_else(|e| { eprintln!("quecto-mcp: config warning: {e}"); McpConfig::empty() });
-        let env_cfg = McpConfig::from_env()
-            .unwrap_or_else(|e| { eprintln!("quecto-mcp: env warning: {e}"); McpConfig::empty() });
-        let cli_cfg = mcp_config_from_flags(&overrides.mcp);
-        let merged = McpConfig::merged(file_cfg, env_cfg, cli_cfg);
-
-        let mut registry = McpRegistry::new(merged);
-        let mcp_tools = registry.discover();
-        let prompt_additions = registry.system_prompt_additions();
-        let registry_arc = Arc::new(Mutex::new(registry));
-        (mcp_tools, prompt_additions, registry_arc)
-    };
-
     let color = std::io::stdout().is_terminal();
     let spinner_verbs = parse_spinner_verbs(std::env::var("QUECTO_SPINNER_VERBS").ok().as_deref());
     let approval = if auto_approve {
@@ -609,17 +559,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
 
     #[cfg(feature = "mcp")]
     {
-        let (mcp_tools, prompt_additions, registry_arc) = mcp_result;
-        for mcp_tool in mcp_tools {
-            let adapter = quecto_agent::mcp_adapter::McpToolAdapter { tool: mcp_tool, registry: std::sync::Arc::clone(&registry_arc) };
-            agent = agent.register(Box::new(adapter));
-        }
-        for addition in &prompt_additions {
-            if let Some(msg) = agent.messages.first_mut() {
-                msg.content.push_str("\n\n");
-                msg.content.push_str(addition);
-            }
-        }
+        agent = attach_mcp_tools(agent, overrides, true);
     }
 
     agent = attach_verifier(agent, no_verify, &gated);
@@ -824,26 +764,6 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         .or(merged.max_steps)
         .unwrap_or(20);
 
-    #[cfg(feature = "mcp")]
-    let mcp_result = {
-        use quecto_mcp::{McpConfig, McpRegistry};
-        use std::sync::{Arc, Mutex};
-        use std::path::Path;
-
-        let file_cfg = McpConfig::from_file(Path::new(".quecto/mcp.toml"))
-            .unwrap_or_else(|e| { eprintln!("quecto-mcp: config warning: {e}"); McpConfig::empty() });
-        let env_cfg = McpConfig::from_env()
-            .unwrap_or_else(|e| { eprintln!("quecto-mcp: env warning: {e}"); McpConfig::empty() });
-        let cli_cfg = mcp_config_from_flags(&overrides.mcp);
-        let merged = McpConfig::merged(file_cfg, env_cfg, cli_cfg);
-
-        let mut registry = McpRegistry::new(merged);
-        let mcp_tools = registry.discover();
-        let prompt_additions = registry.system_prompt_additions();
-        let registry_arc = Arc::new(Mutex::new(registry));
-        (mcp_tools, prompt_additions, registry_arc)
-    };
-
     let msg_seq = store.message_count(id).unwrap_or(0);
     let change_seq = store.change_count(id).unwrap_or(0);
     let mut agent = Agent::new(Box::new(model), system, steps, cwd, cancel, approval)
@@ -853,17 +773,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
 
     #[cfg(feature = "mcp")]
     {
-        let (mcp_tools, prompt_additions, registry_arc) = mcp_result;
-        for mcp_tool in mcp_tools {
-            let adapter = quecto_agent::mcp_adapter::McpToolAdapter { tool: mcp_tool, registry: std::sync::Arc::clone(&registry_arc) };
-            agent = agent.register(Box::new(adapter));
-        }
-        for addition in &prompt_additions {
-            if let Some(msg) = agent.messages.first_mut() {
-                msg.content.push_str("\n\n");
-                msg.content.push_str(addition);
-            }
-        }
+        agent = attach_mcp_tools(agent, overrides, false);
     }
 
     agent = attach_verifier(agent, no_verify, &gated);
@@ -942,6 +852,41 @@ fn diff() {
             std::process::exit(1);
         }
     }
+}
+
+#[cfg(feature = "mcp")]
+fn attach_mcp_tools(mut agent: Agent, overrides: &Overrides, add_prompt_additions: bool) -> Agent {
+    use quecto_mcp::{McpConfig, McpRegistry};
+    use std::sync::{Arc, Mutex};
+    use std::path::Path;
+
+    let file_cfg = McpConfig::from_file(Path::new(".quecto/mcp.toml"))
+        .unwrap_or_else(|e| { eprintln!("quecto-mcp: config warning: {e}"); McpConfig::empty() });
+    let env_cfg = McpConfig::from_env()
+        .unwrap_or_else(|e| { eprintln!("quecto-mcp: env warning: {e}"); McpConfig::empty() });
+    let cli_cfg = mcp_config_from_flags(&overrides.mcp);
+    let merged = McpConfig::merged(file_cfg, env_cfg, cli_cfg);
+
+    let mut registry = McpRegistry::new(merged);
+    let mcp_tools = registry.discover();
+    let prompt_additions = registry.system_prompt_additions();
+    let registry_arc = Arc::new(Mutex::new(registry));
+
+    for mcp_tool in mcp_tools {
+        let adapter = quecto_agent::mcp_adapter::McpToolAdapter { tool: mcp_tool, registry: std::sync::Arc::clone(&registry_arc) };
+        agent = agent.register(Box::new(adapter));
+    }
+    if add_prompt_additions {
+        for addition in &prompt_additions {
+            if let Some(msg) = agent.messages.first_mut() {
+                msg.content.push_str("
+
+");
+                msg.content.push_str(addition);
+            }
+        }
+    }
+    agent
 }
 
 #[cfg(feature = "mcp")]
