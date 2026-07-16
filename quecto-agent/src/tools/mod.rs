@@ -78,11 +78,13 @@ impl Context {
     pub fn run_command(&self, command: &str) -> ToolResult {
         let output = self.sandbox.run(command)?;
         let summary = if output.cancelled {
-            "cancelled"
+            "cancelled".to_string()
         } else if output.timed_out {
-            "timed out"
+            "timed out".to_string()
+        } else if let Some(code) = output.status {
+            format!("exited {}", code)
         } else {
-            "command finished"
+            "finished".to_string()
         };
         Ok(ToolOutput::new(output.render(), summary))
     }
