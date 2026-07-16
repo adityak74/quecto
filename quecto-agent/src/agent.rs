@@ -3,7 +3,7 @@ use crate::model::{Message, Model};
 use crate::policy::{Decision, Policy};
 use crate::render::{stderr_renderer, Renderer};
 use crate::sandbox::CancelToken;
-use crate::tools::{builtin_tools, Context, FileChange, Registry, Tool, ToolOutput};
+use crate::tools::{Context, FileChange, Registry, Tool, ToolOutput};
 use crate::verify::Verifier;
 use crate::BoxErr;
 use std::path::PathBuf;
@@ -32,6 +32,10 @@ const VERIFY_NO_PROGRESS_ATTEMPTS: usize = 3;
 /// still stop promptly instead of grinding to the step limit.
 const DENIAL_STREAK_LIMIT: usize = 3;
 
+/// Consecutive identical tool call + result + change-count observations that
+/// trip the repeat guard and end a run early.
+const REPEAT_STREAK_LIMIT: usize = 3;
+
 /// Receives the transcript and file mutations of a run in order, for
 /// persistence. Recording is best-effort and must never fail the run.
 pub trait RunRecorder: Send {
@@ -48,12 +52,7 @@ struct RepeatGuard {
 
 impl RepeatGuard {
     fn observe(&mut self, call: &crate::model::ToolCall, result: &str, changes: usize) -> bool {
-        let fingerprint = format!(
-            "{}\n{}\n{}",
-            call.name,
-            canonical_json(&call.arguments),
-            result
-        );
+        let fingerprint = format!("{}\n{}\n{}", call.name, call.arguments, result);
         if self.fingerprint.as_deref() == Some(&fingerprint) && self.changes == changes {
             self.streak += 1;
         } else {
@@ -61,37 +60,7 @@ impl RepeatGuard {
             self.changes = changes;
             self.streak = 1;
         }
-        self.streak >= 3
-    }
-}
-
-fn canonical_json(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by_key(|(key, _)| *key);
-            let fields = entries
-                .into_iter()
-                .map(|(key, value)| {
-                    format!(
-                        "{}:{}",
-                        serde_json::Value::String(key.clone()),
-                        canonical_json(value)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("{{{fields}}}")
-        }
-        serde_json::Value::Array(items) => format!(
-            "[{}]",
-            items
-                .iter()
-                .map(canonical_json)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        _ => value.to_string(),
+        self.streak >= REPEAT_STREAK_LIMIT
     }
 }
 
@@ -109,10 +78,8 @@ pub struct Agent {
     recorded_messages: usize,
     recorded_changes: usize,
     renderer: Box<dyn Renderer>,
-    #[allow(dead_code)]
     cancel: CancelToken,
 }
-
 
 #[derive(Clone)]
 pub struct AgentConfig {
@@ -215,13 +182,8 @@ impl Agent {
         self
     }
 
-    pub fn register_builtins(mut self) -> Self {
-        for tool in builtin_tools() {
-            self.registry.register(tool);
-        }
-        let subagent_tool = crate::tools::subagent::InvokeSubagent::new(self.config());
-        self.registry.register(Box::new(subagent_tool));
-        self
+    pub fn register_builtins(self) -> Self {
+        self.register_builtins_filtered(None)
     }
 
     /// Register the built-in tools filtered by an allow-list (`None` = all).
@@ -236,12 +198,11 @@ impl Agent {
         self
     }
 
-     /// Return the names of registered tools (used by /commands in chat).
-    
     pub fn background_process_count(&mut self) -> usize {
         self.cx.background_process_count()
     }
 
+    /// Return the names of registered tools (used by /commands in chat).
     pub fn tool_names(&self) -> Vec<String> {
         self.registry.tool_names()
     }
@@ -406,14 +367,16 @@ impl Agent {
                     stop = Some(Outcome::Cancelled);
                     break;
                 }
-                let display_name = if call.name == "run_command" || call.name == "start_background_process" {
-                    if let Some(cmd) = call.arguments.get("command").and_then(|v| v.as_str()) {
-                        format!("{}({})", call.name, cmd)
-                    } else {
-                        call.name.clone()
+                let display_name = match call.arguments.get("command").and_then(|v| v.as_str()) {
+                    Some(cmd)
+                        if matches!(
+                            call.name.as_str(),
+                            "run_command" | "start_background_process"
+                        ) =>
+                    {
+                        format!("{}({cmd})", call.name)
                     }
-                } else {
-                    call.name.clone()
+                    _ => call.name.clone(),
                 };
                 self.renderer.tool(&display_name, &out.summary);
 
@@ -879,6 +842,9 @@ mod tests {
         assert!(guard.observe(&call, "same", 1));
     }
 
+    // This test is what makes it safe to rely on `serde_json::Value::to_string()` for
+    // key-sorted output instead of a hand-rolled `canonical_json`: it fails immediately
+    // if `serde_json/preserve_order` is ever enabled via feature unification.
     #[test]
     fn fingerprint_uses_canonical_nested_json_and_result() {
         let mut guard = RepeatGuard::default();

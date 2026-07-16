@@ -33,8 +33,7 @@ pub use policy::{Decision, Policy, Preset};
 pub use quecto::join_url;
 pub use recorder::SqliteRecorder;
 pub use render::{
-    chat_spinner_renderer, parse_spinner_verbs, stderr_renderer, stdout_renderer, LineRenderer,
-    Renderer,
+    chat_spinner_renderer, parse_spinner_verbs, stderr_renderer, LineRenderer, Renderer,
 };
 pub use sandbox::{cancel_token, CancelToken, CommandOutput, Sandbox};
 pub use session::{new_session_id, render_change_summary, SessionRow, Store};
