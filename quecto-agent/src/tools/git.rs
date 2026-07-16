@@ -41,7 +41,7 @@ impl Tool for GitDiff {
         } else {
             diff
         };
-        let summary = format!("{} lines", content.lines().count());
+        let summary = format!("diff ({} lines)", content.lines().count());
         Ok(ToolOutput::new(cap_output(&content, 64_000), summary))
     }
 }
@@ -71,7 +71,7 @@ impl Tool for GitStatus {
         };
         Ok(ToolOutput::new(
             cap_output(&content, 32_000),
-            format!("{n} changed"),
+            format!("{} changed files", n),
         ))
     }
 }
