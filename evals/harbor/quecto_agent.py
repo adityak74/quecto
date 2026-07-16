@@ -6,13 +6,14 @@ Terminal-Bench tasks can be evaluated against QuECTO through the Harbor
 framework (https://harborframework.com).
 
 Usage:
+    pip install harbor
     harbor run \
       -d terminal-bench/terminal-bench-2 \
       -m qwen3.6:35b-mlx \
       --agent evals.harbor.quecto_agent:QuectoAgent
 
 Requirements:
-    pip install harbor-agent          # Harbor SDK
+    pip install harbor            # Harbor SDK
     # quecto-agent binary must be on PATH or set QUECTO_AGENT_BIN env var
 """
 
@@ -24,12 +25,12 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-# Harbor SDK (install via `pip install harbor-agent`)
+# Harbor SDK — install via `pip install harbor`
 try:
-    from harbor_agent import BaseInstalledAgent, TaskEnvironment
+    from harbor.agents.installed.base import BaseInstalledAgent, TaskEnvironment
 except ImportError:
     raise ImportError(
-        "Harbor SDK not installed. Run: pip install harbor-agent"
+        "Harbor SDK not installed. Run: pip install harbor"
     )
 
 # Path to quecto-agent binary — override with QUECTO_AGENT_BIN env var
@@ -75,11 +76,8 @@ class QuectoAgent(BaseInstalledAgent):
         Returns the agent's stdout as the trajectory string.
         """
         env = {**os.environ}
-        model = os.environ.get("QUECTO_MODEL", "qwen3.6:35b-mlx")
-        base_url = os.environ.get("QUECTO_BASE_URL", "http://localhost:11434/v1")
-
-        env["QUECTO_MODEL"] = model
-        env["QUECTO_BASE_URL"] = base_url
+        env["QUECTO_MODEL"] = os.environ.get("QUECTO_MODEL", "qwen3.6:35b-mlx")
+        env["QUECTO_BASE_URL"] = os.environ.get("QUECTO_BASE_URL", "http://localhost:11434/v1")
 
         result = subprocess.run(
             [QUECTO_AGENT_BIN, "--yes", task.instruction],
