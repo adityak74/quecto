@@ -4,6 +4,7 @@ pub mod patch;
 pub mod search;
 pub mod shell;
 pub mod subagent;
+pub mod notes;
 
 use crate::model::ToolCall;
 use crate::sandbox::{CancelToken, CommandOutput, Sandbox};
@@ -293,6 +294,8 @@ pub fn builtin_tools() -> Vec<Box<dyn Tool>> {
         Box::new(shell::StartBackgroundProcess),
         Box::new(shell::KillBackgroundProcess),
         Box::new(shell::ListBackgroundProcesses),
+        Box::new(notes::TakeNote),
+        Box::new(notes::SearchNotes),
     ]
 }
 
