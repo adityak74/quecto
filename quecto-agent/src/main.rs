@@ -576,104 +576,307 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     out.notice("quecto-agent chat — /help for commands, /exit to quit");
 
     let stdin = std::io::stdin();
-    let mut lines = stdin.lock().lines();
-    loop {
-        print!("› ");
-        let _ = std::io::stdout().flush();
-        let Some(line) = lines.next() else { break };
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => break,
-        };
-        match parse_command(&line) {
-            ChatCommand::Exit => break,
-            ChatCommand::Help => out.notice(HELP),
-            ChatCommand::Model => {
-                if model_name.is_empty() {
-                    out.notice("model: (not set)");
-                } else {
-                    out.notice(&format!("model: {model_name}"));
-                }
-            }
-            ChatCommand::Context => {
-                let msg_n = agent.messages.len().saturating_sub(1);
-                let char_count: usize = agent
-                    .messages
-                    .iter()
-                    .map(|m| {
-                        m.content.len()
-                            + m.tool_calls
-                                .iter()
-                                .map(|tc| tc.name.len() + tc.arguments.to_string().len())
-                                .sum::<usize>()
-                    })
-                    .sum();
-                out.notice(&format!(
-                    "session: {} ({} messages, ~{} chars)",
-                    session_id, msg_n, char_count
-                ));
-            }
-            ChatCommand::Status => {
-                let status = store
-                    .as_ref()
-                    .and_then(|s| s.session_status(&session_id).ok().flatten())
-                    .unwrap_or_else(|| "unknown".to_string());
-                out.notice(&format!("session {session_id} [{status}]"));
-            }
-            ChatCommand::Diff => {
-                if let Some(s) = &store {
-                    let changes = s.load_changes(&session_id).unwrap_or_default();
-                    out.notice(render_change_summary(&changes).trim_end());
-                } else {
-                    out.notice("no session store");
-                }
-            }
-            ChatCommand::Undo => chat_undo(&store, &session_id, &cwd, &mut out),
-            ChatCommand::Approve => {
-                agent.set_approval(ApprovalMode::AutoApprove);
-                out.notice("edits and commands will be auto-approved this session");
-            }
-            ChatCommand::Deny => {
-                agent.set_approval(ApprovalMode::NonInteractive);
-                out.notice("edits and commands will be denied this session");
-            }
-            ChatCommand::Clear => {
-                agent.clear_history();
-                out.notice(&format!("session {} conversation cleared", session_id));
-            }
-            ChatCommand::Tools => {
-                out.notice(&agent.tool_names().join("\n"));
-            }
-            ChatCommand::Unknown(name) => {
-                out.notice(&format!("unknown command '/{name}' — try /help"));
-            }
-            ChatCommand::Say(text) => {
-                if text.is_empty() {
-                    continue;
-                }
-                match agent.run(&text) {
-                    Outcome::Complete(answer) => out.assistant(&answer),
-                    Outcome::StepLimit => out.notice("(step limit reached)"),
-                    Outcome::VerificationFailed { attempts } => out.notice(&format!(
-                        "(verification still failing after {attempts} attempts)"
-                    )),
-                    Outcome::Cancelled => out.notice("(cancelled)"),
-                    Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
-                    Outcome::Blocked => {
-                        out.notice("(stopped: actions denied — use /approve to allow this session)")
+    if !stdin.is_terminal() {
+        let mut lines = stdin.lock().lines();
+        loop {
+            print!("› ");
+            let _ = std::io::stdout().flush();
+            let Some(line) = lines.next() else { break };
+            let line = match line {
+                Ok(l) => l,
+                Err(_) => break,
+            };
+            let mut exit = false;
+            match parse_command(&line) {
+                ChatCommand::Exit => exit = true,
+                ChatCommand::Help => out.notice(HELP),
+                ChatCommand::Model => {
+                    if model_name.is_empty() {
+                        out.notice("model: (not set)");
+                    } else {
+                        out.notice(&format!("model: {model_name}"));
                     }
-                    Outcome::Error(e) => out.notice(&format!("(error: {e})")),
                 }
+                ChatCommand::Context => {
+                    let msg_n = agent.messages.len().saturating_sub(1);
+                    let char_count: usize = agent
+                        .messages
+                        .iter()
+                        .map(|m| {
+                            m.content.len()
+                                + m.tool_calls
+                                    .iter()
+                                    .map(|tc| tc.name.len() + tc.arguments.to_string().len())
+                                    .sum::<usize>()
+                        })
+                        .sum();
+                    out.notice(&format!(
+                        "session: {} ({} messages, ~{} chars)",
+                        session_id, msg_n, char_count
+                    ));
+                }
+                ChatCommand::Status => {
+                    let status = store
+                        .as_ref()
+                        .and_then(|s| s.session_status(&session_id).ok().flatten())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    out.notice(&format!("session {session_id} [{status}]"));
+                }
+                ChatCommand::Diff => {
+                    if let Some(s) = &store {
+                        let changes = s.load_changes(&session_id).unwrap_or_default();
+                        out.notice(render_change_summary(&changes).trim_end());
+                    } else {
+                        out.notice("no session store");
+                    }
+                }
+                ChatCommand::Undo => chat_undo(&store, &session_id, &cwd, &mut out),
+                ChatCommand::Approve => {
+                    agent.set_approval(ApprovalMode::AutoApprove);
+                    out.notice("edits and commands will be auto-approved this session");
+                }
+                ChatCommand::Deny => {
+                    agent.set_approval(ApprovalMode::NonInteractive);
+                    out.notice("edits and commands will be denied this session");
+                }
+                ChatCommand::Clear => {
+                    agent.clear_history();
+                    out.notice(&format!("session {} conversation cleared", session_id));
+                }
+                ChatCommand::Tools => {
+                    out.notice(&agent.tool_names().join("\n"));
+                }
+                ChatCommand::Unknown(name) => {
+                    out.notice(&format!("unknown command '/{name}' — try /help"));
+                }
+                ChatCommand::Say(text) => {
+                    if !text.is_empty() {
+                        match agent.run(&text) {
+                            Outcome::Complete(answer) => out.assistant(&answer),
+                            Outcome::StepLimit => out.notice("(step limit reached)"),
+                            Outcome::VerificationFailed { attempts } => out.notice(&format!(
+                                "(verification still failing after {attempts} attempts)"
+                            )),
+                            Outcome::Cancelled => out.notice("(cancelled)"),
+                            Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
+                            Outcome::Blocked => {
+                                out.notice("(stopped: actions denied — use /approve to allow this session)")
+                            }
+                            Outcome::Error(e) => out.notice(&format!("(error: {e})")),
+                        }
+                    }
+                }
+            }
+            if exit {
+                break;
+            }
+        }
+        if let Some(s) = &store {
+            let _ = s.set_status(&session_id, "done");
+        }
+        out.notice("bye");
+        return;
+    }
+
+    enum Segment {
+        Text(String),
+        Paste(String),
+    }
+
+    let mut segments = vec![Segment::Text(String::new())];
+    let mut redraw = true;
+
+    crossterm::terminal::enable_raw_mode().unwrap();
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+
+    loop {
+        if redraw {
+            let mut prompt = String::from("\r› ");
+            for seg in &segments {
+                match seg {
+                    Segment::Text(t) => prompt.push_str(t),
+                    Segment::Paste(s) => prompt.push_str(&format!("[pasted +{} characters]", s.len())),
+                }
+            }
+            let _ = crossterm::execute!(
+                std::io::stdout(),
+                crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine)
+            );
+            print!("{}", prompt);
+            let _ = std::io::stdout().flush();
+            redraw = false;
+        }
+
+        if let Ok(event) = crossterm::event::read() {
+            match event {
+                crossterm::event::Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
+                    match key.code {
+                        crossterm::event::KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            println!("\r");
+                            break;
+                        }
+                        crossterm::event::KeyCode::Char('d') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                            println!("\r");
+                            break;
+                        }
+                        crossterm::event::KeyCode::Enter => {
+                            println!("\r");
+                            let mut line = String::new();
+                            for seg in &segments {
+                                match seg {
+                                    Segment::Text(t) => line.push_str(t),
+                                    Segment::Paste(s) => line.push_str(s),
+                                }
+                            }
+                            segments.clear();
+                            segments.push(Segment::Text(String::new()));
+
+                            let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+                            let _ = crossterm::terminal::disable_raw_mode();
+
+                            let mut exit = false;
+                            match parse_command(&line) {
+                                ChatCommand::Exit => exit = true,
+                                ChatCommand::Help => out.notice(HELP),
+                                ChatCommand::Model => {
+                                    if model_name.is_empty() {
+                                        out.notice("model: (not set)");
+                                    } else {
+                                        out.notice(&format!("model: {model_name}"));
+                                    }
+                                }
+                                ChatCommand::Context => {
+                                    let msg_n = agent.messages.len().saturating_sub(1);
+                                    let char_count: usize = agent
+                                        .messages
+                                        .iter()
+                                        .map(|m| {
+                                            m.content.len()
+                                                + m.tool_calls
+                                                    .iter()
+                                                    .map(|tc| tc.name.len() + tc.arguments.to_string().len())
+                                                    .sum::<usize>()
+                                        })
+                                        .sum();
+                                    out.notice(&format!(
+                                        "session: {} ({} messages, ~{} chars)",
+                                        session_id, msg_n, char_count
+                                    ));
+                                }
+                                ChatCommand::Status => {
+                                    let status = store
+                                        .as_ref()
+                                        .and_then(|s| s.session_status(&session_id).ok().flatten())
+                                        .unwrap_or_else(|| "unknown".to_string());
+                                    out.notice(&format!("session {session_id} [{status}]"));
+                                }
+                                ChatCommand::Diff => {
+                                    if let Some(s) = &store {
+                                        let changes = s.load_changes(&session_id).unwrap_or_default();
+                                        out.notice(render_change_summary(&changes).trim_end());
+                                    } else {
+                                        out.notice("no session store");
+                                    }
+                                }
+                                ChatCommand::Undo => chat_undo(&store, &session_id, &cwd, &mut out),
+                                ChatCommand::Approve => {
+                                    agent.set_approval(ApprovalMode::AutoApprove);
+                                    out.notice("edits and commands will be auto-approved this session");
+                                }
+                                ChatCommand::Deny => {
+                                    agent.set_approval(ApprovalMode::NonInteractive);
+                                    out.notice("edits and commands will be denied this session");
+                                }
+                                ChatCommand::Clear => {
+                                    agent.clear_history();
+                                    out.notice(&format!("session {} conversation cleared", session_id));
+                                }
+                                ChatCommand::Tools => {
+                                    out.notice(&agent.tool_names().join("\n"));
+                                }
+                                ChatCommand::Unknown(name) => {
+                                    out.notice(&format!("unknown command '/{name}' — try /help"));
+                                }
+                                ChatCommand::Say(text) => {
+                                    if !text.is_empty() {
+                                        match agent.run(&text) {
+                                            Outcome::Complete(answer) => out.assistant(&answer),
+                                            Outcome::StepLimit => out.notice("(step limit reached)"),
+                                            Outcome::VerificationFailed { attempts } => out.notice(&format!(
+                                                "(verification still failing after {attempts} attempts)"
+                                            )),
+                                            Outcome::Cancelled => out.notice("(cancelled)"),
+                                            Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
+                                            Outcome::Blocked => {
+                                                out.notice("(stopped: actions denied — use /approve to allow this session)")
+                                            }
+                                            Outcome::Error(e) => out.notice(&format!("(error: {e})")),
+                                        }
+                                    }
+                                }
+                            }
+
+                            if exit {
+                                break;
+                            }
+
+                            crossterm::terminal::enable_raw_mode().unwrap();
+                            let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Backspace => {
+                            let mut pop_segment = false;
+                            if let Some(last) = segments.last_mut() {
+                                match last {
+                                    Segment::Text(t) => {
+                                        if !t.is_empty() {
+                                            t.pop();
+                                        } else {
+                                            pop_segment = true;
+                                        }
+                                    }
+                                    Segment::Paste(_) => {
+                                        pop_segment = true;
+                                    }
+                                }
+                            }
+                            if pop_segment {
+                                segments.pop();
+                            }
+                            if segments.is_empty() {
+                                segments.push(Segment::Text(String::new()));
+                            }
+                            redraw = true;
+                        }
+                        crossterm::event::KeyCode::Char(c) => {
+                            if let Some(Segment::Text(t)) = segments.last_mut() {
+                                t.push(c);
+                            } else {
+                                segments.push(Segment::Text(c.to_string()));
+                            }
+                            redraw = true;
+                        }
+                        _ => {}
+                    }
+                }
+                crossterm::event::Event::Paste(s) => {
+                    segments.push(Segment::Paste(s));
+                    segments.push(Segment::Text(String::new()));
+                    redraw = true;
+                }
+                _ => {}
             }
         }
     }
+
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+    let _ = crossterm::terminal::disable_raw_mode();
 
     if let Some(s) = &store {
         let _ = s.set_status(&session_id, "done");
     }
     out.notice("bye");
 }
-
 fn chat_undo(
     store: &Option<Store>,
     session_id: &str,
