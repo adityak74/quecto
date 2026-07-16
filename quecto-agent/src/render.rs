@@ -282,12 +282,6 @@ pub fn stderr_renderer() -> Box<dyn Renderer> {
     Box::new(LineRenderer::new(io::stderr(), color))
 }
 
-/// A boxed renderer over stdout, colored only when stdout is a TTY.
-pub fn stdout_renderer() -> Box<dyn Renderer> {
-    let color = io::stdout().is_terminal();
-    Box::new(LineRenderer::new(io::stdout(), color))
-}
-
 /// A spinner renderer for the interactive chat's TTY-backed stdout path.
 pub fn chat_spinner_renderer(verbs: Vec<String>) -> Box<dyn Renderer> {
     Box::new(SpinnerRenderer::new(io::stdout(), true, verbs))

@@ -1,17 +1,12 @@
-#[cfg(feature = "mcp")]
 use quecto_mcp::{McpRegistry, McpTool};
-#[cfg(feature = "mcp")]
 use crate::tools::{Context, Tool, ToolError, ToolOutput, ToolResult};
-#[cfg(feature = "mcp")]
 use std::sync::{Arc, Mutex};
 
-#[cfg(feature = "mcp")]
 pub struct McpToolAdapter {
     pub tool: McpTool,
     pub registry: Arc<Mutex<McpRegistry>>,
 }
 
-#[cfg(feature = "mcp")]
 impl Tool for McpToolAdapter {
     #[allow(clippy::misnamed_getters)]
     fn name(&self) -> &str { &self.tool.prefixed_name }
@@ -31,19 +26,6 @@ impl Tool for McpToolAdapter {
             }
             Err(e) => Ok(ToolOutput::new(format!("error: {e}"), "mcp error")),
         }
-    }
-}
-
-#[cfg(not(feature = "mcp"))]
-pub struct McpToolAdapter {}
-
-#[cfg(not(feature = "mcp"))]
-impl crate::tools::Tool for McpToolAdapter {
-    fn name(&self) -> &str { "mock_mcp_tool" }
-    fn description(&self) -> &str { "Mock MCP Tool" }
-    fn schema(&self) -> serde_json::Value { serde_json::json!({}) }
-    fn run(&self, _args: &serde_json::Value, _cx: &mut crate::tools::Context) -> crate::tools::ToolResult {
-        Err(crate::tools::ToolError::new("MCP feature is disabled"))
     }
 }
 

@@ -74,10 +74,8 @@ pub struct Agent {
     recorded_messages: usize,
     recorded_changes: usize,
     renderer: Box<dyn Renderer>,
-    #[allow(dead_code)]
     cancel: CancelToken,
 }
-
 
 #[derive(Clone)]
 pub struct AgentConfig {
