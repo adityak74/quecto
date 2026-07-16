@@ -1,0 +1,1 @@
+Check that a Dockerfile exists with a FROM line using python:3.11-slim, a COPY line for app.py, and an ENTRYPOINT line invoking python /app.py. Verify that the image was built with tag 'eval-image' (docker images should list it). Verify that running the container produced an 'output.txt' containing the exact string 'Hello Docker'.
