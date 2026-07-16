@@ -34,6 +34,19 @@ impl Tool for McpToolAdapter {
     }
 }
 
+#[cfg(not(feature = "mcp"))]
+pub struct McpToolAdapter {}
+
+#[cfg(not(feature = "mcp"))]
+impl crate::tools::Tool for McpToolAdapter {
+    fn name(&self) -> &str { "mock_mcp_tool" }
+    fn description(&self) -> &str { "Mock MCP Tool" }
+    fn schema(&self) -> serde_json::Value { serde_json::json!({}) }
+    fn run(&self, _args: &serde_json::Value, _cx: &mut crate::tools::Context) -> crate::tools::ToolResult {
+        Err(crate::tools::ToolError::new("MCP feature is disabled"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

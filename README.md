@@ -255,6 +255,33 @@ Because the core primitives (`quecto_raw`, `quecto_stream`) shape nothing and di
 
 ---
 
+## `quecto-mcp` — MCP client for the agent
+
+Build the agent with MCP support to consume any MCP-compatible server as a tool source:
+
+```bash
+# Build with MCP (~6–9 MB with tokio)
+cargo build --release -p quecto-agent --features mcp
+
+# Local STDIO server
+quecto-agent --mcp stdio:filesystem:npx:-y:@modelcontextprotocol/server-filesystem:/tmp "list files"
+
+# Remote Streamable HTTP server (current standard)
+quecto-agent --mcp streamable_http:github:https://api.githubcopilot.com/mcp/ "open issues"
+
+# Or configure in .quecto/mcp.toml (see docs/superpowers/specs/2026-07-15-quecto-mcp-design.md)
+```
+
+MCP tools are prefixed `mcp__<server>__<tool>` — no collision with native tools. Server failures at startup are non-fatal.
+
+| Transport | When to use |
+|---|---|
+| `stdio` | Local single-user tools (Claude Desktop / Cursor pattern) |
+| `streamable_http` | Remote/production (current MCP standard, March 2025+) |
+| `sse` | Legacy servers only — deprecated, compat support |
+
+---
+
 ## Library API
 
 Four functions: two opinion-free primitives and two conveniences layered on top.
@@ -377,7 +404,7 @@ The harness auto-discovers it on the next run.
 | Model adapter (talk to the model) | **`quecto` core** | ✅ shipped |
 | Agent loop · tools · sandbox · verify · session · flavors/trust · OTEL tracing | `quecto-agent` | ✅ shipped, UAT accepted |
 | Evaluation suite (10 smoke tasks + Harbor/Terminal-Bench adapter) | `evals/` | ✅ shipped |
-| MCP integrations | `quecto-mcp` | 🔮 planned |
+| MCP client (STDIO · Streamable HTTP · legacy SSE compat) | `quecto-mcp` | 🚧 in progress |
 
 The core never gains an async runtime, tool execution, or state — companions build on top of `quecto_raw`.
 
