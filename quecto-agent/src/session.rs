@@ -123,22 +123,7 @@ impl Store {
     }
 
     pub fn default_path() -> PathBuf {
-        if let Ok(p) = std::env::var("QUECTO_STATE_DB") {
-            if !p.is_empty() {
-                return PathBuf::from(p);
-            }
-        }
-        let base = std::env::var("XDG_STATE_HOME")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".local/state"))
-            })
-            .unwrap_or_else(|| PathBuf::from(".quecto-state"));
-        base.join("quecto").join("sessions.db")
+        crate::trust::state_path("QUECTO_STATE_DB", "sessions.db")
     }
 
     pub fn open_default() -> Result<Store, BoxErr> {

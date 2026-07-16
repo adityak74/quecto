@@ -9,24 +9,33 @@ pub struct TrustStore {
     hashes: BTreeSet<String>,
 }
 
+/// Resolve a quecto state file path: `$<env_var>` if set (and non-empty),
+/// otherwise `$XDG_STATE_HOME/quecto/<leaf>` falling back to
+/// `$HOME/.local/state/quecto/<leaf>`, and finally `.quecto-state/quecto/<leaf>`
+/// if neither is set. Shared by `TrustStore::default_path` and
+/// `Store::default_path`, which differ only in env var and leaf name.
+pub(crate) fn state_path(env_var: &str, leaf: &str) -> PathBuf {
+    if let Ok(p) = std::env::var(env_var) {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    let base = std::env::var("XDG_STATE_HOME")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| PathBuf::from(h).join(".local/state"))
+        })
+        .unwrap_or_else(|| PathBuf::from(".quecto-state"));
+    base.join("quecto").join(leaf)
+}
+
 impl TrustStore {
     pub fn default_path() -> PathBuf {
-        if let Ok(p) = std::env::var("QUECTO_TRUST_FILE") {
-            if !p.is_empty() {
-                return PathBuf::from(p);
-            }
-        }
-        let base = std::env::var("XDG_STATE_HOME")
-            .ok()
-            .filter(|s| !s.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var("HOME")
-                    .ok()
-                    .map(|h| PathBuf::from(h).join(".local/state"))
-            })
-            .unwrap_or_else(|| PathBuf::from(".quecto-state"));
-        base.join("quecto").join("trust")
+        state_path("QUECTO_TRUST_FILE", "trust")
     }
 
     pub fn open() -> TrustStore {
