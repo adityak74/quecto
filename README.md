@@ -182,7 +182,7 @@ Reads the same core env vars as `quecto`, plus a few agent-specific ones:
 |---|---|---|
 | `QUECTO_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible endpoint — **note: defaults to local Ollama**, unlike the core's `api.openai.com` default |
 | `QUECTO_API_KEY` | *(optional)* | Bearer token; omit for local servers |
-| `QUECTO_MODEL` | *(none — required)* | Model name; no built-in fallback |
+| `QUECTO_MODEL` | *(interactive fallback)* | Model name; interactively prompts to pick from available Ollama models if omitted and `QUECTO_BASE_URL` is set to the default local Ollama endpoint |
 | `QUECTO_SYSTEM` | built-in agent system prompt | Overrides the base system prompt (repo rules + seed context are still appended after it) |
 | `QUECTO_MAX_STEPS` | `20` | Cap on agent loop steps |
 | `QUECTO_VERIFY` | *(unset)* | Newline-separated shell commands run as a post-edit verification gate |
