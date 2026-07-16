@@ -3,10 +3,14 @@ pub mod git;
 pub mod patch;
 pub mod search;
 pub mod shell;
+pub mod subagent;
+pub mod notes;
 
 use crate::model::ToolCall;
 use crate::sandbox::{CancelToken, CommandOutput, Sandbox};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::process::Child;
 use std::path::PathBuf;
 
 pub struct ToolOutput {
@@ -57,6 +61,7 @@ pub struct Context {
     pub repo_root: PathBuf,
     sandbox: Sandbox,
     changes: Vec<FileChange>,
+    pub background_processes: HashMap<u32, (String, Child)>,
 }
 
 impl Context {
@@ -66,6 +71,7 @@ impl Context {
             sandbox: Sandbox::new(repo_root.clone(), cancel),
             repo_root,
             changes: Vec::new(),
+            background_processes: HashMap::new(),
         }
     }
 
@@ -145,6 +151,76 @@ impl Context {
     pub fn clear_changes(&mut self) {
         self.changes.clear();
     }
+
+    pub fn start_background_process(&mut self, command: &str) -> Result<u32, ToolError> {
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c")
+            .arg(command)
+            .current_dir(&self.repo_root)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            unsafe {
+                cmd.pre_exec(|| {
+                    if libc::setpgid(0, 0) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
+            }
+        }
+
+        let child = cmd.spawn().map_err(|e| ToolError::new(format!("spawn: {e}")))?;
+        let pid = child.id();
+        self.background_processes.insert(pid, (command.to_string(), child));
+        Ok(pid)
+    }
+
+    pub fn kill_background_process(&mut self, pid: u32) -> Result<(), ToolError> {
+        if let Some((_, mut child)) = self.background_processes.remove(&pid) {
+            #[cfg(unix)]
+            unsafe {
+                libc::kill(-(pid as i32), libc::SIGKILL);
+            }
+            let _ = child.kill();
+            let _ = child.wait();
+            Ok(())
+        } else {
+            Err(ToolError::new(format!("No background process found with PID {pid}")))
+        }
+    }
+
+    
+    pub fn background_process_count(&mut self) -> usize {
+        self.background_processes.retain(|_, (_, child)| {
+            match child.try_wait() {
+                Ok(None) => true,
+                _ => false,
+            }
+        });
+        self.background_processes.len()
+    }
+
+    pub fn list_background_processes(&mut self) -> String {
+        let mut alive = Vec::new();
+        self.background_processes.retain(|&pid, (cmd, child)| {
+            match child.try_wait() {
+                Ok(None) => {
+                    alive.push(format!("PID {pid}: {cmd}"));
+                    true
+                }
+                _ => false,
+            }
+        });
+        if alive.is_empty() {
+            "No background processes running.".to_string()
+        } else {
+            alive.join("\n")
+        }
+    }
 }
 
 pub struct Registry {
@@ -215,6 +291,11 @@ pub fn builtin_tools() -> Vec<Box<dyn Tool>> {
         Box::new(git::GitDiff),
         Box::new(git::GitStatus),
         Box::new(shell::RunCommand),
+        Box::new(shell::StartBackgroundProcess),
+        Box::new(shell::KillBackgroundProcess),
+        Box::new(shell::ListBackgroundProcesses),
+        Box::new(notes::TakeNote),
+        Box::new(notes::SearchNotes),
     ]
 }
 
