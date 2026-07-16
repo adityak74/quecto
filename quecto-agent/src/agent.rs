@@ -32,6 +32,10 @@ const VERIFY_NO_PROGRESS_ATTEMPTS: usize = 3;
 /// still stop promptly instead of grinding to the step limit.
 const DENIAL_STREAK_LIMIT: usize = 3;
 
+/// Consecutive identical tool call + result + change-count observations that
+/// trip the repeat guard and end a run early.
+const REPEAT_STREAK_LIMIT: usize = 3;
+
 /// Receives the transcript and file mutations of a run in order, for
 /// persistence. Recording is best-effort and must never fail the run.
 pub trait RunRecorder: Send {
@@ -56,7 +60,7 @@ impl RepeatGuard {
             self.changes = changes;
             self.streak = 1;
         }
-        self.streak >= 3
+        self.streak >= REPEAT_STREAK_LIMIT
     }
 }
 
