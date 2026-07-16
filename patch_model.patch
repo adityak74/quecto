@@ -1,0 +1,26 @@
+--- quecto-agent/src/model.rs
++++ quecto-agent/src/model.rs
+@@ -202,6 +202,13 @@
+ pub trait Model: Send + Sync {
+     fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr>;
++    fn clone_box(&self) -> Box<dyn Model>;
++}
++
++impl Clone for Box<dyn Model> {
++    fn clone(&self) -> Self {
++        self.clone_box()
++    }
+ }
+ 
+@@ -209,6 +216,7 @@
+-pub struct HttpModel {
++#[derive(Clone)]
++pub struct HttpModel {
+     pub url: String,
+@@ -226,6 +234,9 @@
+ impl Model for HttpModel {
++    fn clone_box(&self) -> Box<dyn Model> {
++        Box::new(self.clone())
++    }
++
+     fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
