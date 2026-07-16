@@ -406,9 +406,9 @@ impl Agent {
                     stop = Some(Outcome::Cancelled);
                     break;
                 }
-                let display_name = if call.name == "run_command" {
+                let display_name = if call.name == "run_command" || call.name == "start_background_process" {
                     if let Some(cmd) = call.arguments.get("command").and_then(|v| v.as_str()) {
-                        format!("run_command({})", cmd)
+                        format!("{}({})", call.name, cmd)
                     } else {
                         call.name.clone()
                     }

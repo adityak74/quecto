@@ -11,7 +11,7 @@ impl Tool for TakeNote {
     }
 
     fn description(&self) -> &str {
-        "Create or append to a markdown note in the knowledge base."
+        "Create or append to a markdown note in the knowledge base (.qkb/ directory)."
     }
 
     fn schema(&self) -> Value {
@@ -58,9 +58,9 @@ impl Tool for TakeNote {
         
         drop(file);
         let after = fs::read_to_string(&file_path).unwrap_or_default();
-        cx.record_change(rel_path, before, after);
+        cx.record_change(&rel_path, before, after);
 
-        let msg = format!("appended to {}", filename);
+        let msg = format!("appended to {}", rel_path);
         Ok(ToolOutput::new(msg.clone(), msg))
     }
 }
@@ -73,7 +73,7 @@ impl Tool for SearchNotes {
     }
 
     fn description(&self) -> &str {
-        "Search through knowledge base notes."
+        "Search through knowledge base notes (.qkb/ directory)."
     }
 
     fn schema(&self) -> Value {

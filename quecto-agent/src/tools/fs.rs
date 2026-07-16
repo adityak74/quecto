@@ -46,7 +46,7 @@ impl Tool for ReadFile {
         let n = selected.lines().count();
         Ok(ToolOutput::new(
             cap_output(&selected, 64_000),
-            format!("{n} lines"),
+            format!("{path} ({n} lines)"),
         ))
     }
 }

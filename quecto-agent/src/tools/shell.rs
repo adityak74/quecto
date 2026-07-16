@@ -49,7 +49,7 @@ impl Tool for StartBackgroundProcess {
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| ToolError::new("requires a non-empty string 'command'"))?;
         let pid = cx.start_background_process(command)?;
-        Ok(ToolOutput::new(format!("Started background process with PID {}", pid), "started"))
+        Ok(ToolOutput::new(format!("Started background process with PID {}", pid), format!("started PID {}", pid)))
     }
 }
 
@@ -74,7 +74,7 @@ impl Tool for KillBackgroundProcess {
             .and_then(|v| v.as_u64())
             .ok_or_else(|| ToolError::new("requires an integer 'pid'"))? as u32;
         cx.kill_background_process(pid)?;
-        Ok(ToolOutput::new(format!("Killed background process {}", pid), "killed"))
+        Ok(ToolOutput::new(format!("Killed background process {}", pid), format!("killed PID {}", pid)))
     }
 }
 
@@ -95,7 +95,7 @@ impl Tool for ListBackgroundProcesses {
 
     fn run(&self, _args: &Value, cx: &mut Context) -> ToolResult {
         let list = cx.list_background_processes();
-        Ok(ToolOutput::new(list, "listed"))
+        Ok(ToolOutput::new(list, "listed processes"))
     }
 }
 
