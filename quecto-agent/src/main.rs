@@ -397,6 +397,59 @@ fn finish(outcome: Outcome, store_status: Option<(&Store, &str)>) {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaModel>,
+}
+
+#[derive(serde::Deserialize)]
+struct OllamaModel {
+    name: String,
+}
+
+fn resolve_host_and_model(overrides: &Overrides, merged: &Flavor) -> (String, String) {
+    let base_url = pick(
+        overrides.base_url.as_deref(),
+        "QUECTO_BASE_URL",
+        merged.base_url.as_deref(),
+        "http://localhost:11434/v1",
+    );
+    let mut model_name = pick(
+        overrides.model.as_deref(),
+        "QUECTO_MODEL",
+        merged.model.as_deref(),
+        "",
+    );
+
+    if model_name.is_empty() && base_url.contains("localhost:11434") {
+        let tags_url = base_url.replace("/v1", "/api/tags");
+        if let Ok(res) = ureq::get(&tags_url).call() {
+            if let Ok(json) = res.into_json::<OllamaTagsResponse>() {
+                if !json.models.is_empty() {
+                    eprintln!("No model specified. Available Ollama models:");
+                    for (i, model) in json.models.iter().enumerate() {
+                        eprintln!("  {}) {}", i + 1, model.name);
+                    }
+                    eprint!("Select a model (1-{}): ", json.models.len());
+                    let _ = std::io::stdout().flush();
+                    let mut input = String::new();
+                    if std::io::stdin().read_line(&mut input).is_ok() {
+                        let input = input.trim();
+                        if let Ok(idx) = input.parse::<usize>() {
+                            if idx > 0 && idx <= json.models.len() {
+                                model_name = json.models[idx - 1].name.clone();
+                                eprintln!("Selected model: {}", model_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    (base_url, model_name)
+}
+
 fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
     let approval = ApprovalMode::terminal(auto_approve);
@@ -410,18 +463,7 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
     );
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
-    let base_url = pick(
-        overrides.base_url.as_deref(),
-        "QUECTO_BASE_URL",
-        merged.base_url.as_deref(),
-        "http://localhost:11434/v1",
-    );
-    let model_name = pick(
-        overrides.model.as_deref(),
-        "QUECTO_MODEL",
-        merged.model.as_deref(),
-        "",
-    );
+    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let api_key = std::env::var("QUECTO_API_KEY")
         .ok()
         .filter(|s| !s.is_empty());
@@ -501,18 +543,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     );
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
-    let base_url = pick(
-        overrides.base_url.as_deref(),
-        "QUECTO_BASE_URL",
-        merged.base_url.as_deref(),
-        "http://localhost:11434/v1",
-    );
-    let model_name = pick(
-        overrides.model.as_deref(),
-        "QUECTO_MODEL",
-        merged.model.as_deref(),
-        "",
-    );
+    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let model = HttpModel {
         url: join_url(&base_url, "chat/completions"),
         api_key: std::env::var("QUECTO_API_KEY")
@@ -944,18 +975,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     );
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
-    let base_url = pick(
-        overrides.base_url.as_deref(),
-        "QUECTO_BASE_URL",
-        merged.base_url.as_deref(),
-        "http://localhost:11434/v1",
-    );
-    let model_name = pick(
-        overrides.model.as_deref(),
-        "QUECTO_MODEL",
-        merged.model.as_deref(),
-        "",
-    );
+    let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let model = HttpModel {
         url: join_url(&base_url, "chat/completions"),
         api_key: std::env::var("QUECTO_API_KEY")
