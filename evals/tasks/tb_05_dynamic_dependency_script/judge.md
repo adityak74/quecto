@@ -1,0 +1,1 @@
+Check if 'scraper.py' exists. Check if it imports BeautifulSoup. Check if it has a try/except block catching ImportError and running 'pip install'. Check if 'output.txt' exists and contains 'Item1,Item2' or similar.

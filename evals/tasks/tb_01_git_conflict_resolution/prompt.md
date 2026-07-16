@@ -1,0 +1,1 @@
+This repository is currently in a merge conflict state on file.txt. Resolve the conflict by keeping both changes (the upstream changes on top, then the incoming changes below it). Commit the resolved file with message 'resolved'.

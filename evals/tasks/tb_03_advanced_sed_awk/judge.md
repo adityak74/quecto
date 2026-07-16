@@ -1,0 +1,1 @@
+Check if clean.csv exists. It must NOT contain empty lines. It must NOT have trailing commas. It MUST have lowercase email domains (e.g. alice@gmail.com). There must be no Python or Node scripts in the workspace.
