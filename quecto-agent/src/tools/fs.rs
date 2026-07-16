@@ -100,7 +100,7 @@ impl Tool for ListFiles {
         let n = entries.len();
         Ok(ToolOutput::new(
             cap_output(&entries.join("\n"), 32_000),
-            format!("{n} entries"),
+            format!("{} ({} entries)", rel, n),
         ))
     }
 }
@@ -149,7 +149,7 @@ impl Tool for WriteFile {
         };
         Ok(ToolOutput::new(
             format!("{verb} {path} ({lines} lines)"),
-            format!("{verb} {lines} lines"),
+            format!("{verb} {path} ({lines} lines)"),
         ))
     }
 }
