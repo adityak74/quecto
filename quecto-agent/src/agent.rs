@@ -209,6 +209,11 @@ impl Agent {
     }
 
      /// Return the names of registered tools (used by /commands in chat).
+    
+    pub fn background_process_count(&mut self) -> usize {
+        self.cx.background_process_count()
+    }
+
     pub fn tool_names(&self) -> Vec<String> {
         self.registry.tool_names()
     }

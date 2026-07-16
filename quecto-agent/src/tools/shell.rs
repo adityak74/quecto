@@ -1,4 +1,4 @@
-use super::{Context, Tool, ToolError, ToolResult};
+use super::{Context, Tool, ToolError, ToolResult, ToolOutput};
 use serde_json::{json, Value};
 
 pub struct RunCommand;
@@ -23,6 +23,79 @@ impl Tool for RunCommand {
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| ToolError::new("run_command requires a non-empty string 'command'"))?;
         cx.run_command(command)
+    }
+}
+
+
+pub struct StartBackgroundProcess;
+
+impl Tool for StartBackgroundProcess {
+    fn name(&self) -> &str {
+        "start_background_process"
+    }
+
+    fn description(&self) -> &str {
+        "Starts a detached background process and returns its PID."
+    }
+
+    fn schema(&self) -> Value {
+        json!({"type":"object","properties":{"command":{"type":"string","description":"Command passed to /bin/sh -c"}},"required":["command"],"additionalProperties":false})
+    }
+
+    fn run(&self, args: &Value, cx: &mut Context) -> ToolResult {
+        let command = args
+            .get("command")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| ToolError::new("requires a non-empty string 'command'"))?;
+        let pid = cx.start_background_process(command)?;
+        Ok(ToolOutput::new(format!("Started background process with PID {}", pid), "started"))
+    }
+}
+
+pub struct KillBackgroundProcess;
+
+impl Tool for KillBackgroundProcess {
+    fn name(&self) -> &str {
+        "kill_background_process"
+    }
+
+    fn description(&self) -> &str {
+        "Kills a background process by its PID."
+    }
+
+    fn schema(&self) -> Value {
+        json!({"type":"object","properties":{"pid":{"type":"integer","description":"The PID of the background process to kill"}},"required":["pid"],"additionalProperties":false})
+    }
+
+    fn run(&self, args: &Value, cx: &mut Context) -> ToolResult {
+        let pid = args
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .ok_or_else(|| ToolError::new("requires an integer 'pid'"))? as u32;
+        cx.kill_background_process(pid)?;
+        Ok(ToolOutput::new(format!("Killed background process {}", pid), "killed"))
+    }
+}
+
+pub struct ListBackgroundProcesses;
+
+impl Tool for ListBackgroundProcesses {
+    fn name(&self) -> &str {
+        "list_background_processes"
+    }
+
+    fn description(&self) -> &str {
+        "Lists all running background processes."
+    }
+
+    fn schema(&self) -> Value {
+        json!({"type":"object","properties":{},"required":[]})
+    }
+
+    fn run(&self, _args: &Value, cx: &mut Context) -> ToolResult {
+        let list = cx.list_background_processes();
+        Ok(ToolOutput::new(list, "listed"))
     }
 }
 
