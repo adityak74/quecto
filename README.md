@@ -51,6 +51,7 @@
 
 ## 📣 Announcements
 
+- **`2026-07-16` — Chat UX & Agent Delegation shipped.** Upgraded the chat REPL to a `crossterm` event loop with native Bracketed Paste support. Added tracking for background processes (`start_background_process`, `kill_background_process`), a new `invoke_subagent` tool for agent delegation, and project-local `.qkb` Markdown notes.
 - **`2026-07-15` — Evaluation suite shipped.** A 10-task TerminalBench-style smoke suite (`evals/smoke/`) with deterministic `verify.sh` verifiers and a [Harbor](https://harborframework.com) adapter (`evals/harbor/quecto_agent.py`) for the full 89-task Terminal-Bench 2.x benchmark. Run `./evals/run_evals.sh` — no API key needed.
 - **`2026-07-15` — OpenTelemetry (OTEL) support.** Gated behind the `otel` feature flag, `quecto-agent` now supports end-to-end tracing for run loops, steps, tool dispatches (with argument sanitization), and model completions—including parsed reasoning/thinking traces.
 - **`2026-07-14` — Bug-fix release.** Seven issues from a post-UAT audit fixed: CRLF patch compatibility (with double-conversion guard), `take_last_change` DB error propagation, millisecond timestamps, `record_message` transaction safety, `/status` session-specific querying, `/context` character count, and REPL UX polish (aliases, `--version`, clear confirmation). 183 tests, 0 failures.
@@ -171,7 +172,7 @@ Interactive chat with the rotating loading verbs:
 | `/clear` | — | Forget the conversation (keeps the system prompt) |
 | `/exit` | `/quit`, `/q` | Leave chat |
 
-**What's in it:** multi-step tool use (file read/write/patch, search, git, shell), edits gated by an approval preset, a hard-denylist sandbox (blocks `sudo`, `rm -rf /`, `git push`, etc. even under `--yes`), configurable verification commands, SQLite-backed session persistence, and named flavor manifests (`.quecto/flavors/*.toml`) with content-hash trust-on-first-use.
+**What's in it:** multi-step tool use (file read/write/patch, search, git, shell, background processes, `.qkb` notes, subagent delegation), edits gated by an approval preset, a hard-denylist sandbox (blocks `sudo`, `rm -rf /`, `git push`, etc. even under `--yes`), configurable verification commands, SQLite-backed session persistence, and named flavor manifests (`.quecto/flavors/*.toml`) with content-hash trust-on-first-use.
 
 ### Configuration
 
