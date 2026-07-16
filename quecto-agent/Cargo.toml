@@ -18,6 +18,7 @@ clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 sha2 = "0.10"
+quecto-mcp = { path = "../quecto-mcp", optional = true }
 
 # Optional OpenTelemetry and Tracing Dependencies
 tracing = { version = "0.1", optional = true }
@@ -39,6 +40,7 @@ otel = [
     "dep:opentelemetry-otlp",
     "dep:tokio"
 ]
+mcp = ["dep:quecto-mcp"]
 
 [dev-dependencies]
 tempfile = "3"

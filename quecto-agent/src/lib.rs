@@ -50,5 +50,10 @@ pub use tools::{
 pub use trust::TrustStore;
 pub use verify::{Verifier, VerifyReport, VerifyResult};
 
+#[cfg(feature = "mcp")]
+pub mod mcp_adapter;
+#[cfg(feature = "mcp")]
+pub use mcp_adapter::McpToolAdapter;
+
 /// Shared boxed error, mirroring the core so `?` composes across both crates.
 pub type BoxErr = Box<dyn std::error::Error + Send + Sync>;
