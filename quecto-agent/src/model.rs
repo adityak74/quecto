@@ -202,9 +202,17 @@ fn message_to_json(m: &Message) -> Value {
 /// The real impl calls the model over HTTP; tests inject a scripted fake.
 pub trait Model: Send + Sync {
     fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr>;
+    fn clone_box(&self) -> Box<dyn Model>;
+}
+
+impl Clone for Box<dyn Model> {
+    fn clone(&self) -> Self {
+        self.clone_box()
+    }
 }
 
 /// The real model client: buffered `quecto_raw` against an OpenAI-compatible endpoint.
+#[derive(Clone)]
 pub struct HttpModel {
     pub url: String,
     pub api_key: Option<String>,
@@ -224,6 +232,10 @@ impl HttpModel {
 }
 
 impl Model for HttpModel {
+    fn clone_box(&self) -> Box<dyn Model> {
+        Box::new(self.clone())
+    }
+
     fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
         #[cfg(feature = "otel")]
         let span = tracing::span!(

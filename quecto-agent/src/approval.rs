@@ -5,8 +5,11 @@ pub trait Approver: Send + Sync {
     fn confirm(&self, call: &ToolCall) -> bool;
 }
 
+use std::sync::Arc;
+
+#[derive(Clone)]
 pub enum ApprovalMode {
-    Interactive(Box<dyn Approver>),
+    Interactive(Arc<dyn Approver>),
     NonInteractive,
     AutoApprove,
 }
@@ -24,7 +27,7 @@ impl ApprovalMode {
         if auto_approve {
             Self::AutoApprove
         } else if io::stdin().is_terminal() {
-            Self::Interactive(Box::new(TerminalApprover))
+            Self::Interactive(Arc::new(TerminalApprover))
         } else {
             Self::NonInteractive
         }
@@ -130,12 +133,12 @@ mod tests {
     fn modes_resolve_ask_safely() {
         assert!(!ApprovalMode::NonInteractive.allows(&call()));
         assert!(ApprovalMode::AutoApprove.allows(&call()));
-        assert!(ApprovalMode::Interactive(Box::new(Stub {
+        assert!(ApprovalMode::Interactive(Arc::new(Stub {
             answer: true,
             calls: AtomicUsize::new(0)
         }))
         .allows(&call()));
-        assert!(!ApprovalMode::Interactive(Box::new(Stub {
+        assert!(!ApprovalMode::Interactive(Arc::new(Stub {
             answer: false,
             calls: AtomicUsize::new(0)
         }))
