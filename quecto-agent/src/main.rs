@@ -78,6 +78,12 @@ struct Cli {
     /// Select the approval preset.
     #[arg(long, global = true)]
     approval: Option<String>,
+    /// Connect to an MCP server. Format: stdio:name:command[:arg1:arg2...]
+    /// or streamable_http:name:url  or  sse:name:url (legacy).
+    /// Can be specified multiple times. Requires --features mcp build.
+    #[cfg(feature = "mcp")]
+    #[arg(long = "mcp", global = true, value_name = "TRANSPORT:NAME:...")]
+    mcp: Vec<String>,
     #[command(subcommand)]
     command: Option<Command>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -90,6 +96,8 @@ struct Overrides {
     base_url: Option<String>,
     max_steps: Option<usize>,
     approval: Option<String>,
+    #[cfg(feature = "mcp")]
+    mcp: Vec<String>,
 }
 
 #[derive(Subcommand)]
@@ -120,6 +128,8 @@ fn main() {
         base_url: cli.base_url.clone(),
         max_steps: cli.max_steps,
         approval: cli.approval.clone(),
+        #[cfg(feature = "mcp")]
+        mcp: cli.mcp,
     };
     match cli.command {
         Some(Command::Chat) => chat(cli.yes, cli.no_verify, &overrides),
@@ -430,6 +440,26 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
         .or(merged.max_steps)
         .unwrap_or(20);
 
+    #[cfg(feature = "mcp")]
+    let mcp_result = {
+        use quecto_mcp::{McpConfig, McpRegistry};
+        use std::sync::{Arc, Mutex};
+        use std::path::Path;
+
+        let file_cfg = McpConfig::from_file(Path::new(".quecto/mcp.toml"))
+            .unwrap_or_else(|e| { eprintln!("quecto-mcp: config warning: {e}"); McpConfig::empty() });
+        let env_cfg = McpConfig::from_env()
+            .unwrap_or_else(|e| { eprintln!("quecto-mcp: env warning: {e}"); McpConfig::empty() });
+        let cli_cfg = mcp_config_from_flags(&overrides.mcp);
+        let merged = McpConfig::merged(file_cfg, env_cfg, cli_cfg);
+
+        let mut registry = McpRegistry::new(merged);
+        let mcp_tools = registry.discover();
+        let prompt_additions = registry.system_prompt_additions();
+        let registry_arc = Arc::new(Mutex::new(registry));
+        (mcp_tools, prompt_additions, registry_arc)
+    };
+
     let session_id = new_session_id();
     let mut agent = Agent::new(
         Box::new(model),
@@ -441,6 +471,22 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
     )
     .register_builtins_filtered(merged.tools.enabled.as_deref())
     .with_policy(build_policy(overrides.approval.as_deref(), &gated));
+
+    #[cfg(feature = "mcp")]
+    {
+        let (mcp_tools, prompt_additions, registry_arc) = mcp_result;
+        for mcp_tool in mcp_tools {
+            let adapter = quecto_agent::mcp_adapter::McpToolAdapter { tool: mcp_tool, registry: std::sync::Arc::clone(&registry_arc) };
+            agent = agent.register(Box::new(adapter));
+        }
+        for addition in &prompt_additions {
+            if let Some(msg) = agent.messages.first_mut() {
+                msg.content.push_str("\n\n");
+                msg.content.push_str(addition);
+            }
+        }
+    }
+
     agent = attach_verifier(agent, no_verify, &gated);
 
     // Attach a recorder when the store is available; the run proceeds regardless.
@@ -517,6 +563,26 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         .or(merged.max_steps)
         .unwrap_or(20);
 
+    #[cfg(feature = "mcp")]
+    let mcp_result = {
+        use quecto_mcp::{McpConfig, McpRegistry};
+        use std::sync::{Arc, Mutex};
+        use std::path::Path;
+
+        let file_cfg = McpConfig::from_file(Path::new(".quecto/mcp.toml"))
+            .unwrap_or_else(|e| { eprintln!("quecto-mcp: config warning: {e}"); McpConfig::empty() });
+        let env_cfg = McpConfig::from_env()
+            .unwrap_or_else(|e| { eprintln!("quecto-mcp: env warning: {e}"); McpConfig::empty() });
+        let cli_cfg = mcp_config_from_flags(&overrides.mcp);
+        let merged = McpConfig::merged(file_cfg, env_cfg, cli_cfg);
+
+        let mut registry = McpRegistry::new(merged);
+        let mcp_tools = registry.discover();
+        let prompt_additions = registry.system_prompt_additions();
+        let registry_arc = Arc::new(Mutex::new(registry));
+        (mcp_tools, prompt_additions, registry_arc)
+    };
+
     let color = std::io::stdout().is_terminal();
     let spinner_verbs = parse_spinner_verbs(std::env::var("QUECTO_SPINNER_VERBS").ok().as_deref());
     let approval = if auto_approve {
@@ -540,6 +606,22 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     } else {
         Box::new(LineRenderer::new(std::io::stdout(), color))
     });
+
+    #[cfg(feature = "mcp")]
+    {
+        let (mcp_tools, prompt_additions, registry_arc) = mcp_result;
+        for mcp_tool in mcp_tools {
+            let adapter = quecto_agent::mcp_adapter::McpToolAdapter { tool: mcp_tool, registry: std::sync::Arc::clone(&registry_arc) };
+            agent = agent.register(Box::new(adapter));
+        }
+        for addition in &prompt_additions {
+            if let Some(msg) = agent.messages.first_mut() {
+                msg.content.push_str("\n\n");
+                msg.content.push_str(addition);
+            }
+        }
+    }
+
     agent = attach_verifier(agent, no_verify, &gated);
 
     let store = open_store();
@@ -742,12 +824,48 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         .or(merged.max_steps)
         .unwrap_or(20);
 
+    #[cfg(feature = "mcp")]
+    let mcp_result = {
+        use quecto_mcp::{McpConfig, McpRegistry};
+        use std::sync::{Arc, Mutex};
+        use std::path::Path;
+
+        let file_cfg = McpConfig::from_file(Path::new(".quecto/mcp.toml"))
+            .unwrap_or_else(|e| { eprintln!("quecto-mcp: config warning: {e}"); McpConfig::empty() });
+        let env_cfg = McpConfig::from_env()
+            .unwrap_or_else(|e| { eprintln!("quecto-mcp: env warning: {e}"); McpConfig::empty() });
+        let cli_cfg = mcp_config_from_flags(&overrides.mcp);
+        let merged = McpConfig::merged(file_cfg, env_cfg, cli_cfg);
+
+        let mut registry = McpRegistry::new(merged);
+        let mcp_tools = registry.discover();
+        let prompt_additions = registry.system_prompt_additions();
+        let registry_arc = Arc::new(Mutex::new(registry));
+        (mcp_tools, prompt_additions, registry_arc)
+    };
+
     let msg_seq = store.message_count(id).unwrap_or(0);
     let change_seq = store.change_count(id).unwrap_or(0);
     let mut agent = Agent::new(Box::new(model), system, steps, cwd, cancel, approval)
         .register_builtins_filtered(merged.tools.enabled.as_deref())
         .with_policy(build_policy(overrides.approval.as_deref(), &gated))
         .with_messages(messages);
+
+    #[cfg(feature = "mcp")]
+    {
+        let (mcp_tools, prompt_additions, registry_arc) = mcp_result;
+        for mcp_tool in mcp_tools {
+            let adapter = quecto_agent::mcp_adapter::McpToolAdapter { tool: mcp_tool, registry: std::sync::Arc::clone(&registry_arc) };
+            agent = agent.register(Box::new(adapter));
+        }
+        for addition in &prompt_additions {
+            if let Some(msg) = agent.messages.first_mut() {
+                msg.content.push_str("\n\n");
+                msg.content.push_str(addition);
+            }
+        }
+    }
+
     agent = attach_verifier(agent, no_verify, &gated);
     if let Ok(rec_store) = Store::open_default() {
         agent = agent.with_recorder(Box::new(SqliteRecorder::new(
@@ -824,6 +942,35 @@ fn diff() {
             std::process::exit(1);
         }
     }
+}
+
+#[cfg(feature = "mcp")]
+fn mcp_config_from_flags(flags: &[String]) -> quecto_mcp::McpConfig {
+    use quecto_mcp::config::{ServerConfig, TransportKind, TrustLevel};
+    use std::collections::HashMap;
+    let mut servers = Vec::new();
+    for flag in flags {
+        let parts: Vec<&str> = flag.splitn(3, ':').collect();
+        if parts.len() < 3 { eprintln!("quecto-mcp: ignoring malformed --mcp flag: {flag}"); continue; }
+        let (transport_str, name, rest) = (parts[0], parts[1], parts[2]);
+        let transport = match transport_str {
+            "stdio" => TransportKind::Stdio,
+            "streamable_http" => TransportKind::StreamableHttp,
+            "sse" => TransportKind::Sse,
+            other => { eprintln!("quecto-mcp: unknown transport '{other}'"); continue; }
+        };
+        let server = match transport {
+            TransportKind::Stdio => {
+                let mut p = rest.split(':');
+                let command = p.next().unwrap_or("").to_string();
+                let args: Vec<String> = p.map(str::to_string).collect();
+                ServerConfig { name: name.to_string(), transport, command: Some(command), args, env: HashMap::new(), url: None, headers: HashMap::new(), trust: TrustLevel::Sandbox, timeout_secs: None }
+            }
+            _ => ServerConfig { name: name.to_string(), transport, command: None, args: vec![], env: HashMap::new(), url: Some(rest.to_string()), headers: HashMap::new(), trust: TrustLevel::Sandbox, timeout_secs: None }
+        };
+        servers.push(server);
+    }
+    quecto_mcp::McpConfig { servers }
 }
 
 #[cfg(test)]
