@@ -452,10 +452,7 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
     .register_builtins_filtered(merged.tools.enabled.as_deref())
     .with_policy(build_policy(overrides.approval.as_deref(), &gated));
 
-    #[cfg(feature = "mcp")]
-    {
-        agent = attach_mcp_tools(agent, overrides, true);
-    }
+    agent = attach_mcp_tools(agent, overrides, true);
 
     agent = attach_verifier(agent, no_verify, &gated);
 
@@ -557,10 +554,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         Box::new(LineRenderer::new(std::io::stdout(), color))
     });
 
-    #[cfg(feature = "mcp")]
-    {
-        agent = attach_mcp_tools(agent, overrides, true);
-    }
+    agent = attach_mcp_tools(agent, overrides, true);
 
     agent = attach_verifier(agent, no_verify, &gated);
 
@@ -771,10 +765,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         .with_policy(build_policy(overrides.approval.as_deref(), &gated))
         .with_messages(messages);
 
-    #[cfg(feature = "mcp")]
-    {
-        agent = attach_mcp_tools(agent, overrides, false);
-    }
+    agent = attach_mcp_tools(agent, overrides, false);
 
     agent = attach_verifier(agent, no_verify, &gated);
     if let Ok(rec_store) = Store::open_default() {
@@ -852,6 +843,11 @@ fn diff() {
             std::process::exit(1);
         }
     }
+}
+
+#[cfg(not(feature = "mcp"))]
+fn attach_mcp_tools(agent: Agent, _overrides: &Overrides, _add_prompt_additions: bool) -> Agent {
+    agent
 }
 
 #[cfg(feature = "mcp")]
