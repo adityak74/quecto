@@ -73,7 +73,7 @@ impl Tool for SearchText {
         };
         Ok(ToolOutput::new(
             cap_output(&content, 32_000),
-            format!("{n} matches"),
+            format!("'{}' ({} matches)", pattern, n),
         ))
     }
 }
