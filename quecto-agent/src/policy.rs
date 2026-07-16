@@ -114,7 +114,6 @@ fn deny_reason(command: &str) -> Option<String> {
         .map(|segments| segments.iter().any(|words| segment_is_forbidden(words)))
         .unwrap_or(true)
         || normalized.contains('$')
-        || normalized.contains("$(")
         || normalized.contains('`')
         || ["> /", ">/", ">> /", ">>/"]
             .iter()

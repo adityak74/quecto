@@ -617,93 +617,15 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                 Ok(l) => l,
                 Err(_) => break,
             };
-            let mut exit = false;
-            match parse_command(&line) {
-                ChatCommand::Exit => exit = true,
-                ChatCommand::Help => out.notice(HELP),
-                ChatCommand::Model => {
-                    if model_name.is_empty() {
-                        out.notice("model: (not set)");
-                    } else {
-                        out.notice(&format!("model: {model_name}"));
-                    }
-                }
-                ChatCommand::Context => {
-                    let msg_n = agent.messages.len().saturating_sub(1);
-                    let char_count: usize = agent
-                        .messages
-                        .iter()
-                        .map(|m| {
-                            m.content.len()
-                                + m.tool_calls
-                                    .iter()
-                                    .map(|tc| tc.name.len() + tc.arguments.to_string().len())
-                                    .sum::<usize>()
-                        })
-                        .sum();
-                    out.notice(&format!(
-                        "session: {} ({} messages, ~{} chars)",
-                        session_id, msg_n, char_count
-                    ));
-                }
-                ChatCommand::Status => {
-                    let status = store
-                        .as_ref()
-                        .and_then(|s| s.session_status(&session_id).ok().flatten())
-                        .unwrap_or_else(|| "unknown".to_string());
-                    let bg_count = agent.background_process_count();
-                    if bg_count > 0 {
-                        let plural = if bg_count == 1 { "process" } else { "processes" };
-                        out.notice(&format!("session {session_id} [{status}] ({} background {} running)", bg_count, plural));
-                    } else {
-                        out.notice(&format!("session {session_id} [{status}]"));
-                    }
-                }
-                ChatCommand::Diff => {
-                    if let Some(s) = &store {
-                        let changes = s.load_changes(&session_id).unwrap_or_default();
-                        out.notice(render_change_summary(&changes).trim_end());
-                    } else {
-                        out.notice("no session store");
-                    }
-                }
-                ChatCommand::Undo => chat_undo(&store, &session_id, &cwd, &mut out),
-                ChatCommand::Approve => {
-                    agent.set_approval(ApprovalMode::AutoApprove);
-                    out.notice("edits and commands will be auto-approved this session");
-                }
-                ChatCommand::Deny => {
-                    agent.set_approval(ApprovalMode::NonInteractive);
-                    out.notice("edits and commands will be denied this session");
-                }
-                ChatCommand::Clear => {
-                    agent.clear_history();
-                    out.notice(&format!("session {} conversation cleared", session_id));
-                }
-                ChatCommand::Tools => {
-                    out.notice(&agent.tool_names().join("\n"));
-                }
-                ChatCommand::Unknown(name) => {
-                    out.notice(&format!("unknown command '/{name}' — try /help"));
-                }
-                ChatCommand::Say(text) => {
-                    if !text.is_empty() {
-                        match agent.run(&text) {
-                            Outcome::Complete(answer) => out.assistant(&answer),
-                            Outcome::StepLimit => out.notice("(step limit reached)"),
-                            Outcome::VerificationFailed { attempts } => out.notice(&format!(
-                                "(verification still failing after {attempts} attempts)"
-                            )),
-                            Outcome::Cancelled => out.notice("(cancelled)"),
-                            Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
-                            Outcome::Blocked => {
-                                out.notice("(stopped: actions denied — use /approve to allow this session)")
-                            }
-                            Outcome::Error(e) => out.notice(&format!("(error: {e})")),
-                        }
-                    }
-                }
-            }
+            let exit = handle_chat_command(
+                &line,
+                &mut agent,
+                &store,
+                &session_id,
+                &cwd,
+                &model_name,
+                &mut out,
+            );
             if exit {
                 break;
             }
@@ -771,93 +693,15 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                             let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
                             let _ = crossterm::terminal::disable_raw_mode();
 
-                            let mut exit = false;
-                            match parse_command(&line) {
-                                ChatCommand::Exit => exit = true,
-                                ChatCommand::Help => out.notice(HELP),
-                                ChatCommand::Model => {
-                                    if model_name.is_empty() {
-                                        out.notice("model: (not set)");
-                                    } else {
-                                        out.notice(&format!("model: {model_name}"));
-                                    }
-                                }
-                                ChatCommand::Context => {
-                                    let msg_n = agent.messages.len().saturating_sub(1);
-                                    let char_count: usize = agent
-                                        .messages
-                                        .iter()
-                                        .map(|m| {
-                                            m.content.len()
-                                                + m.tool_calls
-                                                    .iter()
-                                                    .map(|tc| tc.name.len() + tc.arguments.to_string().len())
-                                                    .sum::<usize>()
-                                        })
-                                        .sum();
-                                    out.notice(&format!(
-                                        "session: {} ({} messages, ~{} chars)",
-                                        session_id, msg_n, char_count
-                                    ));
-                                }
-                                ChatCommand::Status => {
-                                    let status = store
-                                        .as_ref()
-                                        .and_then(|s| s.session_status(&session_id).ok().flatten())
-                                        .unwrap_or_else(|| "unknown".to_string());
-                                    let bg_count = agent.background_process_count();
-                                    if bg_count > 0 {
-                                        let plural = if bg_count == 1 { "process" } else { "processes" };
-                                        out.notice(&format!("session {session_id} [{status}] ({} background {} running)", bg_count, plural));
-                                    } else {
-                                        out.notice(&format!("session {session_id} [{status}]"));
-                                    }
-                                }
-                                ChatCommand::Diff => {
-                                    if let Some(s) = &store {
-                                        let changes = s.load_changes(&session_id).unwrap_or_default();
-                                        out.notice(render_change_summary(&changes).trim_end());
-                                    } else {
-                                        out.notice("no session store");
-                                    }
-                                }
-                                ChatCommand::Undo => chat_undo(&store, &session_id, &cwd, &mut out),
-                                ChatCommand::Approve => {
-                                    agent.set_approval(ApprovalMode::AutoApprove);
-                                    out.notice("edits and commands will be auto-approved this session");
-                                }
-                                ChatCommand::Deny => {
-                                    agent.set_approval(ApprovalMode::NonInteractive);
-                                    out.notice("edits and commands will be denied this session");
-                                }
-                                ChatCommand::Clear => {
-                                    agent.clear_history();
-                                    out.notice(&format!("session {} conversation cleared", session_id));
-                                }
-                                ChatCommand::Tools => {
-                                    out.notice(&agent.tool_names().join("\n"));
-                                }
-                                ChatCommand::Unknown(name) => {
-                                    out.notice(&format!("unknown command '/{name}' — try /help"));
-                                }
-                                ChatCommand::Say(text) => {
-                                    if !text.is_empty() {
-                                        match agent.run(&text) {
-                                            Outcome::Complete(answer) => out.assistant(&answer),
-                                            Outcome::StepLimit => out.notice("(step limit reached)"),
-                                            Outcome::VerificationFailed { attempts } => out.notice(&format!(
-                                                "(verification still failing after {attempts} attempts)"
-                                            )),
-                                            Outcome::Cancelled => out.notice("(cancelled)"),
-                                            Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
-                                            Outcome::Blocked => {
-                                                out.notice("(stopped: actions denied — use /approve to allow this session)")
-                                            }
-                                            Outcome::Error(e) => out.notice(&format!("(error: {e})")),
-                                        }
-                                    }
-                                }
-                            }
+                            let exit = handle_chat_command(
+                                &line,
+                                &mut agent,
+                                &store,
+                                &session_id,
+                                &cwd,
+                                &model_name,
+                                &mut out,
+                            );
 
                             if exit {
                                 break;
@@ -920,12 +764,113 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     }
     out.notice("bye");
 }
-fn chat_undo(
+/// Dispatch one parsed chat-REPL command line against the running agent and
+/// session. Shared by the non-TTY (piped stdin) and TTY (raw-mode) input
+/// loops in `chat`, which otherwise duplicated this match verbatim. Returns
+/// `true` if the REPL should exit.
+fn handle_chat_command(
+    line: &str,
+    agent: &mut Agent,
     store: &Option<Store>,
     session_id: &str,
     cwd: &Path,
-    out: &mut LineRenderer<std::io::Stdout>,
-) {
+    model_name: &str,
+    out: &mut dyn Renderer,
+) -> bool {
+    let mut exit = false;
+    match parse_command(line) {
+        ChatCommand::Exit => exit = true,
+        ChatCommand::Help => out.notice(HELP),
+        ChatCommand::Model => {
+            if model_name.is_empty() {
+                out.notice("model: (not set)");
+            } else {
+                out.notice(&format!("model: {model_name}"));
+            }
+        }
+        ChatCommand::Context => {
+            let msg_n = agent.messages.len().saturating_sub(1);
+            let char_count: usize = agent
+                .messages
+                .iter()
+                .map(|m| {
+                    m.content.len()
+                        + m.tool_calls
+                            .iter()
+                            .map(|tc| tc.name.len() + tc.arguments.to_string().len())
+                            .sum::<usize>()
+                })
+                .sum();
+            out.notice(&format!(
+                "session: {} ({} messages, ~{} chars)",
+                session_id, msg_n, char_count
+            ));
+        }
+        ChatCommand::Status => {
+            let status = store
+                .as_ref()
+                .and_then(|s| s.session_status(session_id).ok().flatten())
+                .unwrap_or_else(|| "unknown".to_string());
+            let bg_count = agent.background_process_count();
+            if bg_count > 0 {
+                let plural = if bg_count == 1 { "process" } else { "processes" };
+                out.notice(&format!(
+                    "session {session_id} [{status}] ({} background {} running)",
+                    bg_count, plural
+                ));
+            } else {
+                out.notice(&format!("session {session_id} [{status}]"));
+            }
+        }
+        ChatCommand::Diff => {
+            if let Some(s) = &store {
+                let changes = s.load_changes(session_id).unwrap_or_default();
+                out.notice(render_change_summary(&changes).trim_end());
+            } else {
+                out.notice("no session store");
+            }
+        }
+        ChatCommand::Undo => chat_undo(store, session_id, cwd, out),
+        ChatCommand::Approve => {
+            agent.set_approval(ApprovalMode::AutoApprove);
+            out.notice("edits and commands will be auto-approved this session");
+        }
+        ChatCommand::Deny => {
+            agent.set_approval(ApprovalMode::NonInteractive);
+            out.notice("edits and commands will be denied this session");
+        }
+        ChatCommand::Clear => {
+            agent.clear_history();
+            out.notice(&format!("session {} conversation cleared", session_id));
+        }
+        ChatCommand::Tools => {
+            out.notice(&agent.tool_names().join("\n"));
+        }
+        ChatCommand::Unknown(name) => {
+            out.notice(&format!("unknown command '/{name}' — try /help"));
+        }
+        ChatCommand::Say(text) => {
+            if !text.is_empty() {
+                match agent.run(&text) {
+                    Outcome::Complete(answer) => out.assistant(&answer),
+                    Outcome::StepLimit => out.notice("(step limit reached)"),
+                    Outcome::VerificationFailed { attempts } => out.notice(&format!(
+                        "(verification still failing after {attempts} attempts)"
+                    )),
+                    Outcome::Cancelled => out.notice("(cancelled)"),
+                    Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
+                    Outcome::Blocked => {
+                        out.notice("(stopped: actions denied — use /approve to allow this session)")
+                    }
+                    Outcome::Error(e) => out.notice(&format!("(error: {e})")),
+                }
+            }
+        }
+    }
+    exit
+}
+
+fn chat_undo(store: &Option<Store>, session_id: &str, cwd: &Path, out: &mut dyn Renderer) {
     let Some(store) = store else {
         out.notice("no session store");
         return;

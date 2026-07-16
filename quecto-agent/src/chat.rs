@@ -35,7 +35,7 @@ pub fn parse_command(line: &str) -> ChatCommand {
         "deny" => ChatCommand::Deny,
         "clear" => ChatCommand::Clear,
         "exit" | "quit" | "q" => ChatCommand::Exit,
-        "tools" => ChatCommand::Tools,
+        "tools" | "commands" => ChatCommand::Tools,
         other => ChatCommand::Unknown(other.to_string()),
     }
 }
@@ -80,5 +80,6 @@ mod tests {
     fn aliases_map_to_canonical_commands() {
         assert_eq!(parse_command("/q"), ChatCommand::Exit);
         assert_eq!(parse_command("/?"), ChatCommand::Help);
+        assert_eq!(parse_command("/commands"), ChatCommand::Tools);
     }
 }
