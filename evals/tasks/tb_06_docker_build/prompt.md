@@ -1,0 +1,1 @@
+Create a Dockerfile that uses the python:3.11-slim base image, copies a script `app.py` (which prints "Hello Docker") into the image, and sets the entrypoint to `python app.py`. Then build the image with tag `eval-image` and run a container that outputs the message.
