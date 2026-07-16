@@ -113,7 +113,29 @@ pub struct Agent {
     cancel: CancelToken,
 }
 
+
+#[derive(Clone)]
+pub struct AgentConfig {
+    pub model: Box<dyn Model>,
+    pub base_system_prompt: String,
+    pub max_steps: usize,
+    pub repo_root: PathBuf,
+    pub cancel: CancelToken,
+    pub approval: ApprovalMode,
+}
+
 impl Agent {
+    pub fn config(&self) -> AgentConfig {
+        AgentConfig {
+            model: self.model.clone(),
+            base_system_prompt: self.messages.first().map(|m| m.content.clone()).unwrap_or_default(),
+            max_steps: self.max_steps,
+            repo_root: self.cx.repo_root.clone(),
+            cancel: self.cancel.clone(),
+            approval: self.approval.clone(),
+        }
+    }
+
     /// Create an agent with a model, a system prompt, a step limit, and the
     /// repository root that filesystem tools are scoped to.
     pub fn new(
@@ -197,6 +219,8 @@ impl Agent {
         for tool in builtin_tools() {
             self.registry.register(tool);
         }
+        let subagent_tool = crate::tools::subagent::InvokeSubagent::new(self.config());
+        self.registry.register(Box::new(subagent_tool));
         self
     }
 
@@ -204,6 +228,10 @@ impl Agent {
     pub fn register_builtins_filtered(mut self, enabled: Option<&[String]>) -> Self {
         for tool in crate::tools::builtin_tools_filtered(enabled) {
             self.registry.register(tool);
+        }
+        if enabled.map_or(true, |list| list.iter().any(|n| n == "invoke_subagent")) {
+            let subagent_tool = crate::tools::subagent::InvokeSubagent::new(self.config());
+            self.registry.register(Box::new(subagent_tool));
         }
         self
     }
@@ -457,17 +485,21 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
+    #[derive(Clone)]
     struct Scripted {
-        replies: Mutex<Vec<AssistantMessage>>,
+        replies: Arc<Mutex<Vec<AssistantMessage>>>,
     }
     impl Scripted {
         fn new(replies: Vec<AssistantMessage>) -> Self {
             Scripted {
-                replies: Mutex::new(replies),
+                replies: Arc::new(Mutex::new(replies)),
             }
         }
     }
     impl Model for Scripted {
+        fn clone_box(&self) -> Box<dyn Model> {
+            Box::new(self.clone())
+        }
         fn complete(
             &self,
             _messages: &[Message],
