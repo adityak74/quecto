@@ -373,7 +373,16 @@ impl Agent {
                     stop = Some(Outcome::Cancelled);
                     break;
                 }
-                self.renderer.tool(&call.name, &out.summary);
+                let display_name = if call.name == "run_command" {
+                    if let Some(cmd) = call.arguments.get("command").and_then(|v| v.as_str()) {
+                        format!("run_command({})", cmd)
+                    } else {
+                        call.name.clone()
+                    }
+                } else {
+                    call.name.clone()
+                };
+                self.renderer.tool(&display_name, &out.summary);
 
                 #[cfg(feature = "otel")]
                 {
