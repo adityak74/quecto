@@ -68,12 +68,12 @@
 
 Both binaries are **self-contained** — no runtime, no interpreter, statically-linked rustls TLS:
 
-| Build | Size |
-|---|---:|
-| `quecto` — default `--release` | 2.6 MB |
-| `quecto` — stripped | 2.3 MB |
-| **`quecto` — size-optimized profile (shipped)** | **~1.3 MB** (1,300,896 bytes) |
-| **`quecto-agent` — size-optimized profile (shipped)** | **~3.5 MB** (3,506,784 bytes) |
+| Build | Size | Lines of Code (Rust) |
+|---|---:|---:|
+| `quecto` — default `--release` | 2.6 MB | ~450 LOC |
+| `quecto` — stripped | 2.3 MB | ~450 LOC |
+| **`quecto` — size-optimized profile (shipped)** | **~1.3 MB** (1,300,896 bytes) | **~450 LOC** |
+| **`quecto-agent` — size-optimized profile (shipped)** | **~3.5 MB** (3,506,784 bytes) | **~8,100 LOC** |
 
 Two direct dependencies on the core (`ureq` + `serde_json`), ~30 transitive crates, **no `tokio`, no `reqwest`, no async runtime.** The agent adds a full tool loop, sandbox, SQLite-backed session store, and manifest parsing — and still fits in 3.5 MB. Small is the feature, at every layer.
 
