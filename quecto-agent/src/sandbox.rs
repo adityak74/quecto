@@ -268,6 +268,7 @@ fn secret_values() -> Vec<Vec<u8>> {
     values
 }
 
+#[allow(dead_code)]
 pub(crate) fn redact_secrets(input: &str) -> String {
     let secrets = secret_values();
     let mut output = input.to_string();

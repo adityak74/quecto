@@ -83,11 +83,12 @@ impl Policy {
 
     pub fn decide(&self, call: &ToolCall) -> Decision {
         match call.name.as_str() {
-            "read_file" | "list_files" | "search_text" | "git_diff" | "git_status" => {
+            "read_file" | "list_files" | "search_text" | "git_diff" | "git_status" | "search_notes" | "list_background_processes" | "invoke_subagent" => {
                 Decision::Allow
             }
-            "write_file" | "apply_patch" => self.edit.clone(),
-            "run_command" => {
+            "write_file" | "apply_patch" | "take_note" => self.edit.clone(),
+            "kill_background_process" => self.run.clone(),
+            "run_command" | "start_background_process" => {
                 let command = call
                     .arguments
                     .get("command")
