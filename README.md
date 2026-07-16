@@ -71,8 +71,8 @@ Both binaries are **self-contained** — no runtime, no interpreter, statically-
 |---|---:|
 | `quecto` — default `--release` | 2.6 MB |
 | `quecto` — stripped | 2.3 MB |
-| **`quecto` — size-optimized profile (shipped)** | **~1.3 MB** (1,284,392 bytes) |
-| **`quecto-agent` — size-optimized profile (shipped)** | **~3.5 MB** (3,473,072 bytes) |
+| **`quecto` — size-optimized profile (shipped)** | **~1.3 MB** (1,300,896 bytes) |
+| **`quecto-agent` — size-optimized profile (shipped)** | **~3.5 MB** (3,506,784 bytes) |
 
 Two direct dependencies on the core (`ureq` + `serde_json`), ~30 transitive crates, **no `tokio`, no `reqwest`, no async runtime.** The agent adds a full tool loop, sandbox, SQLite-backed session store, and manifest parsing — and still fits in 3.5 MB. Small is the feature, at every layer.
 
