@@ -15,6 +15,7 @@
 [![Async](https://img.shields.io/badge/async-zero-black?style=flat-square)](#philosophy)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
 [![Tests](https://img.shields.io/badge/tests-183%20passing-success?style=flat-square)](#testing)
+[![Evals](https://img.shields.io/badge/evals-10%20smoke%20tasks-blueviolet?style=flat-square)](#-evaluation-suite)
 [![Status](https://img.shields.io/badge/status-M1--M7b%20shipped-success?style=flat-square)](#status)
 
 </div>
@@ -50,6 +51,7 @@
 
 ## 📣 Announcements
 
+- **`2026-07-15` — Evaluation suite shipped.** A 10-task TerminalBench-style smoke suite (`evals/smoke/`) with deterministic `verify.sh` verifiers and a [Harbor](https://harborframework.com) adapter (`evals/harbor/quecto_agent.py`) for the full 89-task Terminal-Bench 2.x benchmark. Run `./evals/run_evals.sh` — no API key needed.
 - **`2026-07-15` — OpenTelemetry (OTEL) support.** Gated behind the `otel` feature flag, `quecto-agent` now supports end-to-end tracing for run loops, steps, tool dispatches (with argument sanitization), and model completions—including parsed reasoning/thinking traces.
 - **`2026-07-14` — Bug-fix release.** Seven issues from a post-UAT audit fixed: CRLF patch compatibility (with double-conversion guard), `take_last_change` DB error propagation, millisecond timestamps, `record_message` transaction safety, `/status` session-specific querying, `/context` character count, and REPL UX polish (aliases, `--version`, clear confirmation). 183 tests, 0 failures.
 - **`2026-07-12` — `quecto-agent` shipped (M1–M7b).** The full coding agent — tool use, editing under approval, sandbox denylist, verification gates, session persistence (resume/undo/diff), and manifest flavors with trust-on-first-use — is complete and merged to `main`.
@@ -304,12 +306,77 @@ Because the primitives neither shape the request nor discard the response, you c
 
 ---
 
+## 🧪 Evaluation Suite
+
+QuECTO ships a self-contained evaluation harness to measure coding-agent quality on local models.
+
+### Smoke Tests (10 tasks, deterministic)
+
+No LLM judge required — each task has a `verify.sh` that exits 0 on pass:
+
+```bash
+./evals/run_evals.sh
+```
+
+| Task | Category | What it tests |
+|---|---|---|
+| `tb_01_git_conflict_resolution` | Git / VCS | Resolve a 3-way merge conflict and commit |
+| `tb_02_package_refactoring` | Refactoring | Restructure flat scripts into a Python package |
+| `tb_03_advanced_sed_awk` | CLI / Data | Clean a CSV using only `awk`/`sed` (no Python) |
+| `tb_04_openssl_decryption` | Security | Decrypt an AES-256-CBC ciphertext with `openssl` |
+| `tb_05_dynamic_dependency_script` | Python | BeautifulSoup scraper with self-installing fallback |
+| `tb_06_docker_build` | Docker | Diagnose and fix a broken Dockerfile, build & run |
+| `tb_07_debug_c_crash` | Debugging | Fix a NULL-deref segfault, recompile, verify output |
+| `tb_08_sqlite_query` | Data | Query a SQLite DB and write the result to a file |
+| `tb_09_fix_rust_build` | Rust / Compiler | Fix immutability + logic errors, `cargo build --release` |
+| `tb_10_openssl_selfsigned_cert` | TLS / Security | Generate a self-signed cert for a domain, verify expiry |
+
+Use `--llm-judge` to override with a model judge (requires `OPENROUTER_API_KEY`):
+
+```bash
+OPENROUTER_API_KEY=sk-or-... ./evals/run_evals.sh --llm-judge
+```
+
+### Harbor / Terminal-Bench 2.x (89 tasks)
+
+`evals/harbor/quecto_agent.py` is a [Harbor](https://harborframework.com) `BaseInstalledAgent` adapter. Install Harbor and run the full benchmark:
+
+```bash
+pip install harbor
+harbor run \
+  -d terminal-bench/terminal-bench-2 \
+  -m qwen3.6:35b-mlx \
+  --agent evals.harbor.quecto_agent:QuectoAgent
+```
+
+Smoke-test the adapter without Harbor installed:
+
+```bash
+python3 evals/harbor/test_smoke.py   # 6 tests, ~8 s, no deps
+```
+
+### Adding a task
+
+Drop a directory under `evals/smoke/` with three files:
+
+```
+evals/smoke/my_task/
+├── prompt.md    # instruction for the agent
+├── setup.sh     # initialise the workspace
+└── verify.sh    # exit 0 = PASS, non-zero = FAIL
+```
+
+The harness auto-discovers it on the next run.
+
+---
+
 ## Roadmap
 
 | Component | Home | Status |
 |---|---|---|
 | Model adapter (talk to the model) | **`quecto` core** | ✅ shipped |
 | Agent loop · tools · sandbox · verify · session · flavors/trust · OTEL tracing | `quecto-agent` | ✅ shipped, UAT accepted |
+| Evaluation suite (10 smoke tasks + Harbor/Terminal-Bench adapter) | `evals/` | ✅ shipped |
 | MCP integrations | `quecto-mcp` | 🔮 planned |
 
 The core never gains an async runtime, tool execution, or state — companions build on top of `quecto_raw`.
@@ -333,7 +400,7 @@ cargo clippy --all-targets --workspace
 
 ## Status
 
-**`quecto` core and `quecto-agent` are both shipped and UAT-accepted.** Still an early, actively-developed project, built in the open.
+**`quecto` core, `quecto-agent`, and the evaluation suite are all shipped.** Still an early, actively-developed project, built in the open.
 
 ---
 
