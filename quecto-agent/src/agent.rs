@@ -48,12 +48,7 @@ struct RepeatGuard {
 
 impl RepeatGuard {
     fn observe(&mut self, call: &crate::model::ToolCall, result: &str, changes: usize) -> bool {
-        let fingerprint = format!(
-            "{}\n{}\n{}",
-            call.name,
-            canonical_json(&call.arguments),
-            result
-        );
+        let fingerprint = format!("{}\n{}\n{}", call.name, call.arguments, result);
         if self.fingerprint.as_deref() == Some(&fingerprint) && self.changes == changes {
             self.streak += 1;
         } else {
@@ -62,36 +57,6 @@ impl RepeatGuard {
             self.streak = 1;
         }
         self.streak >= 3
-    }
-}
-
-fn canonical_json(value: &serde_json::Value) -> String {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut entries: Vec<_> = map.iter().collect();
-            entries.sort_by_key(|(key, _)| *key);
-            let fields = entries
-                .into_iter()
-                .map(|(key, value)| {
-                    format!(
-                        "{}:{}",
-                        serde_json::Value::String(key.clone()),
-                        canonical_json(value)
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("{{{fields}}}")
-        }
-        serde_json::Value::Array(items) => format!(
-            "[{}]",
-            items
-                .iter()
-                .map(canonical_json)
-                .collect::<Vec<_>>()
-                .join(",")
-        ),
-        _ => value.to_string(),
     }
 }
 
@@ -879,6 +844,9 @@ mod tests {
         assert!(guard.observe(&call, "same", 1));
     }
 
+    // This test is what makes it safe to rely on `serde_json::Value::to_string()` for
+    // key-sorted output instead of a hand-rolled `canonical_json`: it fails immediately
+    // if `serde_json/preserve_order` is ever enabled via feature unification.
     #[test]
     fn fingerprint_uses_canonical_nested_json_and_result() {
         let mut guard = RepeatGuard::default();
