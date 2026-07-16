@@ -620,7 +620,13 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                         .as_ref()
                         .and_then(|s| s.session_status(&session_id).ok().flatten())
                         .unwrap_or_else(|| "unknown".to_string());
-                    out.notice(&format!("session {session_id} [{status}]"));
+                    let bg_count = agent.background_process_count();
+                    if bg_count > 0 {
+                        let plural = if bg_count == 1 { "process" } else { "processes" };
+                        out.notice(&format!("session {session_id} [{status}] ({} background {} running)", bg_count, plural));
+                    } else {
+                        out.notice(&format!("session {session_id} [{status}]"));
+                    }
                 }
                 ChatCommand::Diff => {
                     if let Some(s) = &store {
@@ -768,7 +774,13 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                                         .as_ref()
                                         .and_then(|s| s.session_status(&session_id).ok().flatten())
                                         .unwrap_or_else(|| "unknown".to_string());
-                                    out.notice(&format!("session {session_id} [{status}]"));
+                                    let bg_count = agent.background_process_count();
+                                    if bg_count > 0 {
+                                        let plural = if bg_count == 1 { "process" } else { "processes" };
+                                        out.notice(&format!("session {session_id} [{status}] ({} background {} running)", bg_count, plural));
+                                    } else {
+                                        out.notice(&format!("session {session_id} [{status}]"));
+                                    }
                                 }
                                 ChatCommand::Diff => {
                                     if let Some(s) = &store {
