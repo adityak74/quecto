@@ -3,7 +3,7 @@ use crate::model::{Message, Model};
 use crate::policy::{Decision, Policy};
 use crate::render::{stderr_renderer, Renderer};
 use crate::sandbox::CancelToken;
-use crate::tools::{builtin_tools, Context, FileChange, Registry, Tool, ToolOutput};
+use crate::tools::{Context, FileChange, Registry, Tool, ToolOutput};
 use crate::verify::Verifier;
 use crate::BoxErr;
 use std::path::PathBuf;
@@ -178,13 +178,8 @@ impl Agent {
         self
     }
 
-    pub fn register_builtins(mut self) -> Self {
-        for tool in builtin_tools() {
-            self.registry.register(tool);
-        }
-        let subagent_tool = crate::tools::subagent::InvokeSubagent::new(self.config());
-        self.registry.register(Box::new(subagent_tool));
-        self
+    pub fn register_builtins(self) -> Self {
+        self.register_builtins_filtered(None)
     }
 
     /// Register the built-in tools filtered by an allow-list (`None` = all).
@@ -199,12 +194,11 @@ impl Agent {
         self
     }
 
-     /// Return the names of registered tools (used by /commands in chat).
-    
     pub fn background_process_count(&mut self) -> usize {
         self.cx.background_process_count()
     }
 
+    /// Return the names of registered tools (used by /commands in chat).
     pub fn tool_names(&self) -> Vec<String> {
         self.registry.tool_names()
     }
@@ -369,14 +363,16 @@ impl Agent {
                     stop = Some(Outcome::Cancelled);
                     break;
                 }
-                let display_name = if call.name == "run_command" || call.name == "start_background_process" {
-                    if let Some(cmd) = call.arguments.get("command").and_then(|v| v.as_str()) {
-                        format!("{}({})", call.name, cmd)
-                    } else {
-                        call.name.clone()
+                let display_name = match call.arguments.get("command").and_then(|v| v.as_str()) {
+                    Some(cmd)
+                        if matches!(
+                            call.name.as_str(),
+                            "run_command" | "start_background_process"
+                        ) =>
+                    {
+                        format!("{}({cmd})", call.name)
                     }
-                } else {
-                    call.name.clone()
+                    _ => call.name.clone(),
                 };
                 self.renderer.tool(&display_name, &out.summary);
 

@@ -31,13 +31,7 @@ impl Message {
     }
 
     pub fn assistant(c: impl Into<String>) -> Self {
-        Message {
-            role: "assistant".into(),
-            content: c.into(),
-            tool_calls: Vec::new(),
-            tool_call_id: None,
-            reasoning_content: None,
-        }
+        Message::plain("assistant", c)
     }
 
     pub fn assistant_with_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
