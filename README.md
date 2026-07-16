@@ -51,6 +51,7 @@
 
 ## 📣 Announcements
 
+- **`2026-07-16` — Chat UI Polish & Tool Enhancements.** Dramatically improved the terminal UI for `quecto-agent chat`. Tool summaries are now highly verbose (e.g., `diff (449 lines)`, `exited 1`, `created src/a.rs (12 lines)`) instead of terse single words, and `.qkb` note tools explicitly enforce their directory in both descriptions and output to prevent model hallucination.
 - **`2026-07-16` — Chat UX & Agent Delegation shipped.** Upgraded the chat REPL to a `crossterm` event loop with native Bracketed Paste support. Added tracking for background processes (`start_background_process`, `kill_background_process`), a new `invoke_subagent` tool for agent delegation, and project-local `.qkb` Markdown notes.
 - **`2026-07-15` — Evaluation suite shipped.** A 10-task TerminalBench-style smoke suite (`evals/smoke/`) with deterministic `verify.sh` verifiers and a [Harbor](https://harborframework.com) adapter (`evals/harbor/quecto_agent.py`) for the full 89-task Terminal-Bench 2.x benchmark. Run `./evals/run_evals.sh` — no API key needed.
 - **`2026-07-15` — OpenTelemetry (OTEL) support.** Gated behind the `otel` feature flag, `quecto-agent` now supports end-to-end tracing for run loops, steps, tool dispatches (with argument sanitization), and model completions—including parsed reasoning/thinking traces.
