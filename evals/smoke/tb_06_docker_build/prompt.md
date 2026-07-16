@@ -1,0 +1,1 @@
+The Dockerfile in this directory is broken. Fix it so that it uses `python:3.11-slim` as the base image, correctly copies `app.py` into the container, and sets the entrypoint to run `python /app.py`. Then build the Docker image with tag `eval-image`, run a container from it, and save the output to `output.txt`.

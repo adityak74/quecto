@@ -1,0 +1,1 @@
+Check that 'crasher.c' no longer contains a NULL pointer dereference. Verify that it compiles successfully with `gcc crasher.c -o crasher -g` and that running `./crasher` exits with code 0 and prints exactly 'OK'.
