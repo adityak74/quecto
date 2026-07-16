@@ -142,7 +142,7 @@ impl Tool for SearchNotes {
         };
         Ok(ToolOutput::new(
             cap_output(&content, 32_000),
-            format!("{n} matches"),
+            format!("'{}' ({} matches)", query, n),
         ))
     }
 }
