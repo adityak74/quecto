@@ -3,6 +3,7 @@ pub mod git;
 pub mod patch;
 pub mod search;
 pub mod shell;
+pub mod notes;
 
 use crate::model::ToolCall;
 use crate::sandbox::{CancelToken, CommandOutput, Sandbox};
@@ -215,6 +216,8 @@ pub fn builtin_tools() -> Vec<Box<dyn Tool>> {
         Box::new(git::GitDiff),
         Box::new(git::GitStatus),
         Box::new(shell::RunCommand),
+        Box::new(notes::TakeNote),
+        Box::new(notes::SearchNotes),
     ]
 }
 
