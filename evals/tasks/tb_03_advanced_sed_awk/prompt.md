@@ -1,0 +1,1 @@
+Using ONLY standard CLI tools (awk, sed, grep, etc.) and no python/node scripts, clean data.csv. You must: 1) Remove all completely empty lines. 2) Strip trailing commas from the end of lines. 3) Convert all uppercase email domains (e.g., @GMAIL.COM) to lowercase. Save the output to clean.csv.
