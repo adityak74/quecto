@@ -61,6 +61,30 @@ pub fn reasoning_payload(mode: ReasoningMode) -> Value {
     json!({"reasoning": {"effort": mode.effort_str()}})
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CompletionTelemetry {
+    pub requested_reasoning_mode: Option<ReasoningMode>,
+    pub provider_reasoning_parameters: Option<Value>,
+    pub reasoning_mode_applied: bool,
+    pub actual_reasoning_tokens: Option<u64>,
+}
+
+pub fn apply_reasoning_mode(body: &mut Value, mode: Option<ReasoningMode>) -> Option<Value> {
+    let mode = mode?;
+    let payload = reasoning_payload(mode);
+    if let Some(obj) = body.as_object_mut() {
+        obj.insert("reasoning".into(), payload["reasoning"].clone());
+    }
+    Some(payload)
+}
+
+pub fn parse_reasoning_tokens(resp: &Value) -> Option<u64> {
+    resp.get("usage")
+        .and_then(|u| u.get("completion_tokens_details"))
+        .and_then(|d| d.get("reasoning_tokens"))
+        .and_then(Value::as_u64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

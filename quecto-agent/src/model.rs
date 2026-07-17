@@ -70,6 +70,7 @@ pub struct AssistantMessage {
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: String,
     pub reasoning_content: Option<String>,
+    pub completion: crate::reasoning::CompletionTelemetry,
 }
 
 pub fn extract_think_tags(content: &str) -> (Option<String>, String) {
@@ -154,6 +155,7 @@ pub fn parse_assistant(resp: &Value) -> Result<AssistantMessage, BoxErr> {
         tool_calls,
         finish_reason,
         reasoning_content,
+        completion: crate::reasoning::CompletionTelemetry::default(),
     })
 }
 
@@ -270,32 +272,40 @@ impl Model for HttpModel {
         #[cfg(feature = "otel")]
         let _guard = span.enter();
 
-        let _reasoning_mode = effective_reasoning_mode(self.default_reasoning_mode, options);
+        let reasoning_mode = effective_reasoning_mode(self.default_reasoning_mode, options);
         let mut body = messages_to_body(&self.model, messages);
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
         }
+        let provider_reasoning_parameters =
+            crate::reasoning::apply_reasoning_mode(&mut body, reasoning_mode);
         let auth = self.api_key.as_ref().map(|k| format!("Bearer {k}"));
         let mut headers: Vec<(&str, &str)> = Vec::new();
         if let Some(a) = &auth {
             headers.push(("Authorization", a.as_str()));
         }
         let resp = quecto::quecto_raw(&self.url, &headers, body)?;
-        let parsed = parse_assistant(&resp);
+        let mut parsed = parse_assistant(&resp)?;
+        parsed.completion = crate::reasoning::CompletionTelemetry {
+            requested_reasoning_mode: reasoning_mode,
+            provider_reasoning_parameters,
+            reasoning_mode_applied: reasoning_mode.is_some(),
+            actual_reasoning_tokens: crate::reasoning::parse_reasoning_tokens(&resp),
+        };
 
         #[cfg(feature = "otel")]
-        if let Ok(msg) = &parsed {
-            if let Some(reasoning) = &msg.reasoning_content {
+        {
+            if let Some(reasoning) = &parsed.reasoning_content {
                 let redacted_reasoning = crate::sandbox::redact_secrets(reasoning);
                 tracing::event!(tracing::Level::INFO, name = "model_thinking", content = %redacted_reasoning);
             }
-            if !msg.content.is_empty() {
-                let redacted_content = crate::sandbox::redact_secrets(&msg.content);
+            if !parsed.content.is_empty() {
+                let redacted_content = crate::sandbox::redact_secrets(&parsed.content);
                 tracing::event!(tracing::Level::INFO, name = "model_response", content = %redacted_content);
             }
         }
 
-        parsed
+        Ok(parsed)
     }
 }
 
@@ -356,6 +366,35 @@ mod tests {
         assert_eq!(body["messages"][1]["content"], "u");
         assert!(body["messages"][0].get("tool_calls").is_none());
         assert!(body["messages"][1].get("tool_call_id").is_none());
+    }
+
+    #[test]
+    fn injects_reasoning_payload_into_request_body() {
+        let mut body = messages_to_body("m", &[Message::user("u")]);
+        let payload = crate::reasoning::apply_reasoning_mode(
+            &mut body,
+            Some(crate::reasoning::ReasoningMode::Low),
+        )
+        .unwrap();
+        assert_eq!(payload, json!({"reasoning": {"effort": "low"}}));
+        assert_eq!(body["reasoning"]["effort"], "low");
+    }
+
+    #[test]
+    fn leaves_body_unchanged_when_reasoning_mode_is_absent() {
+        let mut body = messages_to_body("m", &[Message::user("u")]);
+        let payload = crate::reasoning::apply_reasoning_mode(&mut body, None);
+        assert!(payload.is_none());
+        assert!(body.get("reasoning").is_none());
+    }
+
+    #[test]
+    fn parses_reasoning_tokens_from_usage_metadata() {
+        let resp = json!({
+            "choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+            "usage": {"completion_tokens_details": {"reasoning_tokens": 42}}
+        });
+        assert_eq!(crate::reasoning::parse_reasoning_tokens(&resp), Some(42));
     }
 
     #[test]
