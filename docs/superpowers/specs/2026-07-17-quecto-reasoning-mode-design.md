@@ -88,9 +88,7 @@ Example OpenAI-compatible mapping:
 
 ```json
 {
-  "reasoning": {
-    "effort": "low"
-  }
+  "reasoning_effort": "low"
 }
 ```
 
@@ -102,7 +100,7 @@ Design constraints:
 
 For unsupported providers or models, QuECTO should choose one of two explicit outcomes:
 
-* omit unsupported reasoning parameters and record `reasoning_mode_applied=false`; or
+* omit unsupported reasoning parameters and record `reasoning_parameters_sent=false`; or
 * fail fast with a configuration error if the provider target is known to reject the parameter.
 
 The initial implementation should prefer omission plus telemetry unless the target is known to hard-fail.
@@ -117,7 +115,7 @@ The research harness needs to change the reasoning mode without rebuilding the r
 
 The important requirement is semantic, not API style: the harness must be able to request `low` for one completion and `high` for the next while preserving the same agent/session context.
 
-The preferred implementation is a new `complete_with_options` path with the existing `complete` method delegating to it using default options. That preserves backward compatibility for the current agent code while giving the harness a precise override point.
+For backward compatibility, the existing `complete` method remains required and the new `complete_with_options` method defaults to delegating to it. `HttpModel` overrides both methods so its configured default and per-completion override remain available without requiring legacy model implementations to change.
 
 ## Telemetry and Persistence
 
@@ -125,7 +123,7 @@ Each completion should capture, at minimum:
 
 * `requested_reasoning_mode`
 * `provider_reasoning_parameters`
-* `reasoning_mode_applied`
+* `reasoning_parameters_sent`
 * `reasoning_content_available`
 * `actual_reasoning_tokens` when present in the provider response
 

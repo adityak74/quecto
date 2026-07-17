@@ -112,7 +112,7 @@ quecto "refactor this function"
 # Cloud (OpenAI)
 export QUECTO_BASE_URL="https://api.openai.com/v1"
 export QUECTO_API_KEY="sk-..."
-export QUECTO_MODEL="gpt-4o"
+export QUECTO_MODEL="YOUR_OPENAI_CHAT_MODEL"
 ```
 
 ### Configuration
@@ -205,16 +205,21 @@ quecto-agent "add a test for the parse_args function"
 # Cloud (OpenAI)
 export QUECTO_BASE_URL="https://api.openai.com/v1"
 export QUECTO_API_KEY="sk-..."
-export QUECTO_MODEL="gpt-4o"
+export QUECTO_MODEL="YOUR_OPENAI_CHAT_MODEL"
 
 # Customize the interactive chat spinner (replaces the built-in defaults)
 export QUECTO_SPINNER_VERBS="Thinking,Planning,Coding"
 quecto-agent chat
 
-# Set the default reasoning effort for model completions
+# Set the default reasoning effort for a model that supports reasoning_effort
+export QUECTO_MODEL="YOUR_REASONING_CAPABLE_CHAT_MODEL"
 export QUECTO_REASONING_MODE=low
 quecto-agent "inspect this repository and summarize the test harness"
 ```
+
+Reasoning support is provider- and model-dependent. QuECTO sends the normalized
+mode as `reasoning_effort` only to OpenAI-compatible Chat Completions endpoints;
+the selected model must support that parameter.
 
 Harness code can override the default per completion by passing
 `CompletionOptions { reasoning_mode: Some(ReasoningMode::High) }`

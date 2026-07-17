@@ -11,7 +11,8 @@ pub struct Message {
     pub reasoning_content: Option<String>,
     pub requested_reasoning_mode: Option<crate::reasoning::ReasoningMode>,
     pub provider_reasoning_parameters: Option<Value>,
-    pub reasoning_mode_applied: Option<bool>,
+    pub reasoning_parameters_sent: Option<bool>,
+    pub reasoning_content_available: Option<bool>,
     pub actual_reasoning_tokens: Option<u64>,
 }
 
@@ -25,7 +26,8 @@ impl Message {
             reasoning_content: None,
             requested_reasoning_mode: None,
             provider_reasoning_parameters: None,
-            reasoning_mode_applied: None,
+            reasoning_parameters_sent: None,
+            reasoning_content_available: None,
             actual_reasoning_tokens: None,
         }
     }
@@ -51,7 +53,8 @@ impl Message {
             reasoning_content: None,
             requested_reasoning_mode: None,
             provider_reasoning_parameters: None,
-            reasoning_mode_applied: None,
+            reasoning_parameters_sent: None,
+            reasoning_content_available: None,
             actual_reasoning_tokens: None,
         }
     }
@@ -65,7 +68,8 @@ impl Message {
             reasoning_content: None,
             requested_reasoning_mode: None,
             provider_reasoning_parameters: None,
-            reasoning_mode_applied: None,
+            reasoning_parameters_sent: None,
+            reasoning_content_available: None,
             actual_reasoning_tokens: None,
         }
     }
@@ -137,6 +141,7 @@ pub fn parse_assistant(resp: &Value) -> Result<AssistantMessage, BoxErr> {
     if reasoning_content.is_none() {
         reasoning_content = extracted_reasoning;
     }
+    let reasoning_content_available = reasoning_content.is_some();
 
     let mut tool_calls = Vec::new();
     if let Some(calls) = message.get("tool_calls").and_then(|t| t.as_array()) {
@@ -171,7 +176,10 @@ pub fn parse_assistant(resp: &Value) -> Result<AssistantMessage, BoxErr> {
         tool_calls,
         finish_reason,
         reasoning_content,
-        completion: crate::reasoning::CompletionTelemetry::default(),
+        completion: crate::reasoning::CompletionTelemetry {
+            reasoning_content_available,
+            ..crate::reasoning::CompletionTelemetry::default()
+        },
     })
 }
 
@@ -213,20 +221,16 @@ fn message_to_json(m: &Message) -> Value {
 /// Abstraction over "take the transcript, return the assistant's next message."
 /// The real impl calls the model over HTTP; tests inject a scripted fake.
 pub trait Model: Send + Sync {
-    fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
-        self.complete_with_options(
-            messages,
-            tools,
-            &crate::reasoning::CompletionOptions::default(),
-        )
-    }
+    fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr>;
 
     fn complete_with_options(
         &self,
         messages: &[Message],
         tools: &[Value],
-        options: &crate::reasoning::CompletionOptions,
-    ) -> Result<AssistantMessage, BoxErr>;
+        _options: &crate::reasoning::CompletionOptions,
+    ) -> Result<AssistantMessage, BoxErr> {
+        self.complete(messages, tools)
+    }
 
     fn clone_box(&self) -> Box<dyn Model>;
 }
@@ -247,15 +251,21 @@ pub struct HttpModel {
 }
 
 impl HttpModel {
-    /// Build from the core's env config (QUECTO_BASE_URL / QUECTO_API_KEY / QUECTO_MODEL).
+    /// Build from environment, panicking when `QUECTO_REASONING_MODE` is invalid.
+    /// Prefer [`HttpModel::try_from_env`] when the caller can surface configuration errors.
     pub fn from_env() -> Self {
+        Self::try_from_env().expect("invalid HttpModel environment configuration")
+    }
+
+    /// Build from the core env config plus the optional reasoning-mode setting.
+    pub fn try_from_env() -> Result<Self, BoxErr> {
         let (base, key, model, _system) = quecto::env_config();
-        HttpModel {
+        Ok(HttpModel {
             url: quecto::join_url(&base, "chat/completions"),
             api_key: key,
             model,
-            default_reasoning_mode: None,
-        }
+            default_reasoning_mode: crate::reasoning::parse_env_reasoning_mode()?,
+        })
     }
 }
 
@@ -269,6 +279,14 @@ fn effective_reasoning_mode(
 impl Model for HttpModel {
     fn clone_box(&self) -> Box<dyn Model> {
         Box::new(self.clone())
+    }
+
+    fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
+        self.complete_with_options(
+            messages,
+            tools,
+            &crate::reasoning::CompletionOptions::default(),
+        )
     }
 
     fn complete_with_options(
@@ -286,7 +304,8 @@ impl Model for HttpModel {
             quecto.tools_provided = tools.len(),
             quecto.requested_reasoning_mode = tracing::field::Empty,
             quecto.provider_reasoning_parameters = tracing::field::Empty,
-            quecto.reasoning_mode_applied = tracing::field::Empty,
+            quecto.reasoning_parameters_sent = tracing::field::Empty,
+            quecto.reasoning_content_available = tracing::field::Empty,
             quecto.actual_reasoning_tokens = tracing::field::Empty
         );
         #[cfg(feature = "otel")]
@@ -298,7 +317,8 @@ impl Model for HttpModel {
             body["tools"] = Value::Array(tools.to_vec());
         }
         let provider_reasoning_parameters =
-            crate::reasoning::apply_reasoning_mode(&mut body, reasoning_mode);
+            crate::reasoning::apply_reasoning_mode(&mut body, &self.url, reasoning_mode);
+        let reasoning_parameters_sent = provider_reasoning_parameters.is_some();
         let auth = self.api_key.as_ref().map(|k| format!("Bearer {k}"));
         let mut headers: Vec<(&str, &str)> = Vec::new();
         if let Some(a) = &auth {
@@ -306,10 +326,12 @@ impl Model for HttpModel {
         }
         let resp = quecto::quecto_raw(&self.url, &headers, body)?;
         let mut parsed = parse_assistant(&resp)?;
+        let reasoning_content_available = parsed.reasoning_content.is_some();
         parsed.completion = crate::reasoning::CompletionTelemetry {
             requested_reasoning_mode: reasoning_mode,
             provider_reasoning_parameters,
-            reasoning_mode_applied: reasoning_mode.is_some(),
+            reasoning_parameters_sent,
+            reasoning_content_available,
             actual_reasoning_tokens: crate::reasoning::parse_reasoning_tokens(&resp),
         };
 
@@ -322,8 +344,12 @@ impl Model for HttpModel {
                 span.record("quecto.provider_reasoning_parameters", parameters.to_string());
             }
             span.record(
-                "quecto.reasoning_mode_applied",
-                parsed.completion.reasoning_mode_applied,
+                "quecto.reasoning_parameters_sent",
+                parsed.completion.reasoning_parameters_sent,
+            );
+            span.record(
+                "quecto.reasoning_content_available",
+                parsed.completion.reasoning_content_available,
             );
             if let Some(tokens) = parsed.completion.actual_reasoning_tokens {
                 span.record("quecto.actual_reasoning_tokens", tokens);
@@ -345,6 +371,101 @@ impl Model for HttpModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvGuard(Vec<(String, Option<String>)>);
+
+    impl EnvGuard {
+        fn set(values: &[(&str, Option<&str>)]) -> Self {
+            let previous = values
+                .iter()
+                .map(|(name, _)| ((*name).to_string(), std::env::var(name).ok()))
+                .collect();
+            for (name, value) in values {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+            Self(previous)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct LegacyModel;
+
+    impl Model for LegacyModel {
+        fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[Value],
+        ) -> Result<AssistantMessage, BoxErr> {
+            Ok(AssistantMessage {
+                content: "legacy".into(),
+                tool_calls: Vec::new(),
+                finish_reason: "stop".into(),
+                reasoning_content: None,
+                completion: crate::reasoning::CompletionTelemetry::default(),
+            })
+        }
+
+        fn clone_box(&self) -> Box<dyn Model> {
+            Box::new(self.clone())
+        }
+    }
+
+    #[test]
+    fn completion_options_default_to_legacy_complete_implementation() {
+        let result = LegacyModel
+            .complete_with_options(
+                &[Message::user("hello")],
+                &[],
+                &crate::reasoning::CompletionOptions::default(),
+            )
+            .unwrap();
+        assert_eq!(result.content, "legacy");
+    }
+
+    #[test]
+    fn from_env_reads_reasoning_mode() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::set(&[
+            ("QUECTO_BASE_URL", Some("http://localhost:1234/v1")),
+            ("QUECTO_MODEL", Some("reasoning-model")),
+            ("QUECTO_REASONING_MODE", Some("high")),
+        ]);
+
+        let model = HttpModel::from_env();
+
+        assert_eq!(model.url, "http://localhost:1234/v1/chat/completions");
+        assert_eq!(
+            model.default_reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
+        );
+    }
+
+    #[test]
+    fn try_from_env_rejects_invalid_reasoning_mode() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvGuard::set(&[("QUECTO_REASONING_MODE", Some("turbo"))]);
+
+        let error = HttpModel::try_from_env().err().unwrap();
+
+        assert!(error.to_string().contains("unknown reasoning mode: turbo"));
+    }
 
     #[test]
     fn completion_options_override_model_default() {
@@ -403,7 +524,7 @@ mod tests {
                     .send(serde_json::from_slice(&request[header_end..]).unwrap())
                     .unwrap();
 
-                let body = r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#;
+                let body = r#"{"choices":[{"message":{"content":"ok","reasoning_content":"thinking"},"finish_reason":"stop"}]}"#;
                 write!(
                     stream,
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -446,14 +567,16 @@ mod tests {
             high.completion.requested_reasoning_mode,
             Some(crate::reasoning::ReasoningMode::High)
         );
-        assert_eq!(
-            request_rx.recv().unwrap()["reasoning"]["effort"],
-            "low"
-        );
-        assert_eq!(
-            request_rx.recv().unwrap()["reasoning"]["effort"],
-            "high"
-        );
+        assert!(low.completion.reasoning_parameters_sent);
+        assert!(high.completion.reasoning_parameters_sent);
+        assert!(low.completion.reasoning_content_available);
+        assert!(high.completion.reasoning_content_available);
+        let low_request = request_rx.recv().unwrap();
+        assert_eq!(low_request["reasoning_effort"], "low");
+        assert!(low_request.get("reasoning").is_none());
+        let high_request = request_rx.recv().unwrap();
+        assert_eq!(high_request["reasoning_effort"], "high");
+        assert!(high_request.get("reasoning").is_none());
         server.join().unwrap();
     }
 
@@ -499,19 +622,38 @@ mod tests {
         let mut body = messages_to_body("m", &[Message::user("u")]);
         let payload = crate::reasoning::apply_reasoning_mode(
             &mut body,
+            "https://api.openai.com/v1/chat/completions",
             Some(crate::reasoning::ReasoningMode::Low),
         )
         .unwrap();
-        assert_eq!(payload, json!({"reasoning": {"effort": "low"}}));
-        assert_eq!(body["reasoning"]["effort"], "low");
+        assert_eq!(payload, json!({"reasoning_effort": "low"}));
+        assert_eq!(body["reasoning_effort"], "low");
+        assert!(body.get("reasoning").is_none());
     }
 
     #[test]
     fn leaves_body_unchanged_when_reasoning_mode_is_absent() {
         let mut body = messages_to_body("m", &[Message::user("u")]);
-        let payload = crate::reasoning::apply_reasoning_mode(&mut body, None);
+        let payload = crate::reasoning::apply_reasoning_mode(
+            &mut body,
+            "https://api.openai.com/v1/chat/completions",
+            None,
+        );
         assert!(payload.is_none());
         assert!(body.get("reasoning").is_none());
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn does_not_report_parameters_sent_when_body_cannot_be_modified() {
+        let mut body = Value::Null;
+        let payload = crate::reasoning::apply_reasoning_mode(
+            &mut body,
+            "https://api.openai.com/v1/chat/completions",
+            Some(crate::reasoning::ReasoningMode::Low),
+        );
+        assert!(payload.is_none());
+        assert_eq!(body, Value::Null);
     }
 
     #[test]
@@ -521,6 +663,20 @@ mod tests {
             "usage": {"completion_tokens_details": {"reasoning_tokens": 42}}
         });
         assert_eq!(crate::reasoning::parse_reasoning_tokens(&resp), Some(42));
+    }
+
+    #[test]
+    fn parses_reasoning_tokens_from_output_token_details() {
+        let resp = json!({
+            "usage": {"output_tokens_details": {"reasoning_tokens": 24}}
+        });
+        assert_eq!(crate::reasoning::parse_reasoning_tokens(&resp), Some(24));
+    }
+
+    #[test]
+    fn parses_reasoning_tokens_from_provider_usage_field() {
+        let resp = json!({"usage": {"reasoning_tokens": 12}});
+        assert_eq!(crate::reasoning::parse_reasoning_tokens(&resp), Some(12));
     }
 
     #[test]
@@ -552,6 +708,7 @@ mod tests {
         let m = parse_assistant(&r).unwrap();
         assert_eq!(m.content, "hello");
         assert_eq!(m.reasoning_content, Some("thinking 123".to_string()));
+        assert!(m.completion.reasoning_content_available);
     }
 
     #[test]
@@ -560,6 +717,7 @@ mod tests {
         let m = parse_assistant(&r).unwrap();
         assert_eq!(m.content, "hello");
         assert_eq!(m.reasoning_content, Some("thinking 456".to_string()));
+        assert!(m.completion.reasoning_content_available);
     }
 
     #[test]
