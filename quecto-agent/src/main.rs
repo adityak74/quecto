@@ -467,10 +467,16 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
     let api_key = std::env::var("QUECTO_API_KEY")
         .ok()
         .filter(|s| !s.is_empty());
+    let default_reasoning_mode = quecto_agent::parse_env_reasoning_mode().unwrap_or_else(|e| {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(2);
+    });
+    let default_reasoning_mode = default_reasoning_mode.or(merged.reasoning_mode);
     let model = HttpModel {
         url: join_url(&base_url, "chat/completions"),
         api_key,
         model: model_name,
+        default_reasoning_mode,
     };
     let steps = overrides
         .max_steps
@@ -544,12 +550,18 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let default_reasoning_mode = quecto_agent::parse_env_reasoning_mode().unwrap_or_else(|e| {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(2);
+    });
+    let default_reasoning_mode = default_reasoning_mode.or(merged.reasoning_mode);
     let model = HttpModel {
         url: join_url(&base_url, "chat/completions"),
         api_key: std::env::var("QUECTO_API_KEY")
             .ok()
             .filter(|s| !s.is_empty()),
         model: model_name.clone(),
+        default_reasoning_mode,
     };
     let steps = overrides
         .max_steps
@@ -921,12 +933,18 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let default_reasoning_mode = quecto_agent::parse_env_reasoning_mode().unwrap_or_else(|e| {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(2);
+    });
+    let default_reasoning_mode = default_reasoning_mode.or(merged.reasoning_mode);
     let model = HttpModel {
         url: join_url(&base_url, "chat/completions"),
         api_key: std::env::var("QUECTO_API_KEY")
             .ok()
             .filter(|s| !s.is_empty()),
         model: model_name,
+        default_reasoning_mode,
     };
     let steps = overrides
         .max_steps

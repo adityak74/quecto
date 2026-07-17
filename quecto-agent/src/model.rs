@@ -196,6 +196,16 @@ fn message_to_json(m: &Message) -> Value {
 /// The real impl calls the model over HTTP; tests inject a scripted fake.
 pub trait Model: Send + Sync {
     fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr>;
+
+    fn complete_with_options(
+        &self,
+        messages: &[Message],
+        tools: &[Value],
+        _options: &crate::reasoning::CompletionOptions,
+    ) -> Result<AssistantMessage, BoxErr> {
+        self.complete(messages, tools)
+    }
+
     fn clone_box(&self) -> Box<dyn Model>;
 }
 
@@ -211,6 +221,7 @@ pub struct HttpModel {
     pub url: String,
     pub api_key: Option<String>,
     pub model: String,
+    pub default_reasoning_mode: Option<crate::reasoning::ReasoningMode>,
 }
 
 impl HttpModel {
@@ -221,8 +232,16 @@ impl HttpModel {
             url: quecto::join_url(&base, "chat/completions"),
             api_key: key,
             model,
+            default_reasoning_mode: None,
         }
     }
+}
+
+fn effective_reasoning_mode(
+    default_mode: Option<crate::reasoning::ReasoningMode>,
+    options: &crate::reasoning::CompletionOptions,
+) -> Option<crate::reasoning::ReasoningMode> {
+    options.reasoning_mode.or(default_mode)
 }
 
 impl Model for HttpModel {
@@ -231,6 +250,19 @@ impl Model for HttpModel {
     }
 
     fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
+        self.complete_with_options(
+            messages,
+            tools,
+            &crate::reasoning::CompletionOptions::default(),
+        )
+    }
+
+    fn complete_with_options(
+        &self,
+        messages: &[Message],
+        tools: &[Value],
+        options: &crate::reasoning::CompletionOptions,
+    ) -> Result<AssistantMessage, BoxErr> {
         #[cfg(feature = "otel")]
         let span = tracing::span!(
             tracing::Level::INFO,
@@ -242,6 +274,7 @@ impl Model for HttpModel {
         #[cfg(feature = "otel")]
         let _guard = span.enter();
 
+        let _reasoning_mode = effective_reasoning_mode(self.default_reasoning_mode, options);
         let mut body = messages_to_body(&self.model, messages);
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools.to_vec());
@@ -273,6 +306,24 @@ impl Model for HttpModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn completion_options_override_model_default() {
+        let options = crate::reasoning::CompletionOptions {
+            reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
+        };
+        let effective =
+            effective_reasoning_mode(Some(crate::reasoning::ReasoningMode::Low), &options);
+        assert_eq!(effective, Some(crate::reasoning::ReasoningMode::High));
+    }
+
+    #[test]
+    fn completion_options_fall_back_to_model_default() {
+        let options = crate::reasoning::CompletionOptions::default();
+        let effective =
+            effective_reasoning_mode(Some(crate::reasoning::ReasoningMode::Medium), &options);
+        assert_eq!(effective, Some(crate::reasoning::ReasoningMode::Medium));
+    }
 
     #[test]
     fn parses_plain_content() {
