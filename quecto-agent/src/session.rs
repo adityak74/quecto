@@ -24,7 +24,11 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     tool_calls TEXT,
     tool_call_id TEXT,
-    reasoning_content TEXT
+    reasoning_content TEXT,
+    requested_reasoning_mode TEXT,
+    provider_reasoning_parameters TEXT,
+    reasoning_mode_applied INTEGER,
+    actual_reasoning_tokens INTEGER
 );
 CREATE TABLE IF NOT EXISTS file_changes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -106,6 +110,22 @@ impl Store {
         conn.execute_batch(SCHEMA)?;
         // Auto-migrate schema: add reasoning_content to messages if missing in existing DBs
         let _ = conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT", []);
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN requested_reasoning_mode TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN provider_reasoning_parameters TEXT",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN reasoning_mode_applied INTEGER",
+            [],
+        );
+        let _ = conn.execute(
+            "ALTER TABLE messages ADD COLUMN actual_reasoning_tokens INTEGER",
+            [],
+        );
         Ok(Store { conn })
     }
 
@@ -155,10 +175,15 @@ impl Store {
     }
 
     pub fn record_message(&mut self, id: &str, seq: i64, m: &Message) -> Result<(), BoxErr> {
+        let actual_reasoning_tokens = m
+            .actual_reasoning_tokens
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| "actual reasoning token count exceeds SQLite INTEGER range")?;
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, reasoning_content) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_mode_applied, actual_reasoning_tokens) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             (
                 id,
                 seq,
@@ -167,6 +192,10 @@ impl Store {
                 calls_to_json(&m.tool_calls),
                 &m.tool_call_id,
                 &m.reasoning_content,
+                m.requested_reasoning_mode.map(|mode| mode.effort_str()),
+                m.provider_reasoning_parameters.as_ref().map(Value::to_string),
+                m.reasoning_mode_applied,
+                actual_reasoning_tokens,
             ),
         )?;
         tx.execute(
@@ -234,7 +263,7 @@ impl Store {
 
     pub fn load_messages(&self, id: &str) -> Result<Vec<Message>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, content, tool_calls, tool_call_id, reasoning_content FROM messages \
+            "SELECT role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_mode_applied, actual_reasoning_tokens FROM messages \
              WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([id], |row| {
@@ -243,12 +272,23 @@ impl Store {
             let tool_calls: Option<String> = row.get(2)?;
             let tool_call_id: Option<String> = row.get(3)?;
             let reasoning_content: Option<String> = row.get(4)?;
+            let requested_reasoning_mode: Option<String> = row.get(5)?;
+            let provider_reasoning_parameters: Option<String> = row.get(6)?;
+            let reasoning_mode_applied: Option<bool> = row.get(7)?;
+            let actual_reasoning_tokens: Option<i64> = row.get(8)?;
             Ok(Message {
                 role,
                 content,
                 tool_calls: calls_from_json(tool_calls),
                 tool_call_id,
                 reasoning_content,
+                requested_reasoning_mode: requested_reasoning_mode
+                    .and_then(|mode| mode.parse().ok()),
+                provider_reasoning_parameters: provider_reasoning_parameters
+                    .and_then(|parameters| serde_json::from_str(&parameters).ok()),
+                reasoning_mode_applied,
+                actual_reasoning_tokens: actual_reasoning_tokens
+                    .and_then(|tokens| u64::try_from(tokens).ok()),
             })
         })?;
         let mut out = Vec::new();
@@ -448,5 +488,23 @@ mod tests {
         let loaded = store.load_messages("s1").unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].reasoning_content, Some("thinking trace".to_string()));
+    }
+
+    #[test]
+    fn messages_round_trip_with_reasoning_metadata() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        let mut m = Message::assistant("response");
+        m.requested_reasoning_mode = Some(crate::reasoning::ReasoningMode::Low);
+        m.provider_reasoning_parameters = Some(json!({"reasoning": {"effort": "low"}}));
+        m.reasoning_mode_applied = Some(true);
+        m.actual_reasoning_tokens = Some(9);
+        store.record_message("s1", 0, &m).unwrap();
+        let loaded = store.load_messages("s1").unwrap();
+        assert_eq!(
+            loaded[0].requested_reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::Low)
+        );
+        assert_eq!(loaded[0].actual_reasoning_tokens, Some(9));
     }
 }
