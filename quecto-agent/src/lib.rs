@@ -9,6 +9,7 @@ mod flavor;
 mod instructions;
 mod model;
 mod policy;
+mod reasoning;
 mod recorder;
 mod render;
 mod sandbox;
@@ -31,6 +32,9 @@ pub use model::{
 };
 pub use policy::{Decision, Policy, Preset};
 pub use quecto::join_url;
+pub use reasoning::{
+    parse_env_reasoning_mode, reasoning_payload, CompletionOptions, ReasoningMode,
+};
 pub use recorder::SqliteRecorder;
 pub use render::{
     chat_spinner_renderer, parse_spinner_verbs, stderr_renderer, LineRenderer, Renderer,
