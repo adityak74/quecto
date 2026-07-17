@@ -124,7 +124,7 @@ export QUECTO_MODEL="gpt-4o"
 | `QUECTO_MODEL` | `gpt-4o` | Model name |
 | `QUECTO_SYSTEM` | *(optional)* | System prompt, prepended as a `{role:system}` message |
 | `QUECTO_STREAM` | `1` | `0` uses the buffered path instead of streaming |
-| `QUECTO_REASONING_MODE` | *(optional)* | Default reasoning effort: `low`, `medium`, or `high` |
+| `QUECTO_REASONING_MODE` | *(optional)* | Default reasoning effort; accepted normalized values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh` |
 
 ---
 
