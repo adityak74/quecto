@@ -24,6 +24,7 @@ pub struct Flavor {
     pub model: Option<String>,
     pub base_url: Option<String>,
     pub max_steps: Option<usize>,
+    pub reasoning_mode: Option<crate::reasoning::ReasoningMode>,
     pub auto_verify: Option<bool>,
     pub auto_approve: Option<bool>,
     pub system_prompt: Option<String>,
@@ -87,6 +88,7 @@ impl Flavor {
             model: or(self.model, over.model),
             base_url: or(self.base_url, over.base_url),
             max_steps: or(self.max_steps, over.max_steps),
+            reasoning_mode: or(self.reasoning_mode, over.reasoning_mode),
             auto_verify: or(self.auto_verify, over.auto_verify),
             auto_approve: or(self.auto_approve, over.auto_approve),
             system_prompt: or(self.system_prompt, over.system_prompt),
@@ -276,6 +278,15 @@ required = ["test"]
     }
 
     #[test]
+    fn parse_reads_reasoning_mode() {
+        let f = Flavor::parse("reasoning_mode = \"high\"").unwrap();
+        assert_eq!(
+            f.reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
+        );
+    }
+
+    #[test]
     fn merge_lets_higher_layer_win_and_inherits_unset() {
         let base = Flavor::parse(
             r#"model = "base-model"
@@ -288,6 +299,17 @@ system_prompt = "base""#,
         assert_eq!(merged.model.as_deref(), Some("over-model"));
         assert_eq!(merged.max_steps, Some(10));
         assert_eq!(merged.system_prompt.as_deref(), Some("base"));
+    }
+
+    #[test]
+    fn merge_lets_higher_layer_override_reasoning_mode() {
+        let base = Flavor::parse("reasoning_mode = \"low\"").unwrap();
+        let over = Flavor::parse("reasoning_mode = \"high\"").unwrap();
+        let merged = base.merge(over);
+        assert_eq!(
+            merged.reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
+        );
     }
 
     #[test]
