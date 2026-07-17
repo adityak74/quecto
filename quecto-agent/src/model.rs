@@ -365,6 +365,28 @@ mod tests {
     }
 
     #[test]
+    fn completion_options_can_change_reasoning_mode_across_calls() {
+        let model = HttpModel {
+            url: "http://example.test/v1/chat/completions".into(),
+            api_key: None,
+            model: "test-model".into(),
+            default_reasoning_mode: Some(crate::reasoning::ReasoningMode::Low),
+        };
+        let low = effective_reasoning_mode(
+            model.default_reasoning_mode,
+            &crate::reasoning::CompletionOptions::default(),
+        );
+        let high = effective_reasoning_mode(
+            model.default_reasoning_mode,
+            &crate::reasoning::CompletionOptions {
+                reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
+            },
+        );
+        assert_eq!(low, Some(crate::reasoning::ReasoningMode::Low));
+        assert_eq!(high, Some(crate::reasoning::ReasoningMode::High));
+    }
+
+    #[test]
     fn parses_plain_content() {
         let r = json!({"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}]});
         let m = parse_assistant(&r).unwrap();
