@@ -171,6 +171,8 @@ Interactive chat with the rotating loading verbs:
 | `/approve` | — | Auto-approve all edits and shell commands for this session |
 | `/deny` | — | Deny all edits and shell commands for this session |
 | `/clear` | — | Forget the conversation (keeps the system prompt) |
+| `/reasoning` | — | Show the active session reasoning mode |
+| `/reasoning <mode>` | `/reasoning off` | Set or clear the reasoning default for future turns in this chat session |
 | `/exit` | `/quit`, `/q` | Leave chat |
 
 **What's in it:** multi-step tool use (file read/write/patch, search, git, shell, background processes, `.qkb` notes, subagent delegation), edits gated by an approval preset, a hard-denylist sandbox (blocks `sudo`, `rm -rf /`, `git push`, etc. even under `--yes`), configurable verification commands, SQLite-backed session persistence, and named flavor manifests (`.quecto/flavors/*.toml`) with content-hash trust-on-first-use.
@@ -226,6 +228,11 @@ Harness code can override the default per completion by passing
 to `Model::complete_with_options(...)`; that options-aware path returns a
 `ModelCompletion` containing the legacy `AssistantMessage` plus additive
 `CompletionTelemetry`.
+
+Inside `quecto-agent chat`, `/reasoning` shows the current session default,
+`/reasoning high` updates it for future turns, and `/reasoning off` clears it.
+That session-level setting persists across `quecto-agent resume <session-id>`.
+It does not mutate environment variables, flavor files, or one-shot runs.
 
 See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test results, and `docs/superpowers/` for the milestone specs and plans (M1–M7b).
 

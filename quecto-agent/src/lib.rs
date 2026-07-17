@@ -20,7 +20,7 @@ mod verify;
 
 pub use agent::{Agent, Outcome, RunRecorder};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
-pub use chat::{parse_command, ChatCommand};
+pub use chat::{parse_command, ChatCommand, ReasoningCommand};
 pub use context::seed as seed_context;
 pub use flavor::{
     content_hash, layer_paths, project_raw, resolve, resolve_configured, resolve_scoped,

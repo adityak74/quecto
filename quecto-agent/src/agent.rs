@@ -101,7 +101,11 @@ impl Agent {
     pub fn config(&self) -> AgentConfig {
         AgentConfig {
             model: self.model.clone(),
-            base_system_prompt: self.messages.first().map(|m| m.content.clone()).unwrap_or_default(),
+            base_system_prompt: self
+                .messages
+                .first()
+                .map(|m| m.content.clone())
+                .unwrap_or_default(),
             max_steps: self.max_steps,
             repo_root: self.cx.repo_root.clone(),
             cancel: self.cancel.clone(),
@@ -193,10 +197,7 @@ impl Agent {
             .iter()
             .map(|record| record.message.clone())
             .collect();
-        self.message_metadata = records
-            .into_iter()
-            .map(|record| record.metadata)
-            .collect();
+        self.message_metadata = records.into_iter().map(|record| record.metadata).collect();
         self
     }
 
@@ -240,6 +241,17 @@ impl Agent {
     /// Return the names of registered tools (used by /commands in chat).
     pub fn tool_names(&self) -> Vec<String> {
         self.registry.tool_names()
+    }
+
+    pub fn session_reasoning_mode(&self) -> Option<crate::reasoning::ReasoningMode> {
+        self.model.session_reasoning_mode()
+    }
+
+    pub fn set_session_reasoning_mode(
+        &mut self,
+        mode: Option<crate::reasoning::ReasoningMode>,
+    ) -> Result<(), BoxErr> {
+        self.model.set_session_reasoning_mode(mode)
     }
 
     /// Run one task to completion (or a limit/error). Appends the task as a user
@@ -342,10 +354,8 @@ impl Agent {
             };
             let msg = completion.message;
             let telemetry = completion.telemetry;
-            let mut assistant_msg = Message::assistant_with_calls(
-                msg.content.clone(),
-                msg.tool_calls.clone(),
-            );
+            let mut assistant_msg =
+                Message::assistant_with_calls(msg.content.clone(), msg.tool_calls.clone());
             assistant_msg.reasoning_content = msg.reasoning_content.clone();
             let metadata = MessageMetadata::from(&telemetry);
             self.push_message(assistant_msg, metadata);
@@ -474,7 +484,10 @@ fn sanitize_arguments(name: &str, args: &serde_json::Value) -> String {
                 let mut map = serde_json::Map::new();
                 for (k, v) in obj {
                     if k == "command" || k == "content" || k == "patch" {
-                        map.insert(k.clone(), serde_json::Value::String("<redacted>".to_string()));
+                        map.insert(
+                            k.clone(),
+                            serde_json::Value::String("<redacted>".to_string()),
+                        );
                     } else {
                         map.insert(k.clone(), v.clone());
                     }
@@ -714,6 +727,51 @@ mod tests {
         assert_eq!(a.recorded_messages, 1);
         assert_eq!(a.cx.changes().len(), 0);
         assert_eq!(a.recorded_changes, 0);
+    }
+
+    #[test]
+    fn agent_session_reasoning_mode_round_trips_on_configured_model() {
+        let model = crate::model::HttpModel {
+            url: "http://example.test/v1/chat/completions".into(),
+            api_key: None,
+            model: "test-model".into(),
+        }
+        .with_default_reasoning_mode(Some(crate::reasoning::ReasoningMode::Low));
+        let mut agent = Agent::new(
+            Box::new(model),
+            "sys",
+            10,
+            PathBuf::from("."),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        );
+
+        assert_eq!(
+            agent.session_reasoning_mode(),
+            Some(crate::reasoning::ReasoningMode::Low)
+        );
+
+        agent
+            .set_session_reasoning_mode(Some(crate::reasoning::ReasoningMode::High))
+            .unwrap();
+
+        assert_eq!(
+            agent.session_reasoning_mode(),
+            Some(crate::reasoning::ReasoningMode::High)
+        );
+    }
+
+    #[test]
+    fn agent_rejects_reasoning_updates_for_unsupported_models() {
+        let mut agent = agent(Scripted::new(vec![text("done")]));
+
+        let err = agent
+            .set_session_reasoning_mode(Some(crate::reasoning::ReasoningMode::High))
+            .unwrap_err();
+
+        assert!(err
+            .to_string()
+            .contains("reasoning mode updates are not supported"));
     }
 
     struct StaticNamed {

@@ -335,6 +335,17 @@ pub trait Model: Send + Sync {
     }
 
     fn clone_box(&self) -> Box<dyn Model>;
+
+    fn session_reasoning_mode(&self) -> Option<crate::reasoning::ReasoningMode> {
+        None
+    }
+
+    fn set_session_reasoning_mode(
+        &mut self,
+        _mode: Option<crate::reasoning::ReasoningMode>,
+    ) -> Result<(), BoxErr> {
+        Err("reasoning mode updates are not supported for this model".into())
+    }
 }
 
 impl Clone for Box<dyn Model> {
@@ -396,6 +407,16 @@ impl HttpModel {
     }
 }
 
+impl ConfiguredHttpModel {
+    pub fn session_reasoning_mode(&self) -> Option<crate::reasoning::ReasoningMode> {
+        self.default_reasoning_mode
+    }
+
+    pub fn set_session_reasoning_mode(&mut self, mode: Option<crate::reasoning::ReasoningMode>) {
+        self.default_reasoning_mode = mode;
+    }
+}
+
 fn effective_reasoning_mode(
     default_mode: Option<crate::reasoning::ReasoningMode>,
     options: &crate::reasoning::CompletionOptions,
@@ -453,7 +474,10 @@ impl Model for HttpModel {
                 span.record("quecto.requested_reasoning_mode", mode.effort_str());
             }
             if let Some(parameters) = &provider_reasoning_parameters {
-                span.record("quecto.provider_reasoning_parameters", parameters.to_string());
+                span.record(
+                    "quecto.provider_reasoning_parameters",
+                    parameters.to_string(),
+                );
             }
             span.record(
                 "quecto.reasoning_parameters_sent",
@@ -518,6 +542,18 @@ impl Model for ConfiguredHttpModel {
             reasoning_mode: effective_reasoning_mode(self.default_reasoning_mode, options),
         };
         self.inner.complete_with_options(messages, tools, &options)
+    }
+
+    fn session_reasoning_mode(&self) -> Option<crate::reasoning::ReasoningMode> {
+        self.session_reasoning_mode()
+    }
+
+    fn set_session_reasoning_mode(
+        &mut self,
+        mode: Option<crate::reasoning::ReasoningMode>,
+    ) -> Result<(), BoxErr> {
+        self.set_session_reasoning_mode(mode);
+        Ok(())
     }
 }
 
@@ -677,6 +713,28 @@ mod tests {
     }
 
     #[test]
+    fn configured_model_session_reasoning_mode_is_mutable() {
+        let mut model = HttpModel {
+            url: "http://example.test/v1/chat/completions".into(),
+            api_key: None,
+            model: "test-model".into(),
+        }
+        .with_default_reasoning_mode(Some(crate::reasoning::ReasoningMode::Low));
+
+        assert_eq!(
+            model.session_reasoning_mode(),
+            Some(crate::reasoning::ReasoningMode::Low)
+        );
+
+        model.set_session_reasoning_mode(Some(crate::reasoning::ReasoningMode::High));
+
+        assert_eq!(
+            model.session_reasoning_mode(),
+            Some(crate::reasoning::ReasoningMode::High)
+        );
+    }
+
+    #[test]
     fn completion_options_override_model_default() {
         let options = crate::reasoning::CompletionOptions {
             reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
@@ -712,8 +770,7 @@ mod tests {
                     let read = stream.read(&mut buffer).unwrap();
                     assert!(read > 0, "request ended before headers");
                     request.extend_from_slice(&buffer[..read]);
-                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n")
-                    {
+                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
                         break end + 4;
                     }
                 };
