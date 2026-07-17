@@ -1383,6 +1383,32 @@ mod main_tests {
     }
 
     #[test]
+    fn resume_prefers_persisted_session_reasoning_mode() {
+        let _env = EnvGuard::set(&[
+            ("QUECTO_REASONING_MODE", None),
+            ("QUECTO_BASE_URL", Some("http://localhost:1234/v1")),
+            ("QUECTO_MODEL", Some("reasoning-model")),
+        ]);
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_session_with_reasoning_mode(
+                "s1",
+                "chat",
+                "/repo",
+                "reasoning-model",
+                Some(ReasoningMode::High),
+            )
+            .unwrap();
+
+        let persisted = store.session_reasoning_mode("s1").unwrap();
+        let model = HttpModel::from_env()
+            .try_with_env_reasoning_mode(persisted)
+            .unwrap();
+
+        assert_eq!(model.session_reasoning_mode(), Some(ReasoningMode::High));
+    }
+
+    #[test]
     fn one_shot_run_does_not_depend_on_session_reasoning_state() {
         let _env = EnvGuard::set(&[
             ("QUECTO_REASONING_MODE", None),
