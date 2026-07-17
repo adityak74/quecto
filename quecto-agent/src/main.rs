@@ -1,9 +1,10 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use quecto_agent::{
     cancel_token, chat_spinner_renderer, content_hash, join_url, load_instructions, new_session_id,
-    parse_command, parse_spinner_verbs, project_raw, render_change_summary, resolve_scoped,
-    seed_context, Agent, ApprovalMode, ChatCommand, Flavor, HttpModel, LineRenderer, Outcome,
-    Policy, Preset, Renderer, SqliteRecorder, Store, TrustStore, Verifier,
+    parse_command, parse_spinner_verbs, project_raw, render_change_summary,
+    resolve_scoped_configured, seed_context, Agent, ApprovalMode, ChatCommand, ConfiguredFlavor,
+    Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, ReasoningCommand, ReasoningMode,
+    Renderer, SqliteRecorder, Store, TrustStore, Verifier,
 };
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -161,6 +162,7 @@ const SCAFFOLD_TEMPLATE: &str = r#"name = "{name}"
 # api_key is NEVER read from a manifest — set QUECTO_API_KEY in the environment.
 # model         = "qwen3.6:35b"
 # base_url      = "http://localhost:11434/v1"
+# reasoning_mode  = "low"
 # max_steps     = 30
 # auto_verify   = true
 # system_prompt = "You are a terse senior reviewer."
@@ -243,10 +245,10 @@ fn compose_system_with_persona(cwd: &Path, persona: Option<&str>) -> String {
     system
 }
 
-fn resolve_flavor(overrides: &Overrides) -> (Flavor, Flavor) {
+fn resolve_flavor(overrides: &Overrides) -> (ConfiguredFlavor, ConfiguredFlavor) {
     let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    match resolve_scoped(&home, &cwd, overrides.flavor.as_deref()) {
+    match resolve_scoped_configured(&home, &cwd, overrides.flavor.as_deref()) {
         Ok(pair) => pair,
         Err(e) => {
             eprintln!("quecto-agent: flavor error: {e}");
@@ -260,11 +262,11 @@ fn resolve_flavor(overrides: &Overrides) -> (Flavor, Flavor) {
 /// otherwise `user` alone. Prompts on a TTY; non-interactive denies; `--yes`
 /// trusts and records.
 fn gated_flavor(
-    user: &Flavor,
-    project: &Flavor,
+    user: &ConfiguredFlavor,
+    project: &ConfiguredFlavor,
     flavor_name: Option<&str>,
     auto_approve: bool,
-) -> Flavor {
+) -> ConfiguredFlavor {
     let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let Some(raw) = project_raw(&home, &cwd, flavor_name) else {
@@ -471,7 +473,12 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
         url: join_url(&base_url, "chat/completions"),
         api_key,
         model: model_name,
-    };
+    }
+    .try_with_env_reasoning_mode(merged.reasoning_mode)
+    .unwrap_or_else(|e| {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(2);
+    });
     let steps = overrides
         .max_steps
         .or_else(|| {
@@ -529,7 +536,9 @@ const HELP: &str = "\
 /undo                revert the last recorded file change
 /approve             auto-approve edits and commands this session
 /deny                deny edits and commands this session
-/clear               forget the conversation (keep system prompt)";
+/clear               forget the conversation (keep system prompt)
+/reasoning           show the active session reasoning mode
+/reasoning <mode>    set reasoning mode for future turns in this session";
 
 fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
@@ -550,7 +559,12 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
             .ok()
             .filter(|s| !s.is_empty()),
         model: model_name.clone(),
-    };
+    }
+    .try_with_env_reasoning_mode(merged.reasoning_mode)
+    .unwrap_or_else(|e| {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(2);
+    });
     let steps = overrides
         .max_steps
         .or_else(|| {
@@ -591,7 +605,13 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
 
     let store = open_store();
     if let Some(s) = &store {
-        if let Err(e) = s.create_session(&session_id, "chat", &cwd.display().to_string(), "") {
+        if let Err(e) = s.create_session_with_reasoning_mode(
+            &session_id,
+            "chat",
+            &cwd.display().to_string(),
+            "",
+            merged.reasoning_mode,
+        ) {
             eprintln!("quecto-agent: could not create session: {e}");
         } else if let Ok(rec_store) = Store::open_default() {
             agent = agent.with_recorder(Box::new(SqliteRecorder::new(
@@ -654,7 +674,9 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
             for seg in &segments {
                 match seg {
                     Segment::Text(t) => prompt.push_str(t),
-                    Segment::Paste(s) => prompt.push_str(&format!("[pasted +{} characters]", s.len())),
+                    Segment::Paste(s) => {
+                        prompt.push_str(&format!("[pasted +{} characters]", s.len()))
+                    }
                 }
             }
             let _ = crossterm::execute!(
@@ -668,13 +690,23 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
 
         if let Ok(event) = crossterm::event::read() {
             match event {
-                crossterm::event::Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
+                crossterm::event::Event::Key(key)
+                    if key.kind == crossterm::event::KeyEventKind::Press =>
+                {
                     match key.code {
-                        crossterm::event::KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('c')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             println!("\r");
                             break;
                         }
-                        crossterm::event::KeyCode::Char('d') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                        crossterm::event::KeyCode::Char('d')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
                             println!("\r");
                             break;
                         }
@@ -690,7 +722,10 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                             segments.clear();
                             segments.push(Segment::Text(String::new()));
 
-                            let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableBracketedPaste);
+                            let _ = crossterm::execute!(
+                                std::io::stdout(),
+                                crossterm::event::DisableBracketedPaste
+                            );
                             let _ = crossterm::terminal::disable_raw_mode();
 
                             let exit = handle_chat_command(
@@ -708,7 +743,10 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                             }
 
                             crossterm::terminal::enable_raw_mode().unwrap();
-                            let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
+                            let _ = crossterm::execute!(
+                                std::io::stdout(),
+                                crossterm::event::EnableBracketedPaste
+                            );
                             redraw = true;
                         }
                         crossterm::event::KeyCode::Backspace => {
@@ -813,7 +851,11 @@ fn handle_chat_command(
                 .unwrap_or_else(|| "unknown".to_string());
             let bg_count = agent.background_process_count();
             if bg_count > 0 {
-                let plural = if bg_count == 1 { "process" } else { "processes" };
+                let plural = if bg_count == 1 {
+                    "process"
+                } else {
+                    "processes"
+                };
                 out.notice(&format!(
                     "session {session_id} [{status}] ({} background {} running)",
                     bg_count, plural
@@ -845,6 +887,42 @@ fn handle_chat_command(
         }
         ChatCommand::Tools => {
             out.notice(&agent.tool_names().join("\n"));
+        }
+        ChatCommand::Reasoning(ReasoningCommand::Show) => {
+            out.notice(&format!(
+                "reasoning: {}",
+                agent
+                    .session_reasoning_mode()
+                    .map(|mode| mode.effort_str())
+                    .unwrap_or("off")
+            ));
+        }
+        ChatCommand::Reasoning(ReasoningCommand::Set(raw)) => {
+            let mode = if raw.eq_ignore_ascii_case("off") {
+                None
+            } else {
+                match raw.parse::<ReasoningMode>() {
+                    Ok(mode) => Some(mode),
+                    Err(_) => {
+                        out.notice(&format!("unknown reasoning mode: {raw}"));
+                        return exit;
+                    }
+                }
+            };
+            if let Err(e) = agent.set_session_reasoning_mode(mode) {
+                out.notice(&format!("error: {e}"));
+                return exit;
+            }
+            if let Some(s) = store {
+                if let Err(e) = s.set_session_reasoning_mode(session_id, mode) {
+                    out.notice(&format!("error: {e}"));
+                    return exit;
+                }
+            }
+            match mode {
+                Some(mode) => out.notice(&format!("reasoning set to {}", mode.effort_str())),
+                None => out.notice("reasoning turned off"),
+            }
         }
         ChatCommand::Unknown(name) => {
             out.notice(&format!("unknown command '/{name}' — try /help"));
@@ -897,7 +975,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         Some(s) => s,
         None => std::process::exit(1),
     };
-    let messages = match store.load_messages(id) {
+    let messages = match store.load_message_records(id) {
         Ok(m) if !m.is_empty() => m,
         Ok(_) => {
             eprintln!("quecto-agent: no session '{id}'");
@@ -927,7 +1005,18 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
             .ok()
             .filter(|s| !s.is_empty()),
         model: model_name,
-    };
+    }
+    .try_with_env_reasoning_mode(
+        store
+            .session_reasoning_mode(id)
+            .ok()
+            .flatten()
+            .or(merged.reasoning_mode),
+    )
+    .unwrap_or_else(|e| {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(2);
+    });
     let steps = overrides
         .max_steps
         .or_else(|| {
@@ -943,7 +1032,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     let mut agent = Agent::new(Box::new(model), system, steps, cwd, cancel, approval)
         .register_builtins_filtered(merged.tools.enabled.as_deref())
         .with_policy(build_policy(overrides.approval.as_deref(), &gated))
-        .with_messages(messages);
+        .with_message_records(messages);
 
     agent = attach_mcp_tools(agent, overrides, false);
 
@@ -1033,13 +1122,17 @@ fn attach_mcp_tools(agent: Agent, _overrides: &Overrides, _add_prompt_additions:
 #[cfg(feature = "mcp")]
 fn attach_mcp_tools(mut agent: Agent, overrides: &Overrides, add_prompt_additions: bool) -> Agent {
     use quecto_mcp::{McpConfig, McpRegistry};
-    use std::sync::{Arc, Mutex};
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
 
-    let file_cfg = McpConfig::from_file(Path::new(".quecto/mcp.toml"))
-        .unwrap_or_else(|e| { eprintln!("quecto-mcp: config warning: {e}"); McpConfig::empty() });
-    let env_cfg = McpConfig::from_env()
-        .unwrap_or_else(|e| { eprintln!("quecto-mcp: env warning: {e}"); McpConfig::empty() });
+    let file_cfg = McpConfig::from_file(Path::new(".quecto/mcp.toml")).unwrap_or_else(|e| {
+        eprintln!("quecto-mcp: config warning: {e}");
+        McpConfig::empty()
+    });
+    let env_cfg = McpConfig::from_env().unwrap_or_else(|e| {
+        eprintln!("quecto-mcp: env warning: {e}");
+        McpConfig::empty()
+    });
     let cli_cfg = mcp_config_from_flags(&overrides.mcp);
     let merged = McpConfig::merged(file_cfg, env_cfg, cli_cfg);
 
@@ -1049,15 +1142,20 @@ fn attach_mcp_tools(mut agent: Agent, overrides: &Overrides, add_prompt_addition
     let registry_arc = Arc::new(Mutex::new(registry));
 
     for mcp_tool in mcp_tools {
-        let adapter = quecto_agent::mcp_adapter::McpToolAdapter { tool: mcp_tool, registry: std::sync::Arc::clone(&registry_arc) };
+        let adapter = quecto_agent::mcp_adapter::McpToolAdapter {
+            tool: mcp_tool,
+            registry: std::sync::Arc::clone(&registry_arc),
+        };
         agent = agent.register(Box::new(adapter));
     }
     if add_prompt_additions {
         for addition in &prompt_additions {
             if let Some(msg) = agent.messages.first_mut() {
-                msg.content.push_str("
+                msg.content.push_str(
+                    "
 
-");
+",
+                );
                 msg.content.push_str(addition);
             }
         }
@@ -1072,22 +1170,48 @@ fn mcp_config_from_flags(flags: &[String]) -> quecto_mcp::McpConfig {
     let mut servers = Vec::new();
     for flag in flags {
         let parts: Vec<&str> = flag.splitn(3, ':').collect();
-        if parts.len() < 3 { eprintln!("quecto-mcp: ignoring malformed --mcp flag: {flag}"); continue; }
+        if parts.len() < 3 {
+            eprintln!("quecto-mcp: ignoring malformed --mcp flag: {flag}");
+            continue;
+        }
         let (transport_str, name, rest) = (parts[0], parts[1], parts[2]);
         let transport = match transport_str {
             "stdio" => TransportKind::Stdio,
             "streamable_http" => TransportKind::StreamableHttp,
             "sse" => TransportKind::Sse,
-            other => { eprintln!("quecto-mcp: unknown transport '{other}'"); continue; }
+            other => {
+                eprintln!("quecto-mcp: unknown transport '{other}'");
+                continue;
+            }
         };
         let server = match transport {
             TransportKind::Stdio => {
                 let mut p = rest.split(':');
                 let command = p.next().unwrap_or("").to_string();
                 let args: Vec<String> = p.map(str::to_string).collect();
-                ServerConfig { name: name.to_string(), transport, command: Some(command), args, env: HashMap::new(), url: None, headers: HashMap::new(), trust: TrustLevel::Sandbox, timeout_secs: None }
+                ServerConfig {
+                    name: name.to_string(),
+                    transport,
+                    command: Some(command),
+                    args,
+                    env: HashMap::new(),
+                    url: None,
+                    headers: HashMap::new(),
+                    trust: TrustLevel::Sandbox,
+                    timeout_secs: None,
+                }
             }
-            _ => ServerConfig { name: name.to_string(), transport, command: None, args: vec![], env: HashMap::new(), url: Some(rest.to_string()), headers: HashMap::new(), trust: TrustLevel::Sandbox, timeout_secs: None }
+            _ => ServerConfig {
+                name: name.to_string(),
+                transport,
+                command: None,
+                args: vec![],
+                env: HashMap::new(),
+                url: Some(rest.to_string()),
+                headers: HashMap::new(),
+                trust: TrustLevel::Sandbox,
+                timeout_secs: None,
+            },
         };
         servers.push(server);
     }
@@ -1096,6 +1220,209 @@ fn mcp_config_from_flags(flags: &[String]) -> quecto_mcp::McpConfig {
 
 #[cfg(test)]
 mod main_tests {
+    use super::*;
+    use quecto_agent::Renderer;
+    use std::path::Path;
+
+    #[derive(Default)]
+    struct TestRenderer {
+        notices: Vec<String>,
+    }
+
+    impl Renderer for TestRenderer {
+        fn tool(&mut self, _name: &str, _summary: &str) {}
+        fn verify(&mut self, _command: &str, _passed: bool) {}
+        fn notice(&mut self, text: &str) {
+            self.notices.push(text.to_string());
+        }
+        fn assistant(&mut self, _text: &str) {}
+    }
+
+    fn test_agent(mode: Option<ReasoningMode>) -> Agent {
+        let model = HttpModel {
+            url: "http://example.test/v1/chat/completions".into(),
+            api_key: None,
+            model: "test-model".into(),
+        }
+        .with_default_reasoning_mode(mode);
+        Agent::new(
+            Box::new(model),
+            "system".to_string(),
+            4,
+            std::env::current_dir().unwrap(),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        )
+    }
+
+    struct EnvGuard(Vec<(String, Option<String>)>);
+
+    impl EnvGuard {
+        fn set(values: &[(&str, Option<&str>)]) -> Self {
+            let previous = values
+                .iter()
+                .map(|(name, _)| ((*name).to_string(), std::env::var(name).ok()))
+                .collect();
+            for (name, value) in values {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+            Self(previous)
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.0.drain(..) {
+                match value {
+                    Some(value) => std::env::set_var(name, value),
+                    None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reasoning_query_reports_off_when_unset() {
+        let mut agent = test_agent(None);
+        let store = Some(Store::open_in_memory().unwrap());
+        store
+            .as_ref()
+            .unwrap()
+            .create_session_with_reasoning_mode("s1", "chat", "/repo", "test-model", None)
+            .unwrap();
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/reasoning",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(out.notices, vec!["reasoning: off".to_string()]);
+    }
+
+    #[test]
+    fn reasoning_set_updates_agent_and_store() {
+        let mut agent = test_agent(None);
+        let store = Some(Store::open_in_memory().unwrap());
+        store
+            .as_ref()
+            .unwrap()
+            .create_session_with_reasoning_mode("s1", "chat", "/repo", "test-model", None)
+            .unwrap();
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/reasoning high",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(agent.session_reasoning_mode(), Some(ReasoningMode::High));
+        assert_eq!(
+            store
+                .as_ref()
+                .unwrap()
+                .session_reasoning_mode("s1")
+                .unwrap(),
+            Some(ReasoningMode::High)
+        );
+        assert_eq!(out.notices, vec!["reasoning set to high".to_string()]);
+    }
+
+    #[test]
+    fn chat_reasoning_updates_can_be_cleared_with_off() {
+        let mut agent = test_agent(Some(ReasoningMode::Medium));
+        let store = Some(Store::open_in_memory().unwrap());
+        store
+            .as_ref()
+            .unwrap()
+            .create_session_with_reasoning_mode(
+                "s1",
+                "chat",
+                "/repo",
+                "test-model",
+                Some(ReasoningMode::Medium),
+            )
+            .unwrap();
+        let mut out = TestRenderer::default();
+
+        handle_chat_command(
+            "/reasoning off",
+            &mut agent,
+            &store,
+            "s1",
+            Path::new("/repo"),
+            "test-model",
+            &mut out,
+        );
+
+        assert_eq!(agent.session_reasoning_mode(), None);
+        assert_eq!(
+            store
+                .as_ref()
+                .unwrap()
+                .session_reasoning_mode("s1")
+                .unwrap(),
+            None
+        );
+        assert_eq!(out.notices, vec!["reasoning turned off".to_string()]);
+    }
+
+    #[test]
+    fn resume_prefers_persisted_session_reasoning_mode() {
+        let _env = EnvGuard::set(&[
+            ("QUECTO_REASONING_MODE", None),
+            ("QUECTO_BASE_URL", Some("http://localhost:1234/v1")),
+            ("QUECTO_MODEL", Some("reasoning-model")),
+        ]);
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_session_with_reasoning_mode(
+                "s1",
+                "chat",
+                "/repo",
+                "reasoning-model",
+                Some(ReasoningMode::High),
+            )
+            .unwrap();
+
+        let persisted = store.session_reasoning_mode("s1").unwrap();
+        let model = HttpModel::from_env()
+            .try_with_env_reasoning_mode(persisted)
+            .unwrap();
+
+        assert_eq!(model.session_reasoning_mode(), Some(ReasoningMode::High));
+    }
+
+    #[test]
+    fn one_shot_run_does_not_depend_on_session_reasoning_state() {
+        let _env = EnvGuard::set(&[
+            ("QUECTO_REASONING_MODE", None),
+            ("QUECTO_BASE_URL", Some("http://localhost:1234/v1")),
+            ("QUECTO_MODEL", Some("reasoning-model")),
+        ]);
+
+        let model = HttpModel::from_env()
+            .try_with_env_reasoning_mode(None)
+            .unwrap();
+
+        assert_eq!(model.session_reasoning_mode(), None);
+    }
+
     #[test]
     #[cfg(feature = "otel")]
     fn test_otel_initialization() {

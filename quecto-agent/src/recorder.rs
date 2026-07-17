@@ -1,5 +1,5 @@
 use crate::agent::RunRecorder;
-use crate::model::Message;
+use crate::model::{Message, MessageMetadata};
 use crate::session::Store;
 use crate::tools::FileChange;
 
@@ -27,6 +27,18 @@ impl SqliteRecorder {
 impl RunRecorder for SqliteRecorder {
     fn message(&mut self, m: &Message) {
         if let Err(e) = self.store.record_message(&self.session_id, self.msg_seq, m) {
+            eprintln!("quecto-agent: failed to persist message: {e}");
+        }
+        self.msg_seq += 1;
+    }
+
+    fn message_with_metadata(&mut self, m: &Message, metadata: &MessageMetadata) {
+        if let Err(e) = self.store.record_message_with_metadata(
+            &self.session_id,
+            self.msg_seq,
+            m,
+            metadata,
+        ) {
             eprintln!("quecto-agent: failed to persist message: {e}");
         }
         self.msg_seq += 1;

@@ -1,10 +1,12 @@
-use crate::model::{Message, ToolCall};
+use crate::model::{Message, MessageMetadata, MessageRecord, ToolCall};
 use crate::tools::FileChange;
 use crate::BoxErr;
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const MIGRATION_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS sessions (
@@ -13,6 +15,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     repo TEXT NOT NULL,
     model TEXT NOT NULL,
     status TEXT NOT NULL,
+    session_reasoning_mode TEXT,
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL
 );
@@ -24,7 +27,12 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     tool_calls TEXT,
     tool_call_id TEXT,
-    reasoning_content TEXT
+    reasoning_content TEXT,
+    requested_reasoning_mode TEXT,
+    provider_reasoning_parameters TEXT,
+    reasoning_parameters_sent INTEGER,
+    reasoning_content_available INTEGER,
+    actual_reasoning_tokens INTEGER
 );
 CREATE TABLE IF NOT EXISTS file_changes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -101,11 +109,72 @@ fn calls_from_json(raw: Option<String>) -> Vec<ToolCall> {
         .collect()
 }
 
+fn message_column_exists(conn: &Connection, column: &str) -> Result<bool, rusqlite::Error> {
+    let mut statement = conn.prepare("PRAGMA table_info(messages)")?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for existing in columns {
+        if existing? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn migrate_message_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    const COLUMNS: &[(&str, &str)] = &[
+        ("reasoning_content", "TEXT"),
+        ("requested_reasoning_mode", "TEXT"),
+        ("provider_reasoning_parameters", "TEXT"),
+        ("reasoning_parameters_sent", "INTEGER"),
+        ("reasoning_content_available", "INTEGER"),
+        ("actual_reasoning_tokens", "INTEGER"),
+    ];
+
+    for (column, sql_type) in COLUMNS {
+        if !message_column_exists(conn, column)? {
+            conn.execute(
+                &format!("ALTER TABLE messages ADD COLUMN {column} {sql_type}"),
+                [],
+            )?;
+        }
+    }
+    if message_column_exists(conn, "reasoning_mode_applied")? {
+        conn.execute(
+            "UPDATE messages SET reasoning_parameters_sent = reasoning_mode_applied \
+             WHERE reasoning_parameters_sent IS NULL",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_session_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let mut statement = conn.prepare("PRAGMA table_info(sessions)")?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let mut has_reasoning_mode = false;
+    for column in columns {
+        if column? == "session_reasoning_mode" {
+            has_reasoning_mode = true;
+            break;
+        }
+    }
+    if !has_reasoning_mode {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN session_reasoning_mode TEXT",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 impl Store {
-    fn init(conn: Connection) -> Result<Store, BoxErr> {
-        conn.execute_batch(SCHEMA)?;
-        // Auto-migrate schema: add reasoning_content to messages if missing in existing DBs
-        let _ = conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT", []);
+    fn init(mut conn: Connection) -> Result<Store, BoxErr> {
+        conn.busy_timeout(MIGRATION_BUSY_TIMEOUT)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(SCHEMA)?;
+        migrate_session_columns(&tx)?;
+        migrate_message_columns(&tx)?;
+        tx.commit()?;
         Ok(Store { conn })
     }
 
@@ -146,6 +215,47 @@ impl Store {
         Ok(())
     }
 
+    pub fn create_session_with_reasoning_mode(
+        &self,
+        id: &str,
+        task: &str,
+        repo: &str,
+        model: &str,
+        reasoning_mode: Option<crate::reasoning::ReasoningMode>,
+    ) -> Result<(), BoxErr> {
+        let t = now();
+        self.conn.execute(
+            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, created, updated) \
+             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6, ?6)",
+            (id, task, repo, model, reasoning_mode.map(|m| m.effort_str()), t),
+        )?;
+        Ok(())
+    }
+
+    pub fn set_session_reasoning_mode(
+        &self,
+        id: &str,
+        mode: Option<crate::reasoning::ReasoningMode>,
+    ) -> Result<(), BoxErr> {
+        self.conn.execute(
+            "UPDATE sessions SET session_reasoning_mode = ?2, updated = ?3 WHERE id = ?1",
+            (id, mode.map(|m| m.effort_str()), now()),
+        )?;
+        Ok(())
+    }
+
+    pub fn session_reasoning_mode(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::reasoning::ReasoningMode>, BoxErr> {
+        let raw: Option<String> = self.conn.query_row(
+            "SELECT session_reasoning_mode FROM sessions WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        raw.map(|value| value.parse()).transpose()
+    }
+
     pub fn set_status(&self, id: &str, status: &str) -> Result<(), BoxErr> {
         self.conn.execute(
             "UPDATE sessions SET status = ?2, updated = ?3 WHERE id = ?1",
@@ -155,10 +265,25 @@ impl Store {
     }
 
     pub fn record_message(&mut self, id: &str, seq: i64, m: &Message) -> Result<(), BoxErr> {
+        self.record_message_with_metadata(id, seq, m, &MessageMetadata::default())
+    }
+
+    pub fn record_message_with_metadata(
+        &mut self,
+        id: &str,
+        seq: i64,
+        m: &Message,
+        metadata: &MessageMetadata,
+    ) -> Result<(), BoxErr> {
+        let actual_reasoning_tokens = metadata
+            .actual_reasoning_tokens
+            .map(i64::try_from)
+            .transpose()
+            .map_err(|_| "actual reasoning token count exceeds SQLite INTEGER range")?;
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, reasoning_content) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_parameters_sent, reasoning_content_available, actual_reasoning_tokens) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             (
                 id,
                 seq,
@@ -167,6 +292,16 @@ impl Store {
                 calls_to_json(&m.tool_calls),
                 &m.tool_call_id,
                 &m.reasoning_content,
+                metadata
+                    .requested_reasoning_mode
+                    .map(|mode| mode.effort_str()),
+                metadata
+                    .provider_reasoning_parameters
+                    .as_ref()
+                    .map(Value::to_string),
+                metadata.reasoning_parameters_sent,
+                metadata.reasoning_content_available,
+                actual_reasoning_tokens,
             ),
         )?;
         tx.execute(
@@ -233,8 +368,16 @@ impl Store {
     }
 
     pub fn load_messages(&self, id: &str) -> Result<Vec<Message>, BoxErr> {
+        Ok(self
+            .load_message_records(id)?
+            .into_iter()
+            .map(|record| record.message)
+            .collect())
+    }
+
+    pub fn load_message_records(&self, id: &str) -> Result<Vec<MessageRecord>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, content, tool_calls, tool_call_id, reasoning_content FROM messages \
+            "SELECT role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_parameters_sent, reasoning_content_available, actual_reasoning_tokens FROM messages \
              WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([id], |row| {
@@ -243,12 +386,29 @@ impl Store {
             let tool_calls: Option<String> = row.get(2)?;
             let tool_call_id: Option<String> = row.get(3)?;
             let reasoning_content: Option<String> = row.get(4)?;
-            Ok(Message {
-                role,
-                content,
-                tool_calls: calls_from_json(tool_calls),
-                tool_call_id,
-                reasoning_content,
+            let requested_reasoning_mode: Option<String> = row.get(5)?;
+            let provider_reasoning_parameters: Option<String> = row.get(6)?;
+            let reasoning_parameters_sent: Option<bool> = row.get(7)?;
+            let reasoning_content_available: Option<bool> = row.get(8)?;
+            let actual_reasoning_tokens: Option<i64> = row.get(9)?;
+            Ok(MessageRecord {
+                message: Message {
+                    role,
+                    content,
+                    tool_calls: calls_from_json(tool_calls),
+                    tool_call_id,
+                    reasoning_content,
+                },
+                metadata: MessageMetadata {
+                    requested_reasoning_mode: requested_reasoning_mode
+                        .and_then(|mode| mode.parse().ok()),
+                    provider_reasoning_parameters: provider_reasoning_parameters
+                        .and_then(|parameters| serde_json::from_str(&parameters).ok()),
+                    reasoning_parameters_sent,
+                    reasoning_content_available,
+                    actual_reasoning_tokens: actual_reasoning_tokens
+                        .and_then(|tokens| u64::try_from(tokens).ok()),
+                },
             })
         })?;
         let mut out = Vec::new();
@@ -323,7 +483,42 @@ pub fn render_change_summary(changes: &[FileChange]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OpenFlags;
     use serde_json::json;
+
+    const PRE_REASONING_MODE_SCHEMA: &str = "\
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    task TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+);
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tool_calls TEXT,
+    tool_call_id TEXT,
+    reasoning_content TEXT
+);
+CREATE TABLE file_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    before TEXT,
+    after TEXT NOT NULL
+);";
+
+    fn create_pre_reasoning_mode_db(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(PRE_REASONING_MODE_SCHEMA).unwrap();
+    }
 
     fn assistant_call() -> Message {
         Message::assistant_with_calls(
@@ -355,6 +550,81 @@ mod tests {
         assert_eq!(loaded[2].tool_calls[0].name, "read_file");
         assert_eq!(loaded[2].tool_calls[0].arguments, json!({"path": "a.rs"}));
         assert_eq!(loaded[3].tool_call_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn opens_and_migrates_pre_reasoning_mode_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        create_pre_reasoning_mode_db(&path);
+
+        let mut store = Store::open_at(&path).unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        let message = Message::assistant("response");
+        let metadata = MessageMetadata {
+            requested_reasoning_mode: Some(crate::reasoning::ReasoningMode::Low),
+            provider_reasoning_parameters: Some(json!({"reasoning_effort": "low"})),
+            reasoning_parameters_sent: Some(true),
+            reasoning_content_available: Some(false),
+            actual_reasoning_tokens: Some(7),
+        };
+        store
+            .record_message_with_metadata("s1", 0, &message, &metadata)
+            .unwrap();
+
+        let loaded = store.load_message_records("s1").unwrap();
+        assert_eq!(loaded[0].metadata.actual_reasoning_tokens, Some(7));
+    }
+
+    #[test]
+    fn concurrent_opens_serialize_pre_reasoning_mode_migration() {
+        const OPENERS: usize = 8;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        create_pre_reasoning_mode_db(&path);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(OPENERS));
+        let handles: Vec<_> = (0..OPENERS)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Store::open_at(&path).map(drop)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        let mut store = Store::open_at(&path).unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        let message = Message::assistant("response");
+        let metadata = MessageMetadata {
+            requested_reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
+            ..MessageMetadata::default()
+        };
+        store
+            .record_message_with_metadata("s1", 0, &message, &metadata)
+            .unwrap();
+        assert_eq!(
+            store.load_message_records("s1").unwrap()[0]
+                .metadata
+                .requested_reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
+        );
+    }
+
+    #[test]
+    fn migration_propagates_non_duplicate_alter_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        create_pre_reasoning_mode_db(&path);
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+
+        assert!(Store::init(conn).is_err());
     }
 
     #[test]
@@ -449,4 +719,57 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].reasoning_content, Some("thinking trace".to_string()));
     }
+
+    #[test]
+    fn messages_round_trip_with_reasoning_metadata() {
+        let mut store = Store::open_in_memory().unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        let m = Message::assistant("response");
+        let metadata = MessageMetadata {
+            requested_reasoning_mode: Some(crate::reasoning::ReasoningMode::Low),
+            provider_reasoning_parameters: Some(json!({"reasoning_effort": "low"})),
+            reasoning_parameters_sent: Some(true),
+            reasoning_content_available: Some(false),
+            actual_reasoning_tokens: Some(9),
+        };
+        store
+            .record_message_with_metadata("s1", 0, &m, &metadata)
+            .unwrap();
+        let loaded = store.load_message_records("s1").unwrap();
+        let loaded = &loaded[0].metadata;
+        assert_eq!(
+            loaded.requested_reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::Low)
+        );
+        assert_eq!(loaded.actual_reasoning_tokens, Some(9));
+        assert_eq!(loaded.reasoning_parameters_sent, Some(true));
+        assert_eq!(loaded.reasoning_content_available, Some(false));
+        assert_eq!(
+            loaded.provider_reasoning_parameters,
+            Some(json!({"reasoning_effort": "low"}))
+        );
+    }
+
+    #[test]
+    fn session_reasoning_mode_round_trips() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_session_with_reasoning_mode("s1", "chat", "/repo", "m", Some(crate::reasoning::ReasoningMode::High))
+            .unwrap();
+        assert_eq!(
+            store.session_reasoning_mode("s1").unwrap(),
+            Some(crate::reasoning::ReasoningMode::High)
+        );
+    }
+
+    #[test]
+    fn session_reasoning_mode_can_be_cleared() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_session_with_reasoning_mode("s1", "chat", "/repo", "m", Some(crate::reasoning::ReasoningMode::Low))
+            .unwrap();
+        store.set_session_reasoning_mode("s1", None).unwrap();
+        assert_eq!(store.session_reasoning_mode("s1").unwrap(), None);
+    }
 }
+
