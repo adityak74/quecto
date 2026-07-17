@@ -1,10 +1,12 @@
 use crate::model::{Message, ToolCall};
 use crate::tools::FileChange;
 use crate::BoxErr;
-use rusqlite::Connection;
+use rusqlite::{Connection, TransactionBehavior};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const MIGRATION_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 const SCHEMA: &str = "\
 CREATE TABLE IF NOT EXISTS sessions (
@@ -146,9 +148,12 @@ fn migrate_message_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
 }
 
 impl Store {
-    fn init(conn: Connection) -> Result<Store, BoxErr> {
-        conn.execute_batch(SCHEMA)?;
-        migrate_message_columns(&conn)?;
+    fn init(mut conn: Connection) -> Result<Store, BoxErr> {
+        conn.busy_timeout(MIGRATION_BUSY_TIMEOUT)?;
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        tx.execute_batch(SCHEMA)?;
+        migrate_message_columns(&tx)?;
+        tx.commit()?;
         Ok(Store { conn })
     }
 
@@ -476,6 +481,40 @@ CREATE TABLE file_changes (
 
         let loaded = store.load_messages("s1").unwrap();
         assert_eq!(loaded[0].actual_reasoning_tokens, Some(7));
+    }
+
+    #[test]
+    fn concurrent_opens_serialize_pre_reasoning_mode_migration() {
+        const OPENERS: usize = 8;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        create_pre_reasoning_mode_db(&path);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(OPENERS));
+        let handles: Vec<_> = (0..OPENERS)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Store::open_at(&path).map(drop)
+                })
+            })
+            .collect();
+
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+
+        let mut store = Store::open_at(&path).unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        let mut message = Message::assistant("response");
+        message.requested_reasoning_mode = Some(crate::reasoning::ReasoningMode::High);
+        store.record_message("s1", 0, &message).unwrap();
+        assert_eq!(
+            store.load_messages("s1").unwrap()[0].requested_reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
+        );
     }
 
     #[test]
