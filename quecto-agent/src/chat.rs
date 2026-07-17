@@ -1,3 +1,9 @@
+#[derive(Debug, PartialEq)]
+pub enum ReasoningCommand {
+    Show,
+    Set(String),
+}
+
 /// A parsed line of chat input: a slash-command or plain text to send.
 #[derive(Debug, PartialEq)]
 pub enum ChatCommand {
@@ -12,6 +18,7 @@ pub enum ChatCommand {
     Clear,
     Exit,
     Tools,
+    Reasoning(ReasoningCommand),
     Say(String),
     Unknown(String),
 }
@@ -23,8 +30,14 @@ pub fn parse_command(line: &str) -> ChatCommand {
     let Some(rest) = trimmed.strip_prefix('/') else {
         return ChatCommand::Say(trimmed.to_string());
     };
-    let name = rest.split_whitespace().next().unwrap_or("");
+    let mut parts = rest.split_whitespace();
+    let name = parts.next().unwrap_or("");
     match name.to_ascii_lowercase().as_str() {
+        "reasoning" => match (parts.next(), parts.next()) {
+            (None, None) => ChatCommand::Reasoning(ReasoningCommand::Show),
+            (Some(value), None) => ChatCommand::Reasoning(ReasoningCommand::Set(value.to_string())),
+            _ => ChatCommand::Unknown("reasoning".to_string()),
+        },
         "help" | "h" | "?" => ChatCommand::Help,
         "model" => ChatCommand::Model,
         "context" => ChatCommand::Context,
@@ -39,6 +52,7 @@ pub fn parse_command(line: &str) -> ChatCommand {
         other => ChatCommand::Unknown(other.to_string()),
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -82,4 +96,29 @@ mod tests {
         assert_eq!(parse_command("/?"), ChatCommand::Help);
         assert_eq!(parse_command("/commands"), ChatCommand::Tools);
     }
+
+    #[test]
+    fn reasoning_without_argument_parses_as_show() {
+        assert_eq!(
+            parse_command("/reasoning"),
+            ChatCommand::Reasoning(ReasoningCommand::Show)
+        );
+    }
+
+    #[test]
+    fn reasoning_with_value_parses_as_set() {
+        assert_eq!(
+            parse_command("/reasoning high"),
+            ChatCommand::Reasoning(ReasoningCommand::Set("high".to_string()))
+        );
+    }
+
+    #[test]
+    fn reasoning_rejects_extra_arguments() {
+        assert_eq!(
+            parse_command("/reasoning high extra"),
+            ChatCommand::Unknown("reasoning".to_string())
+        );
+    }
 }
+
