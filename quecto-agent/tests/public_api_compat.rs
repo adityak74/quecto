@@ -1,5 +1,6 @@
 use quecto_agent::{
-    AssistantMessage, CompletionTelemetry, HttpModel, Message, Model, ToolCall,
+    ApprovalSection, AssistantMessage, CompletionTelemetry, Flavor, HttpModel, Message, Model,
+    ToolCall, ToolsSection, VerifySection,
 };
 
 #[derive(Clone)]
@@ -32,9 +33,31 @@ fn legacy_public_struct_literals_still_compile_and_work() {
         model: "legacy-model".into(),
     };
     let message = LegacyModel.complete(&[Message::user("hello")], &[]).unwrap();
+    let transcript_message = Message {
+        role: "assistant".into(),
+        content: "legacy response".into(),
+        tool_calls: Vec::new(),
+        tool_call_id: None,
+        reasoning_content: None,
+    };
+    let flavor = Flavor {
+        name: Some("legacy".into()),
+        model: Some("legacy-model".into()),
+        base_url: None,
+        max_steps: Some(10),
+        auto_verify: None,
+        auto_approve: None,
+        system_prompt: None,
+        system_prompt_file: None,
+        tools: ToolsSection::default(),
+        approval: ApprovalSection::default(),
+        verify: VerifySection::default(),
+    };
     let telemetry = CompletionTelemetry::default();
 
     assert_eq!(model.model, "legacy-model");
     assert_eq!(message.content, "legacy");
+    assert_eq!(transcript_message.content, "legacy response");
+    assert_eq!(flavor.name.as_deref(), Some("legacy"));
     assert_eq!(telemetry, CompletionTelemetry::default());
 }
