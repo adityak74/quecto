@@ -15,6 +15,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     repo TEXT NOT NULL,
     model TEXT NOT NULL,
     status TEXT NOT NULL,
+    session_reasoning_mode TEXT,
     created INTEGER NOT NULL,
     updated INTEGER NOT NULL
 );
@@ -147,11 +148,31 @@ fn migrate_message_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
     Ok(())
 }
 
+fn migrate_session_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    let mut statement = conn.prepare("PRAGMA table_info(sessions)")?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    let mut has_reasoning_mode = false;
+    for column in columns {
+        if column? == "session_reasoning_mode" {
+            has_reasoning_mode = true;
+            break;
+        }
+    }
+    if !has_reasoning_mode {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN session_reasoning_mode TEXT",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 impl Store {
     fn init(mut conn: Connection) -> Result<Store, BoxErr> {
         conn.busy_timeout(MIGRATION_BUSY_TIMEOUT)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         tx.execute_batch(SCHEMA)?;
+        migrate_session_columns(&tx)?;
         migrate_message_columns(&tx)?;
         tx.commit()?;
         Ok(Store { conn })
@@ -192,6 +213,47 @@ impl Store {
             (id, task, repo, model, t),
         )?;
         Ok(())
+    }
+
+    pub fn create_session_with_reasoning_mode(
+        &self,
+        id: &str,
+        task: &str,
+        repo: &str,
+        model: &str,
+        reasoning_mode: Option<crate::reasoning::ReasoningMode>,
+    ) -> Result<(), BoxErr> {
+        let t = now();
+        self.conn.execute(
+            "INSERT INTO sessions (id, task, repo, model, status, session_reasoning_mode, created, updated) \
+             VALUES (?1, ?2, ?3, ?4, 'running', ?5, ?6, ?6)",
+            (id, task, repo, model, reasoning_mode.map(|m| m.effort_str()), t),
+        )?;
+        Ok(())
+    }
+
+    pub fn set_session_reasoning_mode(
+        &self,
+        id: &str,
+        mode: Option<crate::reasoning::ReasoningMode>,
+    ) -> Result<(), BoxErr> {
+        self.conn.execute(
+            "UPDATE sessions SET session_reasoning_mode = ?2, updated = ?3 WHERE id = ?1",
+            (id, mode.map(|m| m.effort_str()), now()),
+        )?;
+        Ok(())
+    }
+
+    pub fn session_reasoning_mode(
+        &self,
+        id: &str,
+    ) -> Result<Option<crate::reasoning::ReasoningMode>, BoxErr> {
+        let raw: Option<String> = self.conn.query_row(
+            "SELECT session_reasoning_mode FROM sessions WHERE id = ?1",
+            [id],
+            |row| row.get(0),
+        )?;
+        raw.map(|value| value.parse()).transpose()
     }
 
     pub fn set_status(&self, id: &str, status: &str) -> Result<(), BoxErr> {
@@ -687,4 +749,27 @@ CREATE TABLE file_changes (
             Some(json!({"reasoning_effort": "low"}))
         );
     }
+
+    #[test]
+    fn session_reasoning_mode_round_trips() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_session_with_reasoning_mode("s1", "chat", "/repo", "m", Some(crate::reasoning::ReasoningMode::High))
+            .unwrap();
+        assert_eq!(
+            store.session_reasoning_mode("s1").unwrap(),
+            Some(crate::reasoning::ReasoningMode::High)
+        );
+    }
+
+    #[test]
+    fn session_reasoning_mode_can_be_cleared() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .create_session_with_reasoning_mode("s1", "chat", "/repo", "m", Some(crate::reasoning::ReasoningMode::Low))
+            .unwrap();
+        store.set_session_reasoning_mode("s1", None).unwrap();
+        assert_eq!(store.session_reasoning_mode("s1").unwrap(), None);
+    }
 }
+
