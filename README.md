@@ -124,6 +124,7 @@ export QUECTO_MODEL="gpt-4o"
 | `QUECTO_MODEL` | `gpt-4o` | Model name |
 | `QUECTO_SYSTEM` | *(optional)* | System prompt, prepended as a `{role:system}` message |
 | `QUECTO_STREAM` | `1` | `0` uses the buffered path instead of streaming |
+| `QUECTO_REASONING_MODE` | *(optional)* | Default reasoning effort: `low`, `medium`, or `high` |
 
 ---
 
@@ -209,7 +210,15 @@ export QUECTO_MODEL="gpt-4o"
 # Customize the interactive chat spinner (replaces the built-in defaults)
 export QUECTO_SPINNER_VERBS="Thinking,Planning,Coding"
 quecto-agent chat
+
+# Set the default reasoning effort for model completions
+export QUECTO_REASONING_MODE=low
+quecto-agent "inspect this repository and summarize the test harness"
 ```
+
+Harness code can override the default per completion by passing
+`CompletionOptions { reasoning_mode: Some(ReasoningMode::High) }`
+to `Model::complete_with_options(...)`.
 
 See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test results, and `docs/superpowers/` for the milestone specs and plans (M1–M7b).
 
