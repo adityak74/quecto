@@ -477,8 +477,8 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
         url: join_url(&base_url, "chat/completions"),
         api_key,
         model: model_name,
-        default_reasoning_mode,
-    };
+    }
+    .with_default_reasoning_mode(default_reasoning_mode);
     let steps = overrides
         .max_steps
         .or_else(|| {
@@ -562,8 +562,8 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
             .ok()
             .filter(|s| !s.is_empty()),
         model: model_name.clone(),
-        default_reasoning_mode,
-    };
+    }
+    .with_default_reasoning_mode(default_reasoning_mode);
     let steps = overrides
         .max_steps
         .or_else(|| {
@@ -945,8 +945,8 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
             .ok()
             .filter(|s| !s.is_empty()),
         model: model_name,
-        default_reasoning_mode,
-    };
+    }
+    .with_default_reasoning_mode(default_reasoning_mode);
     let steps = overrides
         .max_steps
         .or_else(|| {

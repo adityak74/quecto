@@ -124,7 +124,6 @@ export QUECTO_MODEL="YOUR_OPENAI_CHAT_MODEL"
 | `QUECTO_MODEL` | `gpt-4o` | Model name |
 | `QUECTO_SYSTEM` | *(optional)* | System prompt, prepended as a `{role:system}` message |
 | `QUECTO_STREAM` | `1` | `0` uses the buffered path instead of streaming |
-| `QUECTO_REASONING_MODE` | *(optional)* | Default reasoning effort; accepted normalized values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh` |
 
 ---
 
@@ -188,6 +187,7 @@ Reads the same core env vars as `quecto`, plus a few agent-specific ones:
 | `QUECTO_SYSTEM` | built-in agent system prompt | Overrides the base system prompt (repo rules + seed context are still appended after it) |
 | `QUECTO_MAX_STEPS` | `20` | Cap on agent loop steps |
 | `QUECTO_VERIFY` | *(unset)* | Newline-separated shell commands run as a post-edit verification gate |
+| `QUECTO_REASONING_MODE` | *(optional)* | Default reasoning effort; accepted normalized values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh` |
 | `QUECTO_SPINNER_VERBS` | built-in verb list | Comma-separated replacement verbs for the interactive chat spinner |
 | `QUECTO_STATE_DB` | `$XDG_STATE_HOME/quecto/sessions.db` (falls back to `~/.local/state/...`) | SQLite session store path |
 | `QUECTO_TRUST_FILE` | `$XDG_STATE_HOME/quecto/trust` (falls back to `~/.local/state/...`) | Trust-on-first-use hash store for flavor manifests |
@@ -223,7 +223,9 @@ the selected model must support that parameter.
 
 Harness code can override the default per completion by passing
 `CompletionOptions { reasoning_mode: Some(ReasoningMode::High) }`
-to `Model::complete_with_options(...)`.
+to `Model::complete_with_options(...)`; that options-aware path returns a
+`ModelCompletion` containing the legacy `AssistantMessage` plus additive
+`CompletionTelemetry`.
 
 See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test results, and `docs/superpowers/` for the milestone specs and plans (M1–M7b).
 

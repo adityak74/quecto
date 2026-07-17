@@ -290,25 +290,31 @@ impl Agent {
             let _step_guard = step_span.enter();
 
             self.renderer.working();
-            let completed = self.model.complete(&self.messages, &schemas);
+            let completed = self.model.complete_with_options(
+                &self.messages,
+                &schemas,
+                &crate::reasoning::CompletionOptions::default(),
+            );
             self.renderer.working_done();
-            let msg = match completed {
-                Ok(m) => m,
+            let completion = match completed {
+                Ok(completion) => completion,
                 Err(e) => break Outcome::Error(e),
             };
+            let msg = completion.message;
+            let telemetry = completion.telemetry;
             let mut assistant_msg = Message::assistant_with_calls(
                 msg.content.clone(),
                 msg.tool_calls.clone(),
             );
             assistant_msg.reasoning_content = msg.reasoning_content.clone();
-            assistant_msg.requested_reasoning_mode = msg.completion.requested_reasoning_mode;
+            assistant_msg.requested_reasoning_mode = telemetry.requested_reasoning_mode;
             assistant_msg.provider_reasoning_parameters =
-                msg.completion.provider_reasoning_parameters.clone();
+                telemetry.provider_reasoning_parameters.clone();
             assistant_msg.reasoning_parameters_sent =
-                Some(msg.completion.reasoning_parameters_sent);
+                Some(telemetry.reasoning_parameters_sent);
             assistant_msg.reasoning_content_available =
-                Some(msg.completion.reasoning_content_available);
-            assistant_msg.actual_reasoning_tokens = msg.completion.actual_reasoning_tokens;
+                Some(telemetry.reasoning_content_available);
+            assistant_msg.actual_reasoning_tokens = telemetry.actual_reasoning_tokens;
             self.messages.push(assistant_msg);
 
             if msg.tool_calls.is_empty() {
@@ -448,7 +454,7 @@ fn sanitize_arguments(name: &str, args: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::approval::ApprovalMode;
-    use crate::model::{AssistantMessage, ToolCall};
+    use crate::model::{AssistantMessage, ModelCompletion, ToolCall};
     use crate::sandbox::cancel_token;
     use crate::tools::{Context, Tool, ToolOutput, ToolResult};
     use serde_json::{json, Value};
@@ -458,13 +464,29 @@ mod tests {
 
     #[derive(Clone)]
     struct Scripted {
-        replies: Arc<Mutex<Vec<AssistantMessage>>>,
+        replies: Arc<Mutex<Vec<ModelCompletion>>>,
     }
     impl Scripted {
         fn new(replies: Vec<AssistantMessage>) -> Self {
             Scripted {
+                replies: Arc::new(Mutex::new(
+                    replies.into_iter().map(ModelCompletion::from).collect(),
+                )),
+            }
+        }
+
+        fn new_with_completions(replies: Vec<ModelCompletion>) -> Self {
+            Scripted {
                 replies: Arc::new(Mutex::new(replies)),
             }
+        }
+
+        fn pop(&self) -> Result<ModelCompletion, BoxErr> {
+            let mut replies = self.replies.lock().unwrap();
+            if replies.is_empty() {
+                return Err("no more scripted replies".into());
+            }
+            Ok(replies.remove(0))
         }
     }
     impl Model for Scripted {
@@ -476,11 +498,16 @@ mod tests {
             _messages: &[Message],
             _tools: &[Value],
         ) -> Result<AssistantMessage, BoxErr> {
-            let mut r = self.replies.lock().unwrap();
-            if r.is_empty() {
-                return Err("no more scripted replies".into());
-            }
-            Ok(r.remove(0))
+            self.pop().map(|completion| completion.message)
+        }
+
+        fn complete_with_options(
+            &self,
+            _messages: &[Message],
+            _tools: &[Value],
+            _options: &crate::reasoning::CompletionOptions,
+        ) -> Result<ModelCompletion, BoxErr> {
+            self.pop()
         }
     }
 
@@ -490,7 +517,6 @@ mod tests {
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             reasoning_content: None,
-            completion: crate::reasoning::CompletionTelemetry::default(),
         }
     }
 
@@ -504,7 +530,6 @@ mod tests {
             }],
             finish_reason: "tool_calls".to_string(),
             reasoning_content: None,
-            completion: crate::reasoning::CompletionTelemetry::default(),
         }
     }
 
@@ -937,7 +962,6 @@ mod tests {
             ],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
-            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let mut a = Agent::new(
             Box::new(Scripted::new(vec![call])),
@@ -964,7 +988,6 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
-            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let model = Scripted::new(vec![write, text("done")]);
         let mut a = Agent::new(
@@ -996,7 +1019,6 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
-            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         // After the edit the model keeps trying to stop; the failing gate
         // should stop cleanly before the step limit.
@@ -1032,7 +1054,6 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
-            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let write_good = AssistantMessage {
             content: String::new(),
@@ -1043,7 +1064,6 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
-            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let model = Scripted::new(vec![write_bad, text("not yet"), write_good, text("done")]);
         let mut a = Agent::new(
@@ -1126,7 +1146,6 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
-            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let model = Scripted::new(vec![write, text("done")]);
         let mut a = Agent::new(
@@ -1190,7 +1209,6 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
-            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let model = Scripted::new(vec![call, text("done")]);
         let mut a = Agent::new(
@@ -1219,7 +1237,6 @@ mod tests {
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             reasoning_content: Some("I am thinking".to_string()),
-            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let model = Scripted::new(vec![msg]);
         let mut a = agent(model);
@@ -1236,12 +1253,14 @@ mod tests {
 
     #[test]
     fn propagates_completion_reasoning_metadata() {
-        let model = Scripted::new(vec![AssistantMessage {
-            content: "done".to_string(),
-            tool_calls: vec![],
-            finish_reason: "stop".to_string(),
-            reasoning_content: Some("thinking".to_string()),
-            completion: crate::reasoning::CompletionTelemetry {
+        let model = Scripted::new_with_completions(vec![ModelCompletion {
+            message: AssistantMessage {
+                content: "done".to_string(),
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                reasoning_content: Some("thinking".to_string()),
+            },
+            telemetry: crate::reasoning::CompletionTelemetry {
                 requested_reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
                 provider_reasoning_parameters: Some(json!({"reasoning_effort": "high"})),
                 reasoning_parameters_sent: true,
