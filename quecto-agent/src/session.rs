@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning_content TEXT,
     requested_reasoning_mode TEXT,
     provider_reasoning_parameters TEXT,
-    reasoning_mode_applied INTEGER,
+    reasoning_parameters_sent INTEGER,
+    reasoning_content_available INTEGER,
     actual_reasoning_tokens INTEGER
 );
 CREATE TABLE IF NOT EXISTS file_changes (
@@ -105,27 +106,49 @@ fn calls_from_json(raw: Option<String>) -> Vec<ToolCall> {
         .collect()
 }
 
+fn message_column_exists(conn: &Connection, column: &str) -> Result<bool, rusqlite::Error> {
+    let mut statement = conn.prepare("PRAGMA table_info(messages)")?;
+    let columns = statement.query_map([], |row| row.get::<_, String>(1))?;
+    for existing in columns {
+        if existing? == column {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn migrate_message_columns(conn: &Connection) -> Result<(), rusqlite::Error> {
+    const COLUMNS: &[(&str, &str)] = &[
+        ("reasoning_content", "TEXT"),
+        ("requested_reasoning_mode", "TEXT"),
+        ("provider_reasoning_parameters", "TEXT"),
+        ("reasoning_parameters_sent", "INTEGER"),
+        ("reasoning_content_available", "INTEGER"),
+        ("actual_reasoning_tokens", "INTEGER"),
+    ];
+
+    for (column, sql_type) in COLUMNS {
+        if !message_column_exists(conn, column)? {
+            conn.execute(
+                &format!("ALTER TABLE messages ADD COLUMN {column} {sql_type}"),
+                [],
+            )?;
+        }
+    }
+    if message_column_exists(conn, "reasoning_mode_applied")? {
+        conn.execute(
+            "UPDATE messages SET reasoning_parameters_sent = reasoning_mode_applied \
+             WHERE reasoning_parameters_sent IS NULL",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 impl Store {
     fn init(conn: Connection) -> Result<Store, BoxErr> {
         conn.execute_batch(SCHEMA)?;
-        // Auto-migrate schema: add reasoning_content to messages if missing in existing DBs
-        let _ = conn.execute("ALTER TABLE messages ADD COLUMN reasoning_content TEXT", []);
-        let _ = conn.execute(
-            "ALTER TABLE messages ADD COLUMN requested_reasoning_mode TEXT",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE messages ADD COLUMN provider_reasoning_parameters TEXT",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE messages ADD COLUMN reasoning_mode_applied INTEGER",
-            [],
-        );
-        let _ = conn.execute(
-            "ALTER TABLE messages ADD COLUMN actual_reasoning_tokens INTEGER",
-            [],
-        );
+        migrate_message_columns(&conn)?;
         Ok(Store { conn })
     }
 
@@ -182,8 +205,8 @@ impl Store {
             .map_err(|_| "actual reasoning token count exceeds SQLite INTEGER range")?;
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_mode_applied, actual_reasoning_tokens) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO messages (session_id, seq, role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_parameters_sent, reasoning_content_available, actual_reasoning_tokens) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             (
                 id,
                 seq,
@@ -194,7 +217,8 @@ impl Store {
                 &m.reasoning_content,
                 m.requested_reasoning_mode.map(|mode| mode.effort_str()),
                 m.provider_reasoning_parameters.as_ref().map(Value::to_string),
-                m.reasoning_mode_applied,
+                m.reasoning_parameters_sent,
+                m.reasoning_content_available,
                 actual_reasoning_tokens,
             ),
         )?;
@@ -263,7 +287,7 @@ impl Store {
 
     pub fn load_messages(&self, id: &str) -> Result<Vec<Message>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_mode_applied, actual_reasoning_tokens FROM messages \
+            "SELECT role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_parameters_sent, reasoning_content_available, actual_reasoning_tokens FROM messages \
              WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([id], |row| {
@@ -274,8 +298,9 @@ impl Store {
             let reasoning_content: Option<String> = row.get(4)?;
             let requested_reasoning_mode: Option<String> = row.get(5)?;
             let provider_reasoning_parameters: Option<String> = row.get(6)?;
-            let reasoning_mode_applied: Option<bool> = row.get(7)?;
-            let actual_reasoning_tokens: Option<i64> = row.get(8)?;
+            let reasoning_parameters_sent: Option<bool> = row.get(7)?;
+            let reasoning_content_available: Option<bool> = row.get(8)?;
+            let actual_reasoning_tokens: Option<i64> = row.get(9)?;
             Ok(Message {
                 role,
                 content,
@@ -286,7 +311,8 @@ impl Store {
                     .and_then(|mode| mode.parse().ok()),
                 provider_reasoning_parameters: provider_reasoning_parameters
                     .and_then(|parameters| serde_json::from_str(&parameters).ok()),
-                reasoning_mode_applied,
+                reasoning_parameters_sent,
+                reasoning_content_available,
                 actual_reasoning_tokens: actual_reasoning_tokens
                     .and_then(|tokens| u64::try_from(tokens).ok()),
             })
@@ -363,7 +389,42 @@ pub fn render_change_summary(changes: &[FileChange]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OpenFlags;
     use serde_json::json;
+
+    const PRE_REASONING_MODE_SCHEMA: &str = "\
+CREATE TABLE sessions (
+    id TEXT PRIMARY KEY,
+    task TEXT NOT NULL,
+    repo TEXT NOT NULL,
+    model TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    updated INTEGER NOT NULL
+);
+CREATE TABLE messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    tool_calls TEXT,
+    tool_call_id TEXT,
+    reasoning_content TEXT
+);
+CREATE TABLE file_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    path TEXT NOT NULL,
+    before TEXT,
+    after TEXT NOT NULL
+);";
+
+    fn create_pre_reasoning_mode_db(path: &Path) {
+        let conn = Connection::open(path).unwrap();
+        conn.execute_batch(PRE_REASONING_MODE_SCHEMA).unwrap();
+    }
 
     fn assistant_call() -> Message {
         Message::assistant_with_calls(
@@ -395,6 +456,36 @@ mod tests {
         assert_eq!(loaded[2].tool_calls[0].name, "read_file");
         assert_eq!(loaded[2].tool_calls[0].arguments, json!({"path": "a.rs"}));
         assert_eq!(loaded[3].tool_call_id.as_deref(), Some("c1"));
+    }
+
+    #[test]
+    fn opens_and_migrates_pre_reasoning_mode_database() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        create_pre_reasoning_mode_db(&path);
+
+        let mut store = Store::open_at(&path).unwrap();
+        store.create_session("s1", "task", "/repo", "m").unwrap();
+        let mut message = Message::assistant("response");
+        message.requested_reasoning_mode = Some(crate::reasoning::ReasoningMode::Low);
+        message.provider_reasoning_parameters = Some(json!({"reasoning_effort": "low"}));
+        message.reasoning_parameters_sent = Some(true);
+        message.reasoning_content_available = Some(false);
+        message.actual_reasoning_tokens = Some(7);
+        store.record_message("s1", 0, &message).unwrap();
+
+        let loaded = store.load_messages("s1").unwrap();
+        assert_eq!(loaded[0].actual_reasoning_tokens, Some(7));
+    }
+
+    #[test]
+    fn migration_propagates_non_duplicate_alter_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sessions.db");
+        create_pre_reasoning_mode_db(&path);
+        let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+
+        assert!(Store::init(conn).is_err());
     }
 
     #[test]
@@ -496,8 +587,9 @@ mod tests {
         store.create_session("s1", "task", "/repo", "m").unwrap();
         let mut m = Message::assistant("response");
         m.requested_reasoning_mode = Some(crate::reasoning::ReasoningMode::Low);
-        m.provider_reasoning_parameters = Some(json!({"reasoning": {"effort": "low"}}));
-        m.reasoning_mode_applied = Some(true);
+        m.provider_reasoning_parameters = Some(json!({"reasoning_effort": "low"}));
+        m.reasoning_parameters_sent = Some(true);
+        m.reasoning_content_available = Some(false);
         m.actual_reasoning_tokens = Some(9);
         store.record_message("s1", 0, &m).unwrap();
         let loaded = store.load_messages("s1").unwrap();
@@ -506,5 +598,11 @@ mod tests {
             Some(crate::reasoning::ReasoningMode::Low)
         );
         assert_eq!(loaded[0].actual_reasoning_tokens, Some(9));
+        assert_eq!(loaded[0].reasoning_parameters_sent, Some(true));
+        assert_eq!(loaded[0].reasoning_content_available, Some(false));
+        assert_eq!(
+            loaded[0].provider_reasoning_parameters,
+            Some(json!({"reasoning_effort": "low"}))
+        );
     }
 }

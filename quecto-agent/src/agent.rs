@@ -304,7 +304,10 @@ impl Agent {
             assistant_msg.requested_reasoning_mode = msg.completion.requested_reasoning_mode;
             assistant_msg.provider_reasoning_parameters =
                 msg.completion.provider_reasoning_parameters.clone();
-            assistant_msg.reasoning_mode_applied = Some(msg.completion.reasoning_mode_applied);
+            assistant_msg.reasoning_parameters_sent =
+                Some(msg.completion.reasoning_parameters_sent);
+            assistant_msg.reasoning_content_available =
+                Some(msg.completion.reasoning_content_available);
             assistant_msg.actual_reasoning_tokens = msg.completion.actual_reasoning_tokens;
             self.messages.push(assistant_msg);
 
@@ -468,11 +471,10 @@ mod tests {
         fn clone_box(&self) -> Box<dyn Model> {
             Box::new(self.clone())
         }
-        fn complete_with_options(
+        fn complete(
             &self,
             _messages: &[Message],
             _tools: &[Value],
-            _options: &crate::reasoning::CompletionOptions,
         ) -> Result<AssistantMessage, BoxErr> {
             let mut r = self.replies.lock().unwrap();
             if r.is_empty() {
@@ -1241,8 +1243,9 @@ mod tests {
             reasoning_content: Some("thinking".to_string()),
             completion: crate::reasoning::CompletionTelemetry {
                 requested_reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
-                provider_reasoning_parameters: Some(json!({"reasoning": {"effort": "high"}})),
-                reasoning_mode_applied: true,
+                provider_reasoning_parameters: Some(json!({"reasoning_effort": "high"})),
+                reasoning_parameters_sent: true,
+                reasoning_content_available: true,
                 actual_reasoning_tokens: Some(17),
             },
         }]);

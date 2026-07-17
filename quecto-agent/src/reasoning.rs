@@ -58,31 +58,56 @@ pub fn parse_env_reasoning_mode() -> Result<Option<ReasoningMode>, BoxErr> {
 }
 
 pub fn reasoning_payload(mode: ReasoningMode) -> Value {
-    json!({"reasoning": {"effort": mode.effort_str()}})
+    json!({"reasoning_effort": mode.effort_str()})
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CompletionTelemetry {
     pub requested_reasoning_mode: Option<ReasoningMode>,
     pub provider_reasoning_parameters: Option<Value>,
-    pub reasoning_mode_applied: bool,
+    pub reasoning_parameters_sent: bool,
+    pub reasoning_content_available: bool,
     pub actual_reasoning_tokens: Option<u64>,
 }
 
-pub fn apply_reasoning_mode(body: &mut Value, mode: Option<ReasoningMode>) -> Option<Value> {
+pub fn apply_reasoning_mode(
+    body: &mut Value,
+    endpoint_url: &str,
+    mode: Option<ReasoningMode>,
+) -> Option<Value> {
     let mode = mode?;
-    let payload = reasoning_payload(mode);
-    if let Some(obj) = body.as_object_mut() {
-        obj.insert("reasoning".into(), payload["reasoning"].clone());
+    let endpoint = endpoint_url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(endpoint_url)
+        .trim_end_matches('/');
+    if !endpoint.ends_with("/chat/completions") {
+        return None;
     }
+
+    let payload = reasoning_payload(mode);
+    let obj = body.as_object_mut()?;
+    obj.insert(
+        "reasoning_effort".into(),
+        payload["reasoning_effort"].clone(),
+    );
     Some(payload)
 }
 
 pub fn parse_reasoning_tokens(resp: &Value) -> Option<u64> {
-    resp.get("usage")
-        .and_then(|u| u.get("completion_tokens_details"))
-        .and_then(|d| d.get("reasoning_tokens"))
-        .and_then(Value::as_u64)
+    let usage = resp.get("usage")?;
+    [
+        usage
+            .get("completion_tokens_details")
+            .and_then(|details| details.get("reasoning_tokens")),
+        usage
+            .get("output_tokens_details")
+            .and_then(|details| details.get("reasoning_tokens")),
+        usage.get("reasoning_tokens"),
+    ]
+    .into_iter()
+    .flatten()
+    .find_map(Value::as_u64)
 }
 
 #[cfg(test)]
