@@ -14,6 +14,7 @@ fn http_model_completes_against_mock() {
         url: format!("{base}/chat/completions"),
         api_key: None,
         model: "m".to_string(),
+        default_reasoning_mode: None,
     };
     let msg = m.complete(&[Message::user("hey")], &[]).unwrap();
     assert_eq!(msg.content, "hi");
