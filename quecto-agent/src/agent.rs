@@ -463,10 +463,11 @@ mod tests {
         fn clone_box(&self) -> Box<dyn Model> {
             Box::new(self.clone())
         }
-        fn complete(
+        fn complete_with_options(
             &self,
             _messages: &[Message],
             _tools: &[Value],
+            _options: &crate::reasoning::CompletionOptions,
         ) -> Result<AssistantMessage, BoxErr> {
             let mut r = self.replies.lock().unwrap();
             if r.is_empty() {

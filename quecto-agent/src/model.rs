@@ -195,16 +195,20 @@ fn message_to_json(m: &Message) -> Value {
 /// Abstraction over "take the transcript, return the assistant's next message."
 /// The real impl calls the model over HTTP; tests inject a scripted fake.
 pub trait Model: Send + Sync {
-    fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr>;
+    fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
+        self.complete_with_options(
+            messages,
+            tools,
+            &crate::reasoning::CompletionOptions::default(),
+        )
+    }
 
     fn complete_with_options(
         &self,
         messages: &[Message],
         tools: &[Value],
-        _options: &crate::reasoning::CompletionOptions,
-    ) -> Result<AssistantMessage, BoxErr> {
-        self.complete(messages, tools)
-    }
+        options: &crate::reasoning::CompletionOptions,
+    ) -> Result<AssistantMessage, BoxErr>;
 
     fn clone_box(&self) -> Box<dyn Model>;
 }
@@ -247,14 +251,6 @@ fn effective_reasoning_mode(
 impl Model for HttpModel {
     fn clone_box(&self) -> Box<dyn Model> {
         Box::new(self.clone())
-    }
-
-    fn complete(&self, messages: &[Message], tools: &[Value]) -> Result<AssistantMessage, BoxErr> {
-        self.complete_with_options(
-            messages,
-            tools,
-            &crate::reasoning::CompletionOptions::default(),
-        )
     }
 
     fn complete_with_options(
