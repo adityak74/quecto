@@ -301,6 +301,11 @@ impl Agent {
                 msg.tool_calls.clone(),
             );
             assistant_msg.reasoning_content = msg.reasoning_content.clone();
+            assistant_msg.requested_reasoning_mode = msg.completion.requested_reasoning_mode;
+            assistant_msg.provider_reasoning_parameters =
+                msg.completion.provider_reasoning_parameters.clone();
+            assistant_msg.reasoning_mode_applied = Some(msg.completion.reasoning_mode_applied);
+            assistant_msg.actual_reasoning_tokens = msg.completion.actual_reasoning_tokens;
             self.messages.push(assistant_msg);
 
             if msg.tool_calls.is_empty() {
@@ -1224,6 +1229,29 @@ mod tests {
         assert_eq!(
             a.messages[2].reasoning_content,
             Some("I am thinking".to_string())
+        );
+    }
+
+    #[test]
+    fn propagates_completion_reasoning_metadata() {
+        let model = Scripted::new(vec![AssistantMessage {
+            content: "done".to_string(),
+            tool_calls: vec![],
+            finish_reason: "stop".to_string(),
+            reasoning_content: Some("thinking".to_string()),
+            completion: crate::reasoning::CompletionTelemetry {
+                requested_reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
+                provider_reasoning_parameters: Some(json!({"reasoning": {"effort": "high"}})),
+                reasoning_mode_applied: true,
+                actual_reasoning_tokens: Some(17),
+            },
+        }]);
+        let mut a = configured_agent(model, ApprovalMode::NonInteractive);
+        let _ = a.run("task");
+        assert_eq!(a.messages[2].actual_reasoning_tokens, Some(17));
+        assert_eq!(
+            a.messages[2].requested_reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
         );
     }
 }

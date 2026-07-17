@@ -9,6 +9,10 @@ pub struct Message {
     pub tool_calls: Vec<ToolCall>,
     pub tool_call_id: Option<String>,
     pub reasoning_content: Option<String>,
+    pub requested_reasoning_mode: Option<crate::reasoning::ReasoningMode>,
+    pub provider_reasoning_parameters: Option<Value>,
+    pub reasoning_mode_applied: Option<bool>,
+    pub actual_reasoning_tokens: Option<u64>,
 }
 
 impl Message {
@@ -19,6 +23,10 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
+            requested_reasoning_mode: None,
+            provider_reasoning_parameters: None,
+            reasoning_mode_applied: None,
+            actual_reasoning_tokens: None,
         }
     }
 
@@ -41,6 +49,10 @@ impl Message {
             tool_calls,
             tool_call_id: None,
             reasoning_content: None,
+            requested_reasoning_mode: None,
+            provider_reasoning_parameters: None,
+            reasoning_mode_applied: None,
+            actual_reasoning_tokens: None,
         }
     }
 
@@ -51,6 +63,10 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             reasoning_content: None,
+            requested_reasoning_mode: None,
+            provider_reasoning_parameters: None,
+            reasoning_mode_applied: None,
+            actual_reasoning_tokens: None,
         }
     }
 }
@@ -267,7 +283,11 @@ impl Model for HttpModel {
             "model_complete",
             quecto.model = self.model.as_str(),
             quecto.messages_sent = messages.len(),
-            quecto.tools_provided = tools.len()
+            quecto.tools_provided = tools.len(),
+            quecto.requested_reasoning_mode = tracing::field::Empty,
+            quecto.provider_reasoning_parameters = tracing::field::Empty,
+            quecto.reasoning_mode_applied = tracing::field::Empty,
+            quecto.actual_reasoning_tokens = tracing::field::Empty
         );
         #[cfg(feature = "otel")]
         let _guard = span.enter();
@@ -295,6 +315,19 @@ impl Model for HttpModel {
 
         #[cfg(feature = "otel")]
         {
+            if let Some(mode) = parsed.completion.requested_reasoning_mode {
+                span.record("quecto.requested_reasoning_mode", mode.effort_str());
+            }
+            if let Some(parameters) = &parsed.completion.provider_reasoning_parameters {
+                span.record("quecto.provider_reasoning_parameters", parameters.to_string());
+            }
+            span.record(
+                "quecto.reasoning_mode_applied",
+                parsed.completion.reasoning_mode_applied,
+            );
+            if let Some(tokens) = parsed.completion.actual_reasoning_tokens {
+                span.record("quecto.actual_reasoning_tokens", tokens);
+            }
             if let Some(reasoning) = &parsed.reasoning_content {
                 let redacted_reasoning = crate::sandbox::redact_secrets(reasoning);
                 tracing::event!(tracing::Level::INFO, name = "model_thinking", content = %redacted_reasoning);
