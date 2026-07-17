@@ -28,12 +28,14 @@ pub use flavor::{
 };
 pub use instructions::load as load_instructions;
 pub use model::{
-    messages_to_body, parse_assistant, AssistantMessage, HttpModel, Message, Model, ToolCall,
+    messages_to_body, parse_assistant, parse_assistant_completion, AssistantMessage,
+    ConfiguredHttpModel, HttpModel, Message, Model, ModelCompletion, ToolCall,
 };
 pub use policy::{Decision, Policy, Preset};
 pub use quecto::join_url;
 pub use reasoning::{
-    parse_env_reasoning_mode, reasoning_payload, CompletionOptions, ReasoningMode,
+    parse_env_reasoning_mode, reasoning_payload, CompletionOptions, CompletionTelemetry,
+    ReasoningMode,
 };
 pub use recorder::SqliteRecorder;
 pub use render::{
