@@ -483,6 +483,7 @@ mod tests {
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             reasoning_content: None,
+            completion: crate::reasoning::CompletionTelemetry::default(),
         }
     }
 
@@ -496,6 +497,7 @@ mod tests {
             }],
             finish_reason: "tool_calls".to_string(),
             reasoning_content: None,
+            completion: crate::reasoning::CompletionTelemetry::default(),
         }
     }
 
@@ -928,6 +930,7 @@ mod tests {
             ],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
+            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let mut a = Agent::new(
             Box::new(Scripted::new(vec![call])),
@@ -954,6 +957,7 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
+            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let model = Scripted::new(vec![write, text("done")]);
         let mut a = Agent::new(
@@ -985,6 +989,7 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
+            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         // After the edit the model keeps trying to stop; the failing gate
         // should stop cleanly before the step limit.
@@ -1020,6 +1025,7 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
+            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let write_good = AssistantMessage {
             content: String::new(),
@@ -1030,6 +1036,7 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
+            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let model = Scripted::new(vec![write_bad, text("not yet"), write_good, text("done")]);
         let mut a = Agent::new(
@@ -1112,6 +1119,7 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
+            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let model = Scripted::new(vec![write, text("done")]);
         let mut a = Agent::new(
@@ -1175,6 +1183,7 @@ mod tests {
             }],
             finish_reason: "tool_calls".into(),
             reasoning_content: None,
+            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let model = Scripted::new(vec![call, text("done")]);
         let mut a = Agent::new(
@@ -1203,6 +1212,7 @@ mod tests {
             tool_calls: vec![],
             finish_reason: "stop".to_string(),
             reasoning_content: Some("I am thinking".to_string()),
+            completion: crate::reasoning::CompletionTelemetry::default(),
         };
         let model = Scripted::new(vec![msg]);
         let mut a = agent(model);
