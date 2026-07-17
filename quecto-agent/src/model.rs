@@ -366,24 +366,95 @@ mod tests {
 
     #[test]
     fn completion_options_can_change_reasoning_mode_across_calls() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<Value>();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                let header_end = loop {
+                    let read = stream.read(&mut buffer).unwrap();
+                    assert!(read > 0, "request ended before headers");
+                    request.extend_from_slice(&buffer[..read]);
+                    if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+                    {
+                        break end + 4;
+                    }
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("Content-Length: "))
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap();
+                while request.len() < header_end + content_length {
+                    let read = stream.read(&mut buffer).unwrap();
+                    assert!(read > 0, "request ended before body");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                request_tx
+                    .send(serde_json::from_slice(&request[header_end..]).unwrap())
+                    .unwrap();
+
+                let body = r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#;
+                write!(
+                    stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+
         let model = HttpModel {
-            url: "http://example.test/v1/chat/completions".into(),
+            url: format!("http://{address}/v1/chat/completions"),
             api_key: None,
             model: "test-model".into(),
             default_reasoning_mode: Some(crate::reasoning::ReasoningMode::Low),
         };
-        let low = effective_reasoning_mode(
-            model.default_reasoning_mode,
-            &crate::reasoning::CompletionOptions::default(),
+        let transcript = [Message::user("same transcript")];
+        let low = model
+            .complete_with_options(
+                &transcript,
+                &[],
+                &crate::reasoning::CompletionOptions::default(),
+            )
+            .unwrap();
+        let high = model
+            .complete_with_options(
+                &transcript,
+                &[],
+                &crate::reasoning::CompletionOptions {
+                    reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            low.completion.requested_reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::Low)
         );
-        let high = effective_reasoning_mode(
-            model.default_reasoning_mode,
-            &crate::reasoning::CompletionOptions {
-                reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
-            },
+        assert_eq!(
+            high.completion.requested_reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
         );
-        assert_eq!(low, Some(crate::reasoning::ReasoningMode::Low));
-        assert_eq!(high, Some(crate::reasoning::ReasoningMode::High));
+        assert_eq!(
+            request_rx.recv().unwrap()["reasoning"]["effort"],
+            "low"
+        );
+        assert_eq!(
+            request_rx.recv().unwrap()["reasoning"]["effort"],
+            "high"
+        );
+        server.join().unwrap();
     }
 
     #[test]
