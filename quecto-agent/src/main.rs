@@ -1,9 +1,10 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use quecto_agent::{
     cancel_token, chat_spinner_renderer, content_hash, join_url, load_instructions, new_session_id,
-    parse_command, parse_spinner_verbs, project_raw, render_change_summary, resolve_scoped,
-    seed_context, Agent, ApprovalMode, ChatCommand, Flavor, HttpModel, LineRenderer, Outcome,
-    Policy, Preset, Renderer, SqliteRecorder, Store, TrustStore, Verifier,
+    parse_command, parse_spinner_verbs, project_raw, render_change_summary,
+    resolve_scoped_configured, seed_context, Agent, ApprovalMode, ChatCommand, ConfiguredFlavor,
+    Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, Renderer, SqliteRecorder, Store,
+    TrustStore, Verifier,
 };
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -244,10 +245,10 @@ fn compose_system_with_persona(cwd: &Path, persona: Option<&str>) -> String {
     system
 }
 
-fn resolve_flavor(overrides: &Overrides) -> (Flavor, Flavor) {
+fn resolve_flavor(overrides: &Overrides) -> (ConfiguredFlavor, ConfiguredFlavor) {
     let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
-    match resolve_scoped(&home, &cwd, overrides.flavor.as_deref()) {
+    match resolve_scoped_configured(&home, &cwd, overrides.flavor.as_deref()) {
         Ok(pair) => pair,
         Err(e) => {
             eprintln!("quecto-agent: flavor error: {e}");
@@ -261,11 +262,11 @@ fn resolve_flavor(overrides: &Overrides) -> (Flavor, Flavor) {
 /// otherwise `user` alone. Prompts on a TTY; non-interactive denies; `--yes`
 /// trusts and records.
 fn gated_flavor(
-    user: &Flavor,
-    project: &Flavor,
+    user: &ConfiguredFlavor,
+    project: &ConfiguredFlavor,
     flavor_name: Option<&str>,
     auto_approve: bool,
-) -> Flavor {
+) -> ConfiguredFlavor {
     let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let Some(raw) = project_raw(&home, &cwd, flavor_name) else {
@@ -908,7 +909,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
         Some(s) => s,
         None => std::process::exit(1),
     };
-    let messages = match store.load_messages(id) {
+    let messages = match store.load_message_records(id) {
         Ok(m) if !m.is_empty() => m,
         Ok(_) => {
             eprintln!("quecto-agent: no session '{id}'");
@@ -959,7 +960,7 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     let mut agent = Agent::new(Box::new(model), system, steps, cwd, cancel, approval)
         .register_builtins_filtered(merged.tools.enabled.as_deref())
         .with_policy(build_policy(overrides.approval.as_deref(), &gated))
-        .with_messages(messages);
+        .with_message_records(messages);
 
     agent = attach_mcp_tools(agent, overrides, false);
 

@@ -2,18 +2,13 @@ use crate::BoxErr;
 use serde_json::{json, Value};
 
 /// A single chat message in the running transcript.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Message {
     pub role: String,
     pub content: String,
     pub tool_calls: Vec<ToolCall>,
     pub tool_call_id: Option<String>,
     pub reasoning_content: Option<String>,
-    pub requested_reasoning_mode: Option<crate::reasoning::ReasoningMode>,
-    pub provider_reasoning_parameters: Option<Value>,
-    pub reasoning_parameters_sent: Option<bool>,
-    pub reasoning_content_available: Option<bool>,
-    pub actual_reasoning_tokens: Option<u64>,
 }
 
 impl Message {
@@ -24,11 +19,6 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
-            requested_reasoning_mode: None,
-            provider_reasoning_parameters: None,
-            reasoning_parameters_sent: None,
-            reasoning_content_available: None,
-            actual_reasoning_tokens: None,
         }
     }
 
@@ -51,11 +41,6 @@ impl Message {
             tool_calls,
             tool_call_id: None,
             reasoning_content: None,
-            requested_reasoning_mode: None,
-            provider_reasoning_parameters: None,
-            reasoning_parameters_sent: None,
-            reasoning_content_available: None,
-            actual_reasoning_tokens: None,
         }
     }
 
@@ -66,11 +51,44 @@ impl Message {
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             reasoning_content: None,
-            requested_reasoning_mode: None,
-            provider_reasoning_parameters: None,
-            reasoning_parameters_sent: None,
-            reasoning_content_available: None,
-            actual_reasoning_tokens: None,
+        }
+    }
+}
+
+/// Additive reasoning metadata associated with a transcript message.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MessageMetadata {
+    pub requested_reasoning_mode: Option<crate::reasoning::ReasoningMode>,
+    pub provider_reasoning_parameters: Option<Value>,
+    pub reasoning_parameters_sent: Option<bool>,
+    pub reasoning_content_available: Option<bool>,
+    pub actual_reasoning_tokens: Option<u64>,
+}
+
+impl From<&crate::reasoning::CompletionTelemetry> for MessageMetadata {
+    fn from(telemetry: &crate::reasoning::CompletionTelemetry) -> Self {
+        Self {
+            requested_reasoning_mode: telemetry.requested_reasoning_mode,
+            provider_reasoning_parameters: telemetry.provider_reasoning_parameters.clone(),
+            reasoning_parameters_sent: Some(telemetry.reasoning_parameters_sent),
+            reasoning_content_available: Some(telemetry.reasoning_content_available),
+            actual_reasoning_tokens: telemetry.actual_reasoning_tokens,
+        }
+    }
+}
+
+/// A source-compatible message paired with additive persistence metadata.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MessageRecord {
+    pub message: Message,
+    pub metadata: MessageMetadata,
+}
+
+impl From<Message> for MessageRecord {
+    fn from(message: Message) -> Self {
+        Self {
+            message,
+            metadata: MessageMetadata::default(),
         }
     }
 }
@@ -101,9 +119,46 @@ pub struct ModelCompletion {
 
 impl From<AssistantMessage> for ModelCompletion {
     fn from(message: AssistantMessage) -> Self {
+        let reasoning_content_available = message
+            .reasoning_content
+            .as_deref()
+            .is_some_and(|reasoning| !reasoning.trim().is_empty());
         Self {
             message,
-            telemetry: crate::reasoning::CompletionTelemetry::default(),
+            telemetry: crate::reasoning::CompletionTelemetry {
+                reasoning_content_available,
+                ..crate::reasoning::CompletionTelemetry::default()
+            },
+        }
+    }
+}
+
+#[cfg(test)]
+mod completion_conversion_tests {
+    use super::*;
+
+    fn assistant(reasoning_content: Option<&str>) -> AssistantMessage {
+        AssistantMessage {
+            content: "answer".into(),
+            tool_calls: Vec::new(),
+            finish_reason: "stop".into(),
+            reasoning_content: reasoning_content.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn conversion_marks_nonblank_reasoning_content_available() {
+        let completion = ModelCompletion::from(assistant(Some("reasoning trace")));
+
+        assert!(completion.telemetry.reasoning_content_available);
+    }
+
+    #[test]
+    fn conversion_does_not_mark_blank_reasoning_content_available() {
+        for reasoning_content in [None, Some(""), Some("  \n\t ")] {
+            let completion = ModelCompletion::from(assistant(reasoning_content));
+
+            assert!(!completion.telemetry.reasoning_content_available);
         }
     }
 }

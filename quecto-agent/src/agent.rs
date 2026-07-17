@@ -1,5 +1,5 @@
 use crate::approval::ApprovalMode;
-use crate::model::{Message, Model};
+use crate::model::{Message, MessageMetadata, MessageRecord, Model};
 use crate::policy::{Decision, Policy};
 use crate::render::{stderr_renderer, Renderer};
 use crate::sandbox::CancelToken;
@@ -40,6 +40,11 @@ const REPEAT_STREAK_LIMIT: usize = 3;
 /// persistence. Recording is best-effort and must never fail the run.
 pub trait RunRecorder: Send {
     fn message(&mut self, m: &Message);
+
+    fn message_with_metadata(&mut self, m: &Message, _metadata: &MessageMetadata) {
+        self.message(m);
+    }
+
     fn change(&mut self, c: &FileChange);
 }
 
@@ -70,6 +75,7 @@ pub struct Agent {
     registry: Registry,
     cx: Context,
     pub messages: Vec<Message>,
+    message_metadata: Vec<MessageMetadata>,
     max_steps: usize,
     policy: Policy,
     approval: ApprovalMode,
@@ -118,6 +124,7 @@ impl Agent {
             registry: Registry::new(),
             cx: Context::new(repo_root, cancel.clone()),
             messages: vec![Message::system(system.into())],
+            message_metadata: vec![MessageMetadata::default()],
             max_steps,
             policy: Policy::default(),
             approval,
@@ -164,6 +171,7 @@ impl Agent {
     /// recording cursor is reset so a fresh turn records from the new baseline.
     pub fn clear_history(&mut self) {
         self.messages.truncate(1);
+        self.message_metadata.truncate(1);
         self.recorded_messages = self.messages.len();
         self.recorded_changes = 0;
         self.cx.clear_changes();
@@ -173,8 +181,35 @@ impl Agent {
     /// treated as already recorded so `resume` only persists new turns.
     pub fn with_messages(mut self, messages: Vec<Message>) -> Self {
         self.recorded_messages = messages.len();
+        self.message_metadata = vec![MessageMetadata::default(); messages.len()];
         self.messages = messages;
         self
+    }
+
+    /// Replace the seed transcript together with additive persistence metadata.
+    pub fn with_message_records(mut self, records: Vec<MessageRecord>) -> Self {
+        self.recorded_messages = records.len();
+        self.messages = records
+            .iter()
+            .map(|record| record.message.clone())
+            .collect();
+        self.message_metadata = records
+            .into_iter()
+            .map(|record| record.metadata)
+            .collect();
+        self
+    }
+
+    /// Return additive metadata associated with a transcript message.
+    pub fn message_metadata(&self, index: usize) -> Option<&MessageMetadata> {
+        self.message_metadata.get(index)
+    }
+
+    fn push_message(&mut self, message: Message, metadata: MessageMetadata) {
+        self.message_metadata
+            .resize(self.messages.len(), MessageMetadata::default());
+        self.messages.push(message);
+        self.message_metadata.push(metadata);
     }
 
     pub fn register(mut self, tool: Box<dyn Tool>) -> Self {
@@ -224,7 +259,7 @@ impl Agent {
         #[cfg(feature = "otel")]
         let _guard = span.enter();
 
-        self.messages.push(Message::user(task));
+        self.push_message(Message::user(task), MessageMetadata::default());
         self.run_loop()
     }
 
@@ -250,8 +285,13 @@ impl Agent {
         }
         while self.recorded_messages < self.messages.len() {
             let m = self.messages[self.recorded_messages].clone();
+            let metadata = self
+                .message_metadata
+                .get(self.recorded_messages)
+                .cloned()
+                .unwrap_or_default();
             if let Some(r) = self.recorder.as_mut() {
-                r.message(&m);
+                r.message_with_metadata(&m, &metadata);
             }
             self.recorded_messages += 1;
         }
@@ -307,15 +347,8 @@ impl Agent {
                 msg.tool_calls.clone(),
             );
             assistant_msg.reasoning_content = msg.reasoning_content.clone();
-            assistant_msg.requested_reasoning_mode = telemetry.requested_reasoning_mode;
-            assistant_msg.provider_reasoning_parameters =
-                telemetry.provider_reasoning_parameters.clone();
-            assistant_msg.reasoning_parameters_sent =
-                Some(telemetry.reasoning_parameters_sent);
-            assistant_msg.reasoning_content_available =
-                Some(telemetry.reasoning_content_available);
-            assistant_msg.actual_reasoning_tokens = telemetry.actual_reasoning_tokens;
-            self.messages.push(assistant_msg);
+            let metadata = MessageMetadata::from(&telemetry);
+            self.push_message(assistant_msg, metadata);
 
             if msg.tool_calls.is_empty() {
                 if let Some(verifier) = &self.verifier {
@@ -337,7 +370,10 @@ impl Agent {
                                     attempts: failed_verify_attempts,
                                 };
                             }
-                            self.messages.push(Message::user(report.observation()));
+                            self.push_message(
+                                Message::user(report.observation()),
+                                MessageMetadata::default(),
+                            );
                             step += 1;
                             continue;
                         }
@@ -407,8 +443,10 @@ impl Agent {
                     denial_streak = 0;
                 }
                 let repeated = repeats.observe(call, &out.content, self.cx.changes().len());
-                self.messages
-                    .push(Message::tool_result(&call.id, out.content));
+                self.push_message(
+                    Message::tool_result(&call.id, out.content),
+                    MessageMetadata::default(),
+                );
                 if repeated {
                     stop = Some(Outcome::RepeatedAction);
                     break;
@@ -1270,10 +1308,31 @@ mod tests {
         }]);
         let mut a = configured_agent(model, ApprovalMode::NonInteractive);
         let _ = a.run("task");
-        assert_eq!(a.messages[2].actual_reasoning_tokens, Some(17));
+        let metadata = a.message_metadata(2).unwrap();
+        assert_eq!(metadata.actual_reasoning_tokens, Some(17));
         assert_eq!(
-            a.messages[2].requested_reasoning_mode,
+            metadata.requested_reasoning_mode,
             Some(crate::reasoning::ReasoningMode::High)
+        );
+    }
+
+    #[test]
+    fn direct_legacy_message_append_does_not_shift_completion_metadata() {
+        let model = Scripted::new_with_completions(vec![ModelCompletion {
+            message: text("done"),
+            telemetry: crate::reasoning::CompletionTelemetry {
+                actual_reasoning_tokens: Some(17),
+                ..crate::reasoning::CompletionTelemetry::default()
+            },
+        }]);
+        let mut agent = configured_agent(model, ApprovalMode::NonInteractive);
+        agent.messages.push(Message::user("legacy append"));
+
+        let _ = agent.run("task");
+
+        assert_eq!(
+            agent.message_metadata(3).unwrap().actual_reasoning_tokens,
+            Some(17)
         );
     }
 }

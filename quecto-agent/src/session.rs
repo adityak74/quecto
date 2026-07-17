@@ -1,4 +1,4 @@
-use crate::model::{Message, ToolCall};
+use crate::model::{Message, MessageMetadata, MessageRecord, ToolCall};
 use crate::tools::FileChange;
 use crate::BoxErr;
 use rusqlite::{Connection, TransactionBehavior};
@@ -203,7 +203,17 @@ impl Store {
     }
 
     pub fn record_message(&mut self, id: &str, seq: i64, m: &Message) -> Result<(), BoxErr> {
-        let actual_reasoning_tokens = m
+        self.record_message_with_metadata(id, seq, m, &MessageMetadata::default())
+    }
+
+    pub fn record_message_with_metadata(
+        &mut self,
+        id: &str,
+        seq: i64,
+        m: &Message,
+        metadata: &MessageMetadata,
+    ) -> Result<(), BoxErr> {
+        let actual_reasoning_tokens = metadata
             .actual_reasoning_tokens
             .map(i64::try_from)
             .transpose()
@@ -220,10 +230,15 @@ impl Store {
                 calls_to_json(&m.tool_calls),
                 &m.tool_call_id,
                 &m.reasoning_content,
-                m.requested_reasoning_mode.map(|mode| mode.effort_str()),
-                m.provider_reasoning_parameters.as_ref().map(Value::to_string),
-                m.reasoning_parameters_sent,
-                m.reasoning_content_available,
+                metadata
+                    .requested_reasoning_mode
+                    .map(|mode| mode.effort_str()),
+                metadata
+                    .provider_reasoning_parameters
+                    .as_ref()
+                    .map(Value::to_string),
+                metadata.reasoning_parameters_sent,
+                metadata.reasoning_content_available,
                 actual_reasoning_tokens,
             ),
         )?;
@@ -291,6 +306,14 @@ impl Store {
     }
 
     pub fn load_messages(&self, id: &str) -> Result<Vec<Message>, BoxErr> {
+        Ok(self
+            .load_message_records(id)?
+            .into_iter()
+            .map(|record| record.message)
+            .collect())
+    }
+
+    pub fn load_message_records(&self, id: &str) -> Result<Vec<MessageRecord>, BoxErr> {
         let mut stmt = self.conn.prepare(
             "SELECT role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_parameters_sent, reasoning_content_available, actual_reasoning_tokens FROM messages \
              WHERE session_id = ?1 ORDER BY seq ASC",
@@ -306,20 +329,24 @@ impl Store {
             let reasoning_parameters_sent: Option<bool> = row.get(7)?;
             let reasoning_content_available: Option<bool> = row.get(8)?;
             let actual_reasoning_tokens: Option<i64> = row.get(9)?;
-            Ok(Message {
-                role,
-                content,
-                tool_calls: calls_from_json(tool_calls),
-                tool_call_id,
-                reasoning_content,
-                requested_reasoning_mode: requested_reasoning_mode
-                    .and_then(|mode| mode.parse().ok()),
-                provider_reasoning_parameters: provider_reasoning_parameters
-                    .and_then(|parameters| serde_json::from_str(&parameters).ok()),
-                reasoning_parameters_sent,
-                reasoning_content_available,
-                actual_reasoning_tokens: actual_reasoning_tokens
-                    .and_then(|tokens| u64::try_from(tokens).ok()),
+            Ok(MessageRecord {
+                message: Message {
+                    role,
+                    content,
+                    tool_calls: calls_from_json(tool_calls),
+                    tool_call_id,
+                    reasoning_content,
+                },
+                metadata: MessageMetadata {
+                    requested_reasoning_mode: requested_reasoning_mode
+                        .and_then(|mode| mode.parse().ok()),
+                    provider_reasoning_parameters: provider_reasoning_parameters
+                        .and_then(|parameters| serde_json::from_str(&parameters).ok()),
+                    reasoning_parameters_sent,
+                    reasoning_content_available,
+                    actual_reasoning_tokens: actual_reasoning_tokens
+                        .and_then(|tokens| u64::try_from(tokens).ok()),
+                },
             })
         })?;
         let mut out = Vec::new();
@@ -471,16 +498,20 @@ CREATE TABLE file_changes (
 
         let mut store = Store::open_at(&path).unwrap();
         store.create_session("s1", "task", "/repo", "m").unwrap();
-        let mut message = Message::assistant("response");
-        message.requested_reasoning_mode = Some(crate::reasoning::ReasoningMode::Low);
-        message.provider_reasoning_parameters = Some(json!({"reasoning_effort": "low"}));
-        message.reasoning_parameters_sent = Some(true);
-        message.reasoning_content_available = Some(false);
-        message.actual_reasoning_tokens = Some(7);
-        store.record_message("s1", 0, &message).unwrap();
+        let message = Message::assistant("response");
+        let metadata = MessageMetadata {
+            requested_reasoning_mode: Some(crate::reasoning::ReasoningMode::Low),
+            provider_reasoning_parameters: Some(json!({"reasoning_effort": "low"})),
+            reasoning_parameters_sent: Some(true),
+            reasoning_content_available: Some(false),
+            actual_reasoning_tokens: Some(7),
+        };
+        store
+            .record_message_with_metadata("s1", 0, &message, &metadata)
+            .unwrap();
 
-        let loaded = store.load_messages("s1").unwrap();
-        assert_eq!(loaded[0].actual_reasoning_tokens, Some(7));
+        let loaded = store.load_message_records("s1").unwrap();
+        assert_eq!(loaded[0].metadata.actual_reasoning_tokens, Some(7));
     }
 
     #[test]
@@ -508,11 +539,18 @@ CREATE TABLE file_changes (
 
         let mut store = Store::open_at(&path).unwrap();
         store.create_session("s1", "task", "/repo", "m").unwrap();
-        let mut message = Message::assistant("response");
-        message.requested_reasoning_mode = Some(crate::reasoning::ReasoningMode::High);
-        store.record_message("s1", 0, &message).unwrap();
+        let message = Message::assistant("response");
+        let metadata = MessageMetadata {
+            requested_reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
+            ..MessageMetadata::default()
+        };
+        store
+            .record_message_with_metadata("s1", 0, &message, &metadata)
+            .unwrap();
         assert_eq!(
-            store.load_messages("s1").unwrap()[0].requested_reasoning_mode,
+            store.load_message_records("s1").unwrap()[0]
+                .metadata
+                .requested_reasoning_mode,
             Some(crate::reasoning::ReasoningMode::High)
         );
     }
@@ -624,23 +662,28 @@ CREATE TABLE file_changes (
     fn messages_round_trip_with_reasoning_metadata() {
         let mut store = Store::open_in_memory().unwrap();
         store.create_session("s1", "task", "/repo", "m").unwrap();
-        let mut m = Message::assistant("response");
-        m.requested_reasoning_mode = Some(crate::reasoning::ReasoningMode::Low);
-        m.provider_reasoning_parameters = Some(json!({"reasoning_effort": "low"}));
-        m.reasoning_parameters_sent = Some(true);
-        m.reasoning_content_available = Some(false);
-        m.actual_reasoning_tokens = Some(9);
-        store.record_message("s1", 0, &m).unwrap();
-        let loaded = store.load_messages("s1").unwrap();
+        let m = Message::assistant("response");
+        let metadata = MessageMetadata {
+            requested_reasoning_mode: Some(crate::reasoning::ReasoningMode::Low),
+            provider_reasoning_parameters: Some(json!({"reasoning_effort": "low"})),
+            reasoning_parameters_sent: Some(true),
+            reasoning_content_available: Some(false),
+            actual_reasoning_tokens: Some(9),
+        };
+        store
+            .record_message_with_metadata("s1", 0, &m, &metadata)
+            .unwrap();
+        let loaded = store.load_message_records("s1").unwrap();
+        let loaded = &loaded[0].metadata;
         assert_eq!(
-            loaded[0].requested_reasoning_mode,
+            loaded.requested_reasoning_mode,
             Some(crate::reasoning::ReasoningMode::Low)
         );
-        assert_eq!(loaded[0].actual_reasoning_tokens, Some(9));
-        assert_eq!(loaded[0].reasoning_parameters_sent, Some(true));
-        assert_eq!(loaded[0].reasoning_content_available, Some(false));
+        assert_eq!(loaded.actual_reasoning_tokens, Some(9));
+        assert_eq!(loaded.reasoning_parameters_sent, Some(true));
+        assert_eq!(loaded.reasoning_content_available, Some(false));
         assert_eq!(
-            loaded[0].provider_reasoning_parameters,
+            loaded.provider_reasoning_parameters,
             Some(json!({"reasoning_effort": "low"}))
         );
     }
