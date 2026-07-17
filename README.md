@@ -113,7 +113,7 @@ quecto "refactor this function"
 # Cloud (OpenAI)
 export QUECTO_BASE_URL="https://api.openai.com/v1"
 export QUECTO_API_KEY="sk-..."
-export QUECTO_MODEL="gpt-4o"
+export QUECTO_MODEL="YOUR_OPENAI_CHAT_MODEL"
 ```
 
 ### Configuration
@@ -172,6 +172,8 @@ Interactive chat with the rotating loading verbs:
 | `/approve` | — | Auto-approve all edits and shell commands for this session |
 | `/deny` | — | Deny all edits and shell commands for this session |
 | `/clear` | — | Forget the conversation (keeps the system prompt) |
+| `/reasoning` | — | Show the active session reasoning mode |
+| `/reasoning <mode>` | `/reasoning off` | Set or clear the reasoning default for future turns in this chat session |
 | `/exit` | `/quit`, `/q` | Leave chat |
 
 **What's in it:** multi-step tool use (file read/write/patch, search, git, shell, background processes, `.qkb` notes, subagent delegation), edits gated by an approval preset, a hard-denylist sandbox (blocks `sudo`, `rm -rf /`, `git push`, etc. even under `--yes`), configurable verification commands, SQLite-backed session persistence, and named flavor manifests (`.quecto/flavors/*.toml`) with content-hash trust-on-first-use.
@@ -188,6 +190,7 @@ Reads the same core env vars as `quecto`, plus a few agent-specific ones:
 | `QUECTO_SYSTEM` | built-in agent system prompt | Overrides the base system prompt (repo rules + seed context are still appended after it) |
 | `QUECTO_MAX_STEPS` | `20` | Cap on agent loop steps |
 | `QUECTO_VERIFY` | *(unset)* | Newline-separated shell commands run as a post-edit verification gate |
+| `QUECTO_REASONING_MODE` | *(optional)* | Default reasoning effort; accepted normalized values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh` |
 | `QUECTO_SPINNER_VERBS` | built-in verb list | Comma-separated replacement verbs for the interactive chat spinner |
 | `QUECTO_STATE_DB` | `$XDG_STATE_HOME/quecto/sessions.db` (falls back to `~/.local/state/...`) | SQLite session store path |
 | `QUECTO_TRUST_FILE` | `$XDG_STATE_HOME/quecto/trust` (falls back to `~/.local/state/...`) | Trust-on-first-use hash store for flavor manifests |
@@ -205,12 +208,32 @@ quecto-agent "add a test for the parse_args function"
 # Cloud (OpenAI)
 export QUECTO_BASE_URL="https://api.openai.com/v1"
 export QUECTO_API_KEY="sk-..."
-export QUECTO_MODEL="gpt-4o"
+export QUECTO_MODEL="YOUR_OPENAI_CHAT_MODEL"
 
 # Customize the interactive chat spinner (replaces the built-in defaults)
 export QUECTO_SPINNER_VERBS="Thinking,Planning,Coding"
 quecto-agent chat
+
+# Set the default reasoning effort for a model that supports reasoning_effort
+export QUECTO_MODEL="YOUR_REASONING_CAPABLE_CHAT_MODEL"
+export QUECTO_REASONING_MODE=low
+quecto-agent "inspect this repository and summarize the test harness"
 ```
+
+Reasoning support is provider- and model-dependent. QuECTO sends the normalized
+mode as `reasoning_effort` only to OpenAI-compatible Chat Completions endpoints;
+the selected model must support that parameter.
+
+Harness code can override the default per completion by passing
+`CompletionOptions { reasoning_mode: Some(ReasoningMode::High) }`
+to `Model::complete_with_options(...)`; that options-aware path returns a
+`ModelCompletion` containing the legacy `AssistantMessage` plus additive
+`CompletionTelemetry`.
+
+Inside `quecto-agent chat`, `/reasoning` shows the current session default,
+`/reasoning high` updates it for future turns, and `/reasoning off` clears it.
+That session-level setting persists across `quecto-agent resume <session-id>`.
+It does not mutate environment variables, flavor files, or one-shot runs.
 
 See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test results, and `docs/superpowers/` for the milestone specs and plans (M1–M7b).
 

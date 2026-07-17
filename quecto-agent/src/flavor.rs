@@ -36,6 +36,47 @@ pub struct Flavor {
     pub verify: VerifySection,
 }
 
+/// A flavor plus additive reasoning configuration.
+#[derive(Clone, Debug, Default)]
+pub struct ConfiguredFlavor {
+    pub flavor: Flavor,
+    pub reasoning_mode: Option<crate::reasoning::ReasoningMode>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ConfiguredFlavorDocument {
+    name: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+    max_steps: Option<usize>,
+    reasoning_mode: Option<crate::reasoning::ReasoningMode>,
+    auto_verify: Option<bool>,
+    auto_approve: Option<bool>,
+    system_prompt: Option<String>,
+    system_prompt_file: Option<String>,
+    #[serde(default)]
+    tools: ToolsSection,
+    #[serde(default)]
+    approval: ApprovalSection,
+    #[serde(default)]
+    verify: VerifySection,
+}
+
+impl std::ops::Deref for ConfiguredFlavor {
+    type Target = Flavor;
+
+    fn deref(&self) -> &Self::Target {
+        &self.flavor
+    }
+}
+
+impl std::ops::DerefMut for ConfiguredFlavor {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.flavor
+    }
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolsSection {
@@ -138,6 +179,46 @@ impl Flavor {
     }
 }
 
+impl ConfiguredFlavor {
+    /// Parse a manifest that may include additive reasoning configuration.
+    pub fn parse(text: &str) -> Result<Self, BoxErr> {
+        let document: ConfiguredFlavorDocument = toml::from_str(text)?;
+        Ok(Self {
+            flavor: Flavor {
+                name: document.name,
+                model: document.model,
+                base_url: document.base_url,
+                max_steps: document.max_steps,
+                auto_verify: document.auto_verify,
+                auto_approve: document.auto_approve,
+                system_prompt: document.system_prompt,
+                system_prompt_file: document.system_prompt_file,
+                tools: document.tools,
+                approval: document.approval,
+                verify: document.verify,
+            },
+            reasoning_mode: document.reasoning_mode,
+        })
+    }
+
+    /// Load a configured manifest from a file, if it exists.
+    pub fn load(path: &Path) -> Result<Option<Self>, BoxErr> {
+        match std::fs::read_to_string(path) {
+            Ok(text) => Ok(Some(Self::parse(&text)?)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(Box::new(e)),
+        }
+    }
+
+    /// Merge `over` on top of `self`, including additive reasoning config.
+    pub fn merge(self, over: Self) -> Self {
+        Self {
+            flavor: self.flavor.merge(over.flavor),
+            reasoning_mode: or(self.reasoning_mode, over.reasoning_mode),
+        }
+    }
+}
+
 fn approval_loosens(approval: &ApprovalSection) -> bool {
     let preset_loosens = approval
         .preset
@@ -231,6 +312,40 @@ pub fn resolve_scoped(
     Ok((user, project))
 }
 
+/// Merge every configured layer, including additive reasoning settings.
+pub fn resolve_configured(
+    home: &Path,
+    cwd: &Path,
+    flavor_name: Option<&str>,
+) -> Result<ConfiguredFlavor, BoxErr> {
+    let mut merged = ConfiguredFlavor::default();
+    for (_scope, path) in layer_paths(home, cwd, flavor_name) {
+        if let Some(layer) = ConfiguredFlavor::load(&path)? {
+            merged = merged.merge(layer);
+        }
+    }
+    Ok(merged)
+}
+
+/// Resolve configured user and project layers separately.
+pub fn resolve_scoped_configured(
+    home: &Path,
+    cwd: &Path,
+    flavor_name: Option<&str>,
+) -> Result<(ConfiguredFlavor, ConfiguredFlavor), BoxErr> {
+    let mut user = ConfiguredFlavor::default();
+    let mut project = ConfiguredFlavor::default();
+    for (scope, path) in layer_paths(home, cwd, flavor_name) {
+        if let Some(layer) = ConfiguredFlavor::load(&path)? {
+            match scope {
+                Scope::User => user = user.merge(layer),
+                Scope::Project => project = project.merge(layer),
+            }
+        }
+    }
+    Ok((user, project))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -276,6 +391,15 @@ required = ["test"]
     }
 
     #[test]
+    fn parse_reads_reasoning_mode() {
+        let f = ConfiguredFlavor::parse("reasoning_mode = \"high\"").unwrap();
+        assert_eq!(
+            f.reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
+        );
+    }
+
+    #[test]
     fn merge_lets_higher_layer_win_and_inherits_unset() {
         let base = Flavor::parse(
             r#"model = "base-model"
@@ -288,6 +412,17 @@ system_prompt = "base""#,
         assert_eq!(merged.model.as_deref(), Some("over-model"));
         assert_eq!(merged.max_steps, Some(10));
         assert_eq!(merged.system_prompt.as_deref(), Some("base"));
+    }
+
+    #[test]
+    fn merge_lets_higher_layer_override_reasoning_mode() {
+        let base = ConfiguredFlavor::parse("reasoning_mode = \"low\"").unwrap();
+        let over = ConfiguredFlavor::parse("reasoning_mode = \"high\"").unwrap();
+        let merged = base.merge(over);
+        assert_eq!(
+            merged.reasoning_mode,
+            Some(crate::reasoning::ReasoningMode::High)
+        );
     }
 
     #[test]

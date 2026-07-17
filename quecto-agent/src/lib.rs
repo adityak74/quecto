@@ -9,6 +9,7 @@ mod flavor;
 mod instructions;
 mod model;
 mod policy;
+mod reasoning;
 mod recorder;
 mod render;
 mod sandbox;
@@ -19,18 +20,25 @@ mod verify;
 
 pub use agent::{Agent, Outcome, RunRecorder};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
-pub use chat::{parse_command, ChatCommand};
+pub use chat::{parse_command, ChatCommand, ReasoningCommand};
 pub use context::seed as seed_context;
 pub use flavor::{
-    content_hash, layer_paths, project_raw, resolve, resolve_scoped, ApprovalSection, Flavor,
-    Scope, ToolsSection, VerifySection,
+    content_hash, layer_paths, project_raw, resolve, resolve_configured, resolve_scoped,
+    resolve_scoped_configured, ApprovalSection, ConfiguredFlavor, Flavor, Scope, ToolsSection,
+    VerifySection,
 };
 pub use instructions::load as load_instructions;
 pub use model::{
-    messages_to_body, parse_assistant, AssistantMessage, HttpModel, Message, Model, ToolCall,
+    messages_to_body, parse_assistant, parse_assistant_completion, AssistantMessage,
+    ConfiguredHttpModel, HttpModel, Message, MessageMetadata, MessageRecord, Model,
+    ModelCompletion, ToolCall,
 };
 pub use policy::{Decision, Policy, Preset};
 pub use quecto::join_url;
+pub use reasoning::{
+    parse_env_reasoning_mode, reasoning_payload, CompletionOptions, CompletionTelemetry,
+    ReasoningMode,
+};
 pub use recorder::SqliteRecorder;
 pub use render::{
     chat_spinner_renderer, parse_spinner_verbs, stderr_renderer, LineRenderer, Renderer,
