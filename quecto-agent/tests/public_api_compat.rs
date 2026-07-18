@@ -1,6 +1,6 @@
 use quecto_agent::{
     ApprovalSection, AssistantMessage, CompletionTelemetry, Flavor, HttpModel, Message, Model,
-    ToolCall, ToolsSection, VerifySection,
+    Provider, ToolCall, ToolsSection, VerifySection,
 };
 
 #[derive(Clone)]
@@ -31,6 +31,8 @@ fn legacy_public_struct_literals_still_compile_and_work() {
         url: "http://127.0.0.1:1/v1/chat/completions".into(),
         api_key: None,
         model: "legacy-model".into(),
+        provider: Provider::OpenAiCompatible,
+        max_tokens: None,
     };
     let message = LegacyModel.complete(&[Message::user("hello")], &[]).unwrap();
     let transcript_message = Message {

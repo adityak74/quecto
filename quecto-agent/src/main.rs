@@ -3,7 +3,7 @@ use quecto_agent::{
     cancel_token, chat_spinner_renderer, content_hash, join_url, load_instructions, new_session_id,
     parse_command, parse_spinner_verbs, project_raw, render_assistant_text, render_change_summary,
     resolve_scoped_configured, seed_context, Agent, ApprovalMode, ChatCommand, ConfiguredFlavor,
-    Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, ReasoningCommand, ReasoningMode,
+    Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, Provider, ReasoningCommand, ReasoningMode,
     Renderer, SqliteRecorder, Store, TrustStore, Verifier,
 };
 use std::io::{BufRead, IsTerminal, Write};
@@ -73,6 +73,12 @@ struct Cli {
     /// Override the OpenAI-compatible base URL.
     #[arg(long, global = true)]
     base_url: Option<String>,
+    /// Select the provider wire format: "openai" (default) or "anthropic".
+    #[arg(long, global = true)]
+    provider: Option<String>,
+    /// Override the max_tokens sent to Anthropic requests (ignored for openai).
+    #[arg(long, global = true)]
+    max_tokens: Option<u32>,
     /// Limit the number of agent steps.
     #[arg(long, global = true)]
     max_steps: Option<usize>,
@@ -95,6 +101,8 @@ struct Overrides {
     flavor: Option<String>,
     model: Option<String>,
     base_url: Option<String>,
+    provider: Option<String>,
+    max_tokens: Option<u32>,
     max_steps: Option<usize>,
     approval: Option<String>,
     #[cfg(feature = "mcp")]
@@ -127,6 +135,8 @@ fn main() {
         flavor: cli.flavor.clone(),
         model: cli.model.clone(),
         base_url: cli.base_url.clone(),
+        provider: cli.provider.clone(),
+        max_tokens: cli.max_tokens,
         max_steps: cli.max_steps,
         approval: cli.approval.clone(),
         #[cfg(feature = "mcp")]
@@ -455,6 +465,29 @@ fn resolve_host_and_model(overrides: &Overrides, merged: &Flavor) -> (String, St
     (base_url, model_name)
 }
 
+fn resolve_provider(overrides: &Overrides, merged: &Flavor) -> Result<Provider, quecto_agent::BoxErr> {
+    if let Some(flag) = &overrides.provider {
+        return flag.parse();
+    }
+    if let Ok(env) = std::env::var("QUECTO_PROVIDER") {
+        if !env.is_empty() {
+            return env.parse();
+        }
+    }
+    Ok(merged.provider.unwrap_or_default())
+}
+
+fn resolve_max_tokens(overrides: &Overrides, merged: &Flavor) -> Option<u32> {
+    overrides
+        .max_tokens
+        .or_else(|| {
+            std::env::var("QUECTO_MAX_TOKENS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .or(merged.max_tokens)
+}
+
 fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
     let approval = ApprovalMode::terminal(auto_approve);
@@ -469,13 +502,19 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(2);
+    });
     let api_key = std::env::var("QUECTO_API_KEY")
         .ok()
         .filter(|s| !s.is_empty());
     let model = HttpModel {
-        url: join_url(&base_url, "chat/completions"),
+        url: join_url(&base_url, provider.path_suffix()),
         api_key,
         model: model_name,
+        provider,
+        max_tokens: resolve_max_tokens(overrides, &merged),
     }
     .try_with_env_reasoning_mode(merged.reasoning_mode)
     .unwrap_or_else(|e| {
@@ -556,12 +595,18 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(2);
+    });
     let model = HttpModel {
-        url: join_url(&base_url, "chat/completions"),
+        url: join_url(&base_url, provider.path_suffix()),
         api_key: std::env::var("QUECTO_API_KEY")
             .ok()
             .filter(|s| !s.is_empty()),
         model: model_name.clone(),
+        provider,
+        max_tokens: resolve_max_tokens(overrides, &merged),
     }
     .try_with_env_reasoning_mode(merged.reasoning_mode)
     .unwrap_or_else(|e| {
@@ -1002,12 +1047,18 @@ fn resume(id: &str, auto_approve: bool, no_verify: bool, overrides: &Overrides) 
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
+    let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
+        eprintln!("quecto-agent: {e}");
+        std::process::exit(2);
+    });
     let model = HttpModel {
-        url: join_url(&base_url, "chat/completions"),
+        url: join_url(&base_url, provider.path_suffix()),
         api_key: std::env::var("QUECTO_API_KEY")
             .ok()
             .filter(|s| !s.is_empty()),
         model: model_name,
+        provider,
+        max_tokens: resolve_max_tokens(overrides, &merged),
     }
     .try_with_env_reasoning_mode(
         store
@@ -1246,6 +1297,8 @@ mod main_tests {
             url: "http://example.test/v1/chat/completions".into(),
             api_key: None,
             model: "test-model".into(),
+            provider: Provider::OpenAiCompatible,
+            max_tokens: None,
         }
         .with_default_reasoning_mode(mode);
         Agent::new(
