@@ -120,6 +120,71 @@ pub fn tools_to_anthropic(tools: &[Value]) -> Vec<Value> {
         .collect()
 }
 
+/// Parse an Anthropic Messages API response into a normalized `ModelCompletion`.
+/// `content` blocks of type `text` are concatenated into the assistant text;
+/// `tool_use` blocks become `ToolCall`s; a non-blank `thinking` block becomes
+/// `reasoning_content`. `usage.output_tokens` is recorded as a best-effort
+/// approximation of reasoning-token spend only when a thinking block was
+/// actually present in the response.
+pub fn parse_anthropic_completion(resp: &Value) -> Result<crate::model::ModelCompletion, crate::BoxErr> {
+    let content = resp
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or("no content in response")?;
+
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+    let mut reasoning_content: Option<String> = None;
+
+    for block in content {
+        match block.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(t) = block.get("text").and_then(Value::as_str) {
+                    text.push_str(t);
+                }
+            }
+            Some("thinking") => {
+                if let Some(t) = block.get("thinking").and_then(Value::as_str) {
+                    if !t.trim().is_empty() {
+                        reasoning_content = Some(t.to_string());
+                    }
+                }
+            }
+            Some("tool_use") => {
+                let id = block.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+                let name = block.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                let arguments = block.get("input").cloned().unwrap_or(Value::Null);
+                tool_calls.push(crate::model::ToolCall { id, name, arguments });
+            }
+            _ => {}
+        }
+    }
+
+    let finish_reason = resp
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let reasoning_content_available = reasoning_content.is_some();
+    let actual_reasoning_tokens = reasoning_content_available
+        .then(|| resp.get("usage").and_then(|u| u.get("output_tokens")).and_then(Value::as_u64))
+        .flatten();
+
+    Ok(crate::model::ModelCompletion {
+        message: crate::model::AssistantMessage {
+            content: text,
+            tool_calls,
+            finish_reason,
+            reasoning_content,
+        },
+        telemetry: crate::reasoning::CompletionTelemetry {
+            reasoning_content_available,
+            actual_reasoning_tokens,
+            ..Default::default()
+        },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -246,5 +311,80 @@ mod tests {
                 "input_schema": {"type": "object", "properties": {"path": {"type": "string"}}}
             })
         );
+    }
+    #[test]
+    fn parses_text_only_response() {
+        let resp = json!({
+            "content": [{"type": "text", "text": "hello there"}],
+            "stop_reason": "end_turn",
+            "usage": {"input_tokens": 10, "output_tokens": 5}
+        });
+
+        let completion = parse_anthropic_completion(&resp).unwrap();
+
+        assert_eq!(completion.message.content, "hello there");
+        assert!(completion.message.tool_calls.is_empty());
+        assert_eq!(completion.message.finish_reason, "end_turn");
+        assert!(completion.message.reasoning_content.is_none());
+    }
+
+    #[test]
+    fn parses_tool_use_blocks_into_tool_calls() {
+        let resp = json!({
+            "content": [
+                {"type": "text", "text": "checking"},
+                {"type": "tool_use", "id": "toolu_1", "name": "read_file", "input": {"path": "a.rs"}}
+            ],
+            "stop_reason": "tool_use"
+        });
+
+        let completion = parse_anthropic_completion(&resp).unwrap();
+
+        assert_eq!(completion.message.content, "checking");
+        assert_eq!(completion.message.finish_reason, "tool_use");
+        assert_eq!(completion.message.tool_calls.len(), 1);
+        assert_eq!(completion.message.tool_calls[0].id, "toolu_1");
+        assert_eq!(completion.message.tool_calls[0].name, "read_file");
+        assert_eq!(completion.message.tool_calls[0].arguments, json!({"path": "a.rs"}));
+    }
+
+    #[test]
+    fn parses_thinking_block_into_reasoning_content() {
+        let resp = json!({
+            "content": [
+                {"type": "thinking", "thinking": "let me think"},
+                {"type": "text", "text": "answer"}
+            ],
+            "stop_reason": "end_turn",
+            "usage": {"output_tokens": 123}
+        });
+
+        let completion = parse_anthropic_completion(&resp).unwrap();
+
+        assert_eq!(completion.message.reasoning_content.as_deref(), Some("let me think"));
+        assert_eq!(completion.message.content, "answer");
+        assert!(completion.telemetry.reasoning_content_available);
+        assert_eq!(completion.telemetry.actual_reasoning_tokens, Some(123));
+    }
+
+    #[test]
+    fn blank_thinking_block_does_not_mark_reasoning_available() {
+        let resp = json!({
+            "content": [{"type": "thinking", "thinking": "  \n "}, {"type": "text", "text": "answer"}],
+            "stop_reason": "end_turn"
+        });
+
+        let completion = parse_anthropic_completion(&resp).unwrap();
+
+        assert!(completion.message.reasoning_content.is_none());
+        assert!(!completion.telemetry.reasoning_content_available);
+        assert!(completion.telemetry.actual_reasoning_tokens.is_none());
+    }
+
+    #[test]
+    fn missing_content_array_is_an_error() {
+        let resp = json!({"stop_reason": "end_turn"});
+
+        assert!(parse_anthropic_completion(&resp).is_err());
     }
 }
