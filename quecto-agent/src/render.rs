@@ -37,6 +37,15 @@ const DEFAULT_SPINNER_VERBS: &[&str] = &[
     "Wrangling", "Zesting", "Zigzagging",
 ];
 
+pub fn render_assistant_text(text: &str, markdown: bool) -> String {
+    if !markdown {
+        return text.to_string();
+    }
+
+    let skin = termimad::MadSkin::default();
+    skin.term_text(text).to_string()
+}
+
 pub fn parse_spinner_verbs(raw: Option<&str>) -> Vec<String> {
     let verbs: Vec<String> = raw
         .into_iter()
@@ -131,7 +140,8 @@ impl<W: Write + Send> Renderer for LineRenderer<W> {
     }
 
     fn assistant(&mut self, text: &str) {
-        let _ = writeln!(self.out, "{text}");
+        let rendered = render_assistant_text(text, self.color);
+        let _ = writeln!(self.out, "{rendered}");
     }
 }
 
@@ -271,7 +281,8 @@ impl<W: Write + Send + 'static> Renderer for SpinnerRenderer<W> {
     fn assistant(&mut self, text: &str) {
         self.stop_spinner();
         if let Ok(mut out) = self.out.lock() {
-            let _ = writeln!(out, "{text}");
+            let rendered = render_assistant_text(text, self.color);
+            let _ = writeln!(out, "{rendered}");
         }
     }
 }
@@ -515,5 +526,19 @@ mod tests {
         renderer.working();
         renderer.working_done();
         assert!(renderer.spinner.thread.is_none());
+    }
+
+    #[test]
+    fn render_assistant_text_preserves_plain_output_when_markdown_disabled() {
+        let input = "# Title\n\n- item\n\n```rust\nfn main() {}\n```";
+        assert_eq!(render_assistant_text(input, false), input);
+    }
+
+    #[test]
+    fn render_assistant_text_formats_markdown_when_enabled() {
+        let rendered = render_assistant_text("# Title\n\n- item", true);
+        assert!(rendered.contains("Title"));
+        assert!(rendered.contains("item"));
+        assert_ne!(rendered, "# Title\n\n- item");
     }
 }

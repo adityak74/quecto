@@ -1,7 +1,7 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use quecto_agent::{
     cancel_token, chat_spinner_renderer, content_hash, join_url, load_instructions, new_session_id,
-    parse_command, parse_spinner_verbs, project_raw, render_change_summary,
+    parse_command, parse_spinner_verbs, project_raw, render_assistant_text, render_change_summary,
     resolve_scoped_configured, seed_context, Agent, ApprovalMode, ChatCommand, ConfiguredFlavor,
     Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, ReasoningCommand, ReasoningMode,
     Renderer, SqliteRecorder, Store, TrustStore, Verifier,
@@ -360,7 +360,8 @@ fn attach_verifier(mut agent: Agent, no_verify: bool, user_flavor: &Flavor) -> A
 fn finish(outcome: Outcome, store_status: Option<(&Store, &str)>) {
     let status = match &outcome {
         Outcome::Complete(answer) => {
-            println!("{answer}");
+            let rendered = render_assistant_text(&answer, std::io::stdout().is_terminal());
+            println!("{rendered}");
             "done"
         }
         Outcome::StepLimit => {
