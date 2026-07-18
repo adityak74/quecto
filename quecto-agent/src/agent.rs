@@ -769,6 +769,8 @@ mod tests {
             url: "http://example.test/v1/chat/completions".into(),
             api_key: None,
             model: "test-model".into(),
+            provider: crate::provider::Provider::OpenAiCompatible,
+            max_tokens: None,
         }
         .with_default_reasoning_mode(Some(crate::reasoning::ReasoningMode::Low));
         let mut agent = Agent::new(
