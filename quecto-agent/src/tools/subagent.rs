@@ -1,6 +1,6 @@
-use crate::agent::{Agent, AgentConfig, Outcome};
+use crate::agent::{Agent, AgentConfig, Outcome, RunRecorder};
 use crate::model::Message;
-use crate::tools::{Context, Tool, ToolError, ToolOutput, ToolResult};
+use crate::tools::{Context, Tool, ToolError, ToolOutput, ToolResult, FileChange};
 use serde_json::{json, Value};
 use crate::sandbox::CancelToken;
 use std::collections::HashMap;
@@ -91,6 +91,33 @@ impl From<&SubagentInfo> for SubagentSnapshot {
             progress: info.progress.lock().unwrap().clone(),
         }
     }
+}
+
+struct ProgressRecorder {
+    buf: Arc<Mutex<Vec<String>>>,
+}
+
+impl RunRecorder for ProgressRecorder {
+    fn message(&mut self, m: &Message) {
+        match m.role.as_str() {
+            "assistant" => {
+                for call in &m.tool_calls {
+                    push_progress(&self.buf, format!("called {}({})", call.name, call.arguments));
+                }
+                if m.tool_calls.is_empty() && !m.content.is_empty() {
+                    let snippet: String = m.content.chars().take(160).collect();
+                    push_progress(&self.buf, format!("said: {snippet}"));
+                }
+            }
+            "tool" => {
+                let snippet: String = m.content.chars().take(160).collect();
+                push_progress(&self.buf, format!("-> {snippet}"));
+            }
+            _ => {}
+        }
+    }
+
+    fn change(&mut self, _c: &FileChange) {}
 }
 
 #[derive(Clone)]
@@ -355,5 +382,44 @@ mod tests {
         assert_eq!(locked.len(), 50);
         assert_eq!(locked[0], "line 10");
         assert_eq!(locked[49], "line 59");
+    }
+
+    #[test]
+    fn progress_recorder_logs_tool_calls_and_results() {
+        use crate::agent::RunRecorder;
+        use crate::model::ToolCall;
+
+        let buf: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut rec = ProgressRecorder { buf: buf.clone() };
+
+        let mut assistant = Message::assistant_with_calls(
+            String::new(),
+            vec![ToolCall {
+                id: "1".into(),
+                name: "read_file".into(),
+                arguments: json!({"path": "a.rs"}),
+            }],
+        );
+        assistant.role = "assistant".into();
+        rec.message(&assistant);
+
+        let tool_result = Message::tool_result("1", "42 lines");
+        rec.message(&tool_result);
+
+        let locked = buf.lock().unwrap();
+        assert_eq!(locked.len(), 2);
+        assert!(locked[0].contains("read_file"));
+        assert!(locked[1].contains("42 lines"));
+    }
+
+    #[test]
+    fn progress_recorder_caps_at_50_entries() {
+        let buf: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut rec = ProgressRecorder { buf: buf.clone() };
+        for i in 0..60 {
+            let m = Message::tool_result("1", &format!("result {i}"));
+            rec.message(&m);
+        }
+        assert_eq!(buf.lock().unwrap().len(), 50);
     }
 }
