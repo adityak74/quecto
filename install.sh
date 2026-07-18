@@ -2,8 +2,10 @@
 set -e
 
 # Build the workspace binaries in release mode
+echo "Cleaning the cargo workspace..."
+cargo clean
 echo "Building the quecto workspace binaries..."
-cargo build --release
+cargo build --release --workspace
 
 # Define the target installation directory
 # We'll use ~/.local/bin as it's a standard user-level bin directory
