@@ -9,6 +9,7 @@ mod flavor;
 mod instructions;
 mod model;
 mod policy;
+mod provider;
 mod reasoning;
 mod recorder;
 mod render;
@@ -34,6 +35,7 @@ pub use model::{
     ModelCompletion, ToolCall,
 };
 pub use policy::{Decision, Policy, Preset};
+pub use provider::Provider;
 pub use quecto::join_url;
 pub use reasoning::{
     parse_env_reasoning_mode, reasoning_payload, CompletionOptions, CompletionTelemetry,

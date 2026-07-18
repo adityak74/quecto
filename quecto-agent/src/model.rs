@@ -360,6 +360,10 @@ pub struct HttpModel {
     pub url: String,
     pub api_key: Option<String>,
     pub model: String,
+    pub provider: crate::provider::Provider,
+    /// Anthropic-only: forwarded as the request's `max_tokens`. Ignored for
+    /// `Provider::OpenAiCompatible`. `None` uses `DEFAULT_ANTHROPIC_MAX_TOKENS`.
+    pub max_tokens: Option<u32>,
 }
 
 /// An HTTP model carrying an agent-level default without changing `HttpModel`'s public shape.
@@ -378,6 +382,8 @@ impl HttpModel {
             url: quecto::join_url(&base, "chat/completions"),
             api_key: key,
             model,
+            provider: crate::provider::Provider::OpenAiCompatible,
+            max_tokens: None,
         }
     }
 
@@ -424,6 +430,22 @@ fn effective_reasoning_mode(
     options.reasoning_mode.or(default_mode)
 }
 
+#[cfg(feature = "otel")]
+fn record_reasoning_request_fields(
+    span: &tracing::Span,
+    reasoning_mode: Option<crate::reasoning::ReasoningMode>,
+    provider_reasoning_parameters: &Option<Value>,
+    reasoning_parameters_sent: bool,
+) {
+    if let Some(mode) = reasoning_mode {
+        span.record("quecto.requested_reasoning_mode", mode.effort_str());
+    }
+    if let Some(parameters) = provider_reasoning_parameters {
+        span.record("quecto.provider_reasoning_parameters", parameters.to_string());
+    }
+    span.record("quecto.reasoning_parameters_sent", reasoning_parameters_sent);
+}
+
 impl Model for HttpModel {
     fn clone_box(&self) -> Box<dyn Model> {
         Box::new(self.clone())
@@ -461,36 +483,67 @@ impl Model for HttpModel {
         let _guard = span.enter();
 
         let reasoning_mode = options.reasoning_mode;
-        let mut body = messages_to_body(&self.model, messages);
-        if !tools.is_empty() {
-            body["tools"] = Value::Array(tools.to_vec());
-        }
-        let provider_reasoning_parameters =
-            crate::reasoning::apply_reasoning_mode(&mut body, &self.url, reasoning_mode);
-        let reasoning_parameters_sent = provider_reasoning_parameters.is_some();
-        #[cfg(feature = "otel")]
-        {
-            if let Some(mode) = reasoning_mode {
-                span.record("quecto.requested_reasoning_mode", mode.effort_str());
-            }
-            if let Some(parameters) = &provider_reasoning_parameters {
-                span.record(
-                    "quecto.provider_reasoning_parameters",
-                    parameters.to_string(),
-                );
-            }
-            span.record(
-                "quecto.reasoning_parameters_sent",
-                reasoning_parameters_sent,
-            );
-        }
-        let auth = self.api_key.as_ref().map(|k| format!("Bearer {k}"));
-        let mut headers: Vec<(&str, &str)> = Vec::new();
-        if let Some(a) = &auth {
-            headers.push(("Authorization", a.as_str()));
-        }
-        let resp = quecto::quecto_raw(&self.url, &headers, body)?;
-        let mut completion = parse_assistant_completion(&resp)?;
+
+        let (mut completion, provider_reasoning_parameters, reasoning_parameters_sent) =
+            match self.provider {
+                crate::provider::Provider::OpenAiCompatible => {
+                    let mut body = messages_to_body(&self.model, messages);
+                    if !tools.is_empty() {
+                        body["tools"] = Value::Array(tools.to_vec());
+                    }
+                    let provider_reasoning_parameters =
+                        crate::reasoning::apply_reasoning_mode(&mut body, &self.url, reasoning_mode);
+                    let reasoning_parameters_sent = provider_reasoning_parameters.is_some();
+                    #[cfg(feature = "otel")]
+                    record_reasoning_request_fields(
+                        &span,
+                        reasoning_mode,
+                        &provider_reasoning_parameters,
+                        reasoning_parameters_sent,
+                    );
+                    let auth = self.api_key.as_ref().map(|k| format!("Bearer {k}"));
+                    let mut headers: Vec<(&str, &str)> = Vec::new();
+                    if let Some(a) = &auth {
+                        headers.push(("Authorization", a.as_str()));
+                    }
+                    let resp = quecto::quecto_raw(&self.url, &headers, body)?;
+                    (
+                        parse_assistant_completion(&resp)?,
+                        provider_reasoning_parameters,
+                        reasoning_parameters_sent,
+                    )
+                }
+                crate::provider::Provider::Anthropic => {
+                    let max_tokens = self
+                        .max_tokens
+                        .unwrap_or(crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS);
+                    let mut body =
+                        crate::provider::messages_to_anthropic_body(&self.model, messages, max_tokens);
+                    if !tools.is_empty() {
+                        body["tools"] = Value::Array(crate::provider::tools_to_anthropic(tools));
+                    }
+                    let provider_reasoning_parameters =
+                        crate::reasoning::apply_anthropic_thinking(&mut body, reasoning_mode);
+                    let reasoning_parameters_sent = provider_reasoning_parameters.is_some();
+                    #[cfg(feature = "otel")]
+                    record_reasoning_request_fields(
+                        &span,
+                        reasoning_mode,
+                        &provider_reasoning_parameters,
+                        reasoning_parameters_sent,
+                    );
+                    let mut headers: Vec<(&str, &str)> = vec![("anthropic-version", "2023-06-01")];
+                    if let Some(k) = self.api_key.as_deref() {
+                        headers.push(("x-api-key", k));
+                    }
+                    let resp = quecto::quecto_raw(&self.url, &headers, body)?;
+                    (
+                        crate::provider::parse_anthropic_completion(&resp)?,
+                        provider_reasoning_parameters,
+                        reasoning_parameters_sent,
+                    )
+                }
+            };
         completion.telemetry.requested_reasoning_mode = reasoning_mode;
         completion.telemetry.provider_reasoning_parameters = provider_reasoning_parameters;
         completion.telemetry.reasoning_parameters_sent = reasoning_parameters_sent;
@@ -718,6 +771,8 @@ mod tests {
             url: "http://example.test/v1/chat/completions".into(),
             api_key: None,
             model: "test-model".into(),
+            provider: crate::provider::Provider::OpenAiCompatible,
+            max_tokens: None,
         }
         .with_default_reasoning_mode(Some(crate::reasoning::ReasoningMode::Low));
 
@@ -805,6 +860,8 @@ mod tests {
             url: format!("http://{address}/v1/chat/completions"),
             api_key: None,
             model: "test-model".into(),
+            provider: crate::provider::Provider::OpenAiCompatible,
+            max_tokens: None,
         }
         .with_default_reasoning_mode(Some(crate::reasoning::ReasoningMode::Low));
         let transcript = [Message::user("same transcript")];
@@ -845,6 +902,159 @@ mod tests {
         assert!(high_request.get("reasoning").is_none());
         server.join().unwrap();
     }
+
+    #[test]
+    fn anthropic_provider_completes_against_mock_with_tool_use_and_thinking() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<(Value, String)>();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            let header_end = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]).to_string();
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                assert!(read > 0, "request ended before body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let body: Value = serde_json::from_slice(&request[header_end..]).unwrap();
+            request_tx.send((body, headers)).unwrap();
+
+            let resp_body = r#"{"content":[{"type":"thinking","thinking":"reasoning here"},{"type":"text","text":"done"},{"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"a.rs"}}],"stop_reason":"tool_use","usage":{"output_tokens":50}}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                resp_body.len(),
+                resp_body
+            )
+            .unwrap();
+        });
+
+        let model = HttpModel {
+            url: format!("http://{address}/v1/messages"),
+            api_key: Some("test-key".into()),
+            model: "claude-x".into(),
+            provider: crate::provider::Provider::Anthropic,
+            max_tokens: Some(1234),
+        };
+        let completion = model
+            .complete_with_options(
+                &[Message::user("read a.rs")],
+                &[json!({
+                    "type": "function",
+                    "function": {"name": "read_file", "description": "read", "parameters": {"type": "object"}}
+                })],
+                &crate::reasoning::CompletionOptions {
+                    reasoning_mode: Some(crate::reasoning::ReasoningMode::High),
+                },
+            )
+            .unwrap();
+        server.join().unwrap();
+        let (sent_body, sent_headers) = request_rx.recv().unwrap();
+
+        assert_eq!(sent_body["model"], "claude-x");
+        assert_eq!(sent_body["max_tokens"], 1234);
+        assert_eq!(sent_body["thinking"], json!({"type": "enabled", "budget_tokens": 24000}));
+        assert_eq!(sent_body["tools"][0]["name"], "read_file");
+        // Header casing on the wire is a ureq implementation detail — compare
+        // lowercased to avoid coupling the test to it.
+        let sent_headers_lower = sent_headers.to_ascii_lowercase();
+        assert!(sent_headers_lower.contains("x-api-key: test-key"));
+        assert!(sent_headers_lower.contains("anthropic-version: 2023-06-01"));
+        assert!(!sent_headers_lower.contains("authorization:"));
+
+        assert_eq!(completion.message.content, "done");
+        assert_eq!(completion.message.finish_reason, "tool_use");
+        assert_eq!(completion.message.tool_calls[0].name, "read_file");
+        assert_eq!(completion.message.reasoning_content.as_deref(), Some("reasoning here"));
+        assert!(completion.telemetry.reasoning_parameters_sent);
+        assert_eq!(completion.telemetry.actual_reasoning_tokens, Some(50));
+    }
+
+    #[test]
+    fn anthropic_provider_defaults_max_tokens_when_unset() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::thread;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = std::sync::mpsc::channel::<Value>();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            let header_end = loop {
+                let read = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                    break end + 4;
+                }
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("Content-Length: "))
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).unwrap();
+                request.extend_from_slice(&buffer[..read]);
+            }
+            request_tx
+                .send(serde_json::from_slice(&request[header_end..]).unwrap())
+                .unwrap();
+
+            let resp_body = r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}"#;
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                resp_body.len(),
+                resp_body
+            )
+            .unwrap();
+        });
+
+        let model = HttpModel {
+            url: format!("http://{address}/v1/messages"),
+            api_key: None,
+            model: "claude-x".into(),
+            provider: crate::provider::Provider::Anthropic,
+            max_tokens: None,
+        };
+        model
+            .complete_with_options(
+                &[Message::user("hi")],
+                &[],
+                &crate::reasoning::CompletionOptions::default(),
+            )
+            .unwrap();
+        server.join().unwrap();
+        let sent_body = request_rx.recv().unwrap();
+
+        assert_eq!(sent_body["max_tokens"], crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS);
+    }
+
 
     #[test]
     fn parses_plain_content() {
