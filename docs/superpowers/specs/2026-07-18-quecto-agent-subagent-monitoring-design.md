@@ -143,10 +143,15 @@ tool-name allow-list mechanism already used for every other builtin).
 
 `monitor_subagents` is read-only/side-effect-free from the policy engine's
 point of view and joins `invoke_subagent` in the existing always-allowed list
-in `policy.rs`. `spawn_subagent` and `cancel_subagent` mutate process state
-(spawn a thread; stop one) but do not touch the filesystem or run shell
-commands directly — they're classified the same as `start_background_process`
-/ `kill_background_process`, which are already always-allowed today.
+in `policy.rs::Policy::decide`. `spawn_subagent` and `cancel_subagent` start
+and stop background work the same way `start_background_process` and
+`kill_background_process` do today, so they route through `self.run`
+(`Policy.run`) exactly like those two — `Decision::Ask` under the default
+`read-only` preset, `Decision::Allow` under `full`, same as the existing
+process tools. This is a correction from an earlier draft of this doc, which
+mistakenly described the process tools as always-allowed; they are not —
+only `read_file`/`list_files`/`search_text`/`git_diff`/`git_status`/
+`search_notes`/`list_background_processes`/`invoke_subagent` are.
 
 ## Testing
 

@@ -1,6 +1,6 @@
 # Concurrent Subagent Spawning + Monitoring Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`+ [x]`) syntax for tracking.
 
 **Goal:** Add `spawn_subagent`, `monitor_subagents`, and `cancel_subagent` tools so the model can run more than one subagent concurrently and check on them, without changing the existing synchronous `invoke_subagent` tool.
 
@@ -29,7 +29,7 @@
 - Produces: `pub const MAX_CONCURRENT_SUBAGENTS: usize = 8;`, `#[derive(Clone, Debug, PartialEq)] pub enum RunStatus { Running, Complete(String), Cancelled, Failed(String) }`, `#[derive(Clone, Debug)] pub struct SubagentSnapshot { pub id: u32, pub role: String, pub prompt: String, pub status: RunStatus, pub elapsed: Duration, pub progress: Vec<String> }`, `#[derive(Clone)] pub struct SubagentPool { .. }` with methods `new() -> Self`, `allocate(&self, role: String, prompt: String, cancel: CancelToken) -> (u32, Arc<Mutex<Vec<String>>>, Arc<Mutex<RunStatus>>)`, `running_count(&self) -> usize`, `set_status(&self, id: u32, status: RunStatus)`, `cancel(&self, id: u32) -> Option<bool>`, `get(&self, id: u32) -> Option<SubagentSnapshot>`, `all(&self) -> Vec<SubagentSnapshot>`. Also a free function `push_progress(buf: &Arc<Mutex<Vec<String>>>, line: String)` capping the buffer at `PROGRESS_CAP = 50` lines.
 - Consumes: `crate::sandbox::CancelToken` (`= Arc<AtomicBool>`, already `pub` at `sandbox.rs:17`).
 
-- [ ] **Step 1: Write the failing tests**
++ [x] **Step 1: Write the failing tests**
 
 Append to `quecto-agent/src/tools/subagent.rs`:
 
@@ -114,12 +114,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail to compile**
++ [x] **Step 2: Run tests to verify they fail to compile**
 
 Run: `cargo test -p quecto-agent --lib subagent:: 2>&1 | tail -30`
 Expected: compile errors like `cannot find type \`SubagentPool\` in this scope`, `cannot find function \`push_progress\``.
 
-- [ ] **Step 3: Implement `SubagentPool` and friends**
++ [x] **Step 3: Implement `SubagentPool` and friends**
 
 Extend the `use` list at the top of `quecto-agent/src/tools/subagent.rs` (keep the existing `use crate::agent::{Agent, AgentConfig, Outcome};` and `use crate::model::Message;` as-is):
 
@@ -263,12 +263,12 @@ impl SubagentPool {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
++ [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p quecto-agent --lib subagent:: 2>&1 | tail -30`
 Expected: `test result: ok. 7 passed; 0 failed`
 
-- [ ] **Step 5: Commit**
++ [x] **Step 5: Commit**
 
 ```bash
 git add quecto-agent/src/tools/subagent.rs
@@ -286,12 +286,12 @@ git commit -m "feat: add SubagentPool for tracking concurrently-spawned subagent
 - Consumes: `pub trait RunRecorder { fn message(&mut self, m: &Message); fn message_with_metadata(&mut self, m: &Message, _metadata: &MessageMetadata) { self.message(m); } fn change(&mut self, c: &FileChange); }` (`agent.rs:41-49`), `push_progress` from Task 1.
 - Produces: `struct ProgressRecorder { buf: Arc<Mutex<Vec<String>>> }` implementing `RunRecorder`.
 
-- [ ] **Step 1: Confirm `Message` constructor shapes before writing the test**
++ [x] **Step 1: Confirm `Message` constructor shapes before writing the test**
 
 Run: `grep -n "pub fn tool(\|pub fn assistant_with_calls(" quecto-agent/src/model.rs`
 Expected: both found — they're already used by `agent.rs`'s own run loop and tests (e.g. `Message::assistant_with_calls(msg.content.clone(), msg.tool_calls.clone())` at `agent.rs:358`). Note the exact parameter order/types shown so the test below matches; if `Message::tool` takes arguments in a different order than `(id, content)`, adjust the test call accordingly rather than guessing.
 
-- [ ] **Step 2: Write the failing test**
++ [x] **Step 2: Write the failing test**
 
 Add to the `mod tests` block in `quecto-agent/src/tools/subagent.rs`:
 
@@ -336,12 +336,12 @@ Add to the `mod tests` block in `quecto-agent/src/tools/subagent.rs`:
     }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
++ [x] **Step 3: Run tests to verify they fail**
 
 Run: `cargo test -p quecto-agent --lib subagent:: 2>&1 | tail -30`
 Expected: `cannot find struct \`ProgressRecorder\`` compile error.
 
-- [ ] **Step 4: Implement `ProgressRecorder`**
++ [x] **Step 4: Implement `ProgressRecorder`**
 
 Add to `quecto-agent/src/tools/subagent.rs` (near the top, with the other `use` additions):
 
@@ -377,12 +377,12 @@ impl RunRecorder for ProgressRecorder {
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
++ [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p quecto-agent --lib subagent:: 2>&1 | tail -30`
 Expected: `test result: ok. 9 passed; 0 failed`
 
-- [ ] **Step 6: Commit**
++ [x] **Step 6: Commit**
 
 ```bash
 git add quecto-agent/src/tools/subagent.rs
@@ -400,7 +400,7 @@ git commit -m "feat: add ProgressRecorder to stream subagent activity into Subag
 - Consumes: `SubagentPool::get`/`all` (Task 1), `SubagentSnapshot`, `RunStatus` (Task 1).
 - Produces: `pub struct MonitorSubagents { pub pool: SubagentPool }` with `pub fn new(pool: SubagentPool) -> Self`, tool name `"monitor_subagents"`. Task 5 (`spawn_subagent`) registers this inside every subagent it spawns via `MonitorSubagents::new`.
 
-- [ ] **Step 1: Write the failing tests**
++ [x] **Step 1: Write the failing tests**
 
 Add to the `mod tests` block in `quecto-agent/src/tools/subagent.rs`:
 
@@ -460,12 +460,12 @@ Add to the `mod tests` block in `quecto-agent/src/tools/subagent.rs`:
     }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
++ [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p quecto-agent --lib subagent:: 2>&1 | tail -40`
 Expected: `cannot find struct \`MonitorSubagents\`` compile error.
 
-- [ ] **Step 3: Implement `MonitorSubagents`**
++ [x] **Step 3: Implement `MonitorSubagents`**
 
 Add to `quecto-agent/src/tools/subagent.rs`:
 
@@ -568,12 +568,12 @@ spawn_subagent. Pass an id to check one; omit it to list all spawned this sessio
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
++ [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p quecto-agent --lib subagent:: 2>&1 | tail -40`
 Expected: `test result: ok. 14 passed; 0 failed`
 
-- [ ] **Step 5: Commit**
++ [x] **Step 5: Commit**
 
 ```bash
 git add quecto-agent/src/tools/subagent.rs
@@ -591,7 +591,7 @@ git commit -m "feat: add monitor_subagents tool"
 - Consumes: `SubagentPool::cancel` (Task 1), `AgentConfig` (`agent.rs:90-98`), `Agent::new`/`register`/`with_recorder`/`run` (`agent.rs`), `ProgressRecorder` (Task 2).
 - Produces: `pub struct CancelSubagent { pub pool: SubagentPool }` with `pub fn new(pool: SubagentPool) -> Self`, tool name `"cancel_subagent"`. Also introduces test helpers `test_config`, `wait_until_finished`, `ImmediateReply`, `AlwaysWantsTool`, `SlowCounter` in the `mod tests` block, reused by Task 5's tests.
 
-- [ ] **Step 1: Write the failing tests**
++ [x] **Step 1: Write the failing tests**
 
 Add to the `mod tests` block in `quecto-agent/src/tools/subagent.rs`. This introduces the shared test scaffolding (a couple of fake `Model`s and a slow test-only `Tool`) that Task 5 will reuse:
 
@@ -778,12 +778,12 @@ Add to the `mod tests` block in `quecto-agent/src/tools/subagent.rs`. This intro
 
 This test uses `AtomicU32`, `AtomicBool`, and `thread` directly — add these to the top-level `use` list from Task 1/2 if not already present: `use std::sync::atomic::AtomicU32;` (alongside the existing `AtomicU32` import for `next_id` — reuse it), `use std::sync::atomic::AtomicBool;`, `use std::thread;`. Since `token()` in the test module already uses `std::sync::atomic::AtomicBool` via a local `use` inside `mod tests` (Task 1, Step 1), add `use std::thread;` at the top of `mod tests` (next to `use super::*;`) rather than duplicating `AtomicBool`'s import.
 
-- [ ] **Step 2: Run tests to verify they fail**
++ [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p quecto-agent --lib subagent:: 2>&1 | tail -40`
 Expected: `cannot find struct \`CancelSubagent\`` compile error.
 
-- [ ] **Step 3: Implement `CancelSubagent`**
++ [x] **Step 3: Implement `CancelSubagent`**
 
 Add to `quecto-agent/src/tools/subagent.rs`:
 
@@ -842,12 +842,12 @@ impl Tool for CancelSubagent {
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
++ [x] **Step 4: Run tests to verify they pass**
 
 Run: `cargo test -p quecto-agent --lib subagent:: 2>&1 | tail -60`
 Expected: `test result: ok. 17 passed; 0 failed`. If `cancel_subagent_stops_a_running_subagent` is flaky (the 150ms startup sleep races the spawned thread on a loaded machine), increase it to `Duration::from_millis(300)` and re-run — do not delete or weaken the assertion.
 
-- [ ] **Step 5: Commit**
++ [x] **Step 5: Commit**
 
 ```bash
 git add quecto-agent/src/tools/subagent.rs
@@ -868,7 +868,7 @@ git commit -m "feat: add cancel_subagent tool"
 
 Concurrent subagents would otherwise use the default `stderr_renderer()`, interleaving several subagents' activity lines on one stream at once. `NullRenderer` avoids that — progress is inspected through `monitor_subagents` instead.
 
-- [ ] **Step 1: Add `NullRenderer` to `render.rs`**
++ [x] **Step 1: Add `NullRenderer` to `render.rs`**
 
 Read the `Renderer` trait first (`quecto-agent/src/render.rs:139-146`) to confirm which methods have no default (`tool`, `verify`, `notice`, `assistant`; `working`/`working_done` do). Then add, right after the trait definition:
 
@@ -886,7 +886,7 @@ impl Renderer for NullRenderer {
 }
 ```
 
-- [ ] **Step 2: Write the failing tests**
++ [x] **Step 2: Write the failing tests**
 
 Add to the `mod tests` block in `quecto-agent/src/tools/subagent.rs` (reuses `ImmediateReply`, `test_config`, `wait_until_finished` from Task 4):
 
@@ -951,12 +951,12 @@ Add to the `mod tests` block in `quecto-agent/src/tools/subagent.rs` (reuses `Im
     }
 ```
 
-- [ ] **Step 3: Run tests to verify they fail**
++ [x] **Step 3: Run tests to verify they fail**
 
 Run: `cargo test -p quecto-agent --lib subagent:: 2>&1 | tail -40`
 Expected: `cannot find struct \`SpawnSubagent\`` compile error.
 
-- [ ] **Step 4: Implement `SpawnSubagent`**
++ [x] **Step 4: Implement `SpawnSubagent`**
 
 Add to the top-level `use` list: `use std::panic::AssertUnwindSafe;` (alongside `use std::thread;`, already added in Task 4).
 
@@ -1095,12 +1095,12 @@ cancel one with cancel_subagent or wait for one to finish first"
 }
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
++ [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p quecto-agent --lib subagent:: 2>&1 | tail -60`
 Expected: `test result: ok. 20 passed; 0 failed`
 
-- [ ] **Step 6: Commit**
++ [x] **Step 6: Commit**
 
 ```bash
 git add quecto-agent/src/tools/subagent.rs quecto-agent/src/render.rs
@@ -1119,7 +1119,7 @@ git commit -m "feat: add spawn_subagent tool, completing the async subagent trio
 - Consumes: `crate::tools::subagent::{SubagentPool, SpawnSubagent, MonitorSubagents, CancelSubagent}` (Tasks 1, 3, 4, 5).
 - Produces: the three new tools appear in `Agent::tool_names()` by default and respect the existing `tools.enabled` allow-list mechanism, exactly like every other builtin.
 
-- [ ] **Step 1: Write the failing tests**
++ [x] **Step 1: Write the failing tests**
 
 Add to the existing `mod tests` block in `quecto-agent/src/agent.rs` (it already has `use super::*;`, `configured_agent`/`agent` helpers, and `cancel_token()` — see `agent.rs:544-634` for the existing patterns to match):
 
@@ -1177,12 +1177,12 @@ Add to `quecto-agent/src/policy.rs`'s existing `mod tests` block (locate it firs
     }
 ```
 
-- [ ] **Step 2: Run tests to verify they fail**
++ [x] **Step 2: Run tests to verify they fail**
 
 Run: `cargo test -p quecto-agent --lib agent:: policy:: 2>&1 | tail -60`
 Expected: the `agent::tests` assertions fail (tool names missing). For the `policy::tests`, first check the tail of `Policy::decide`'s `match` (`grep -n "fn decide" -A 30 quecto-agent/src/policy.rs`) to see what the fallthrough arm does for unrecognized tool names — the new tests should fail against that current behavior since `monitor_subagents`/`spawn_subagent`/`cancel_subagent` aren't classified yet.
 
-- [ ] **Step 3: Update `register_builtins_filtered` in `agent.rs`**
++ [x] **Step 3: Update `register_builtins_filtered` in `agent.rs`**
 
 Replace (`agent.rs:225-235`):
 
@@ -1232,7 +1232,7 @@ with:
     }
 ```
 
-- [ ] **Step 4: Update `Policy::decide` in `policy.rs`**
++ [x] **Step 4: Update `Policy::decide` in `policy.rs`**
 
 Find the always-allow match arm (`policy.rs:86-88`):
 
@@ -1262,12 +1262,12 @@ Replace with:
             "kill_background_process" | "spawn_subagent" | "cancel_subagent" => self.run.clone(),
 ```
 
-- [ ] **Step 5: Run tests to verify they pass**
++ [x] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p quecto-agent --lib agent:: policy:: 2>&1 | tail -60`
 Expected: all pass, including the 4 new tests added in Step 1.
 
-- [ ] **Step 6: Commit**
++ [x] **Step 6: Commit**
 
 ```bash
 git add quecto-agent/src/agent.rs quecto-agent/src/policy.rs
@@ -1280,17 +1280,17 @@ git commit -m "feat: wire spawn_subagent/monitor_subagents/cancel_subagent into 
 
 **Files:** none (verification only)
 
-- [ ] **Step 1: Run the whole `quecto-agent` test suite**
++ [x] **Step 1: Run the whole `quecto-agent` test suite**
 
 Run: `cargo build -p quecto-agent 2>&1 | tail -30 && cargo test -p quecto-agent 2>&1 | tail -80`
 Expected: clean build, all tests pass (existing `invoke_subagent` tests untouched and still green, plus every test added in Tasks 1-6).
 
-- [ ] **Step 2: Run clippy to catch anything the tests don't**
++ [x] **Step 2: Run clippy to catch anything the tests don't**
 
 Run: `cargo clippy -p quecto-agent -- -D warnings 2>&1 | tail -60`
 Expected: no warnings. If clippy flags something in `SpawnSubagent::run`'s thread-setup closure, fix the specific lint — do not add a blanket `#[allow(...)]` without reading what it's flagging first.
 
-- [ ] **Step 3: Optional live smoke test**
++ [x] **Step 3: Optional live smoke test**
 
 If a local model is available (e.g. via Ollama, as used earlier in this session), manually verify concurrent spawning end to end:
 
@@ -1298,7 +1298,7 @@ Run: `./target/debug/quecto-agent --model <your-model> --yes "Spawn two subagent
 
 Expected: two `spawn_subagent` calls, one or more `monitor_subagents` calls, and a final answer with both counts. This step is exploratory (model behavior varies) — its purpose is to confirm the plumbing works with a real model, not to assert a specific transcript shape.
 
-- [ ] **Step 4: Update the open PR**
++ [x] **Step 4: Update the open PR**
 
 ```bash
 git push
