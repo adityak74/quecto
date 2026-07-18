@@ -195,6 +195,103 @@ impl SubagentPool {
     }
 }
 
+fn status_label(status: &RunStatus) -> &'static str {
+    match status {
+        RunStatus::Running => "running",
+        RunStatus::Complete(_) => "complete",
+        RunStatus::Cancelled => "cancelled",
+        RunStatus::Failed(_) => "failed",
+    }
+}
+
+fn render_summary_line(snap: &SubagentSnapshot) -> String {
+    format!(
+        "#{} [{}] role={} elapsed={:.1}s",
+        snap.id,
+        status_label(&snap.status),
+        snap.role,
+        snap.elapsed.as_secs_f64()
+    )
+}
+
+fn render_snapshot(snap: &SubagentSnapshot) -> String {
+    let mut out = render_summary_line(snap);
+    out.push_str("\nprompt: ");
+    out.push_str(&snap.prompt);
+    if !snap.progress.is_empty() {
+        out.push_str("\nrecent activity:\n");
+        out.push_str(&snap.progress.join("\n"));
+    }
+    match &snap.status {
+        RunStatus::Complete(text) => {
+            out.push_str("\nresult:\n");
+            out.push_str(text);
+        }
+        RunStatus::Failed(msg) => {
+            out.push_str("\nfailure reason: ");
+            out.push_str(msg);
+        }
+        _ => {}
+    }
+    out
+}
+
+#[derive(Clone)]
+pub struct MonitorSubagents {
+    pub pool: SubagentPool,
+}
+
+impl MonitorSubagents {
+    pub fn new(pool: SubagentPool) -> Self {
+        MonitorSubagents { pool }
+    }
+}
+
+impl Tool for MonitorSubagents {
+    fn name(&self) -> &str {
+        "monitor_subagents"
+    }
+
+    fn description(&self) -> &str {
+        "Reports status, elapsed time, and recent activity for subagents started with \
+spawn_subagent. Pass an id to check one; omit it to list all spawned this session."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "The id returned by spawn_subagent. Omit to list all spawned subagents."
+                }
+            },
+            "required": []
+        })
+    }
+
+    fn run(&self, args: &Value, _cx: &mut Context) -> ToolResult {
+        let id = args.get("id").and_then(|v| v.as_u64()).map(|v| v as u32);
+        match id {
+            Some(id) => {
+                let snap = self
+                    .pool
+                    .get(id)
+                    .ok_or_else(|| ToolError::new(format!("no subagent with id {id}")))?;
+                Ok(ToolOutput::new(render_snapshot(&snap), "subagent status"))
+            }
+            None => {
+                let all = self.pool.all();
+                if all.is_empty() {
+                    return Ok(ToolOutput::new("no subagents have been spawned yet", "no subagents"));
+                }
+                let lines: Vec<String> = all.iter().map(render_summary_line).collect();
+                Ok(ToolOutput::new(lines.join("\n"), "subagent list"))
+            }
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct InvokeSubagent {
     pub config: AgentConfig,
@@ -421,5 +518,59 @@ mod tests {
             rec.message(&m);
         }
         assert_eq!(buf.lock().unwrap().len(), 50);
+    }
+
+    #[test]
+    fn monitor_reports_single_subagent_by_id() {
+        let pool = SubagentPool::new();
+        let (id, ..) = pool.allocate("Reviewer".into(), "look for bugs".into(), token());
+        let tool = MonitorSubagents::new(pool);
+        let mut cx = Context::new(std::env::current_dir().unwrap(), token());
+        let out = tool.run(&json!({"id": id}), &mut cx).unwrap();
+        assert!(out.content.contains("running"));
+        assert!(out.content.contains("Reviewer"));
+        assert!(out.content.contains("look for bugs"));
+    }
+
+    #[test]
+    fn monitor_reports_complete_result() {
+        let pool = SubagentPool::new();
+        let (id, ..) = pool.allocate("Subagent".into(), "count files".into(), token());
+        pool.set_status(id, RunStatus::Complete("42 files".to_string()));
+        let tool = MonitorSubagents::new(pool);
+        let mut cx = Context::new(std::env::current_dir().unwrap(), token());
+        let out = tool.run(&json!({"id": id}), &mut cx).unwrap();
+        assert!(out.content.contains("complete"));
+        assert!(out.content.contains("42 files"));
+    }
+
+    #[test]
+    fn monitor_unknown_id_is_an_error() {
+        let pool = SubagentPool::new();
+        let tool = MonitorSubagents::new(pool);
+        let mut cx = Context::new(std::env::current_dir().unwrap(), token());
+        assert!(tool.run(&json!({"id": 999}), &mut cx).is_err());
+    }
+
+    #[test]
+    fn monitor_without_id_lists_all_newest_first() {
+        let pool = SubagentPool::new();
+        let (id1, ..) = pool.allocate("Subagent".into(), "a".into(), token());
+        let (id2, ..) = pool.allocate("Reviewer".into(), "b".into(), token());
+        let tool = MonitorSubagents::new(pool);
+        let mut cx = Context::new(std::env::current_dir().unwrap(), token());
+        let out = tool.run(&json!({}), &mut cx).unwrap();
+        let id1_pos = out.content.find(&format!("#{id1}")).unwrap();
+        let id2_pos = out.content.find(&format!("#{id2}")).unwrap();
+        assert!(id2_pos < id1_pos, "newest (#{id2}) should be listed first");
+    }
+
+    #[test]
+    fn monitor_without_id_and_no_subagents_says_so() {
+        let pool = SubagentPool::new();
+        let tool = MonitorSubagents::new(pool);
+        let mut cx = Context::new(std::env::current_dir().unwrap(), token());
+        let out = tool.run(&json!({}), &mut cx).unwrap();
+        assert!(out.content.contains("no subagents"));
     }
 }
