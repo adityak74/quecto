@@ -23,6 +23,8 @@ pub struct Flavor {
     pub name: Option<String>,
     pub model: Option<String>,
     pub base_url: Option<String>,
+    pub provider: Option<crate::provider::Provider>,
+    pub max_tokens: Option<u32>,
     pub max_steps: Option<usize>,
     pub auto_verify: Option<bool>,
     pub auto_approve: Option<bool>,
@@ -49,6 +51,8 @@ struct ConfiguredFlavorDocument {
     name: Option<String>,
     model: Option<String>,
     base_url: Option<String>,
+    provider: Option<crate::provider::Provider>,
+    max_tokens: Option<u32>,
     max_steps: Option<usize>,
     reasoning_mode: Option<crate::reasoning::ReasoningMode>,
     auto_verify: Option<bool>,
@@ -127,6 +131,8 @@ impl Flavor {
             name: or(self.name, over.name),
             model: or(self.model, over.model),
             base_url: or(self.base_url, over.base_url),
+            provider: or(self.provider, over.provider),
+            max_tokens: or(self.max_tokens, over.max_tokens),
             max_steps: or(self.max_steps, over.max_steps),
             auto_verify: or(self.auto_verify, over.auto_verify),
             auto_approve: or(self.auto_approve, over.auto_approve),
@@ -188,6 +194,8 @@ impl ConfiguredFlavor {
                 name: document.name,
                 model: document.model,
                 base_url: document.base_url,
+                provider: document.provider,
+                max_tokens: document.max_tokens,
                 max_steps: document.max_steps,
                 auto_verify: document.auto_verify,
                 auto_approve: document.auto_approve,
@@ -397,6 +405,55 @@ required = ["test"]
             f.reasoning_mode,
             Some(crate::reasoning::ReasoningMode::High)
         );
+    }
+
+    #[test]
+    fn parses_provider_and_max_tokens() {
+        let flavor = Flavor::parse(
+            r#"
+            provider = "anthropic"
+            max_tokens = 8192
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(flavor.provider, Some(crate::provider::Provider::Anthropic));
+        assert_eq!(flavor.max_tokens, Some(8192));
+    }
+
+    #[test]
+    fn merge_lets_override_win_for_provider_and_max_tokens() {
+        let base = Flavor {
+            provider: Some(crate::provider::Provider::OpenAiCompatible),
+            max_tokens: Some(1000),
+            ..Flavor::default()
+        };
+        let over = Flavor {
+            provider: Some(crate::provider::Provider::Anthropic),
+            max_tokens: None,
+            ..Flavor::default()
+        };
+
+        let merged = base.merge(over);
+
+        assert_eq!(merged.provider, Some(crate::provider::Provider::Anthropic));
+        assert_eq!(merged.max_tokens, Some(1000));
+    }
+
+    #[test]
+    fn configured_flavor_parses_provider_alongside_reasoning_mode() {
+        let configured = ConfiguredFlavor::parse(
+            r#"
+            provider = "anthropic"
+            max_tokens = 4096
+            reasoning_mode = "high"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(configured.flavor.provider, Some(crate::provider::Provider::Anthropic));
+        assert_eq!(configured.flavor.max_tokens, Some(4096));
+        assert_eq!(configured.reasoning_mode, Some(crate::reasoning::ReasoningMode::High));
     }
 
     #[test]

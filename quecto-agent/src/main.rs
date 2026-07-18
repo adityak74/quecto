@@ -162,6 +162,8 @@ const SCAFFOLD_TEMPLATE: &str = r#"name = "{name}"
 # api_key is NEVER read from a manifest — set QUECTO_API_KEY in the environment.
 # model         = "qwen3.6:35b"
 # base_url      = "http://localhost:11434/v1"
+# provider      = "openai"  # openai | anthropic
+# max_tokens    = 4096      # required by Anthropic; ignored for openai
 # reasoning_mode  = "low"
 # max_steps     = 30
 # auto_verify   = true

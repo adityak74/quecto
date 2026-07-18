@@ -44,6 +44,8 @@ fn legacy_public_struct_literals_still_compile_and_work() {
         name: Some("legacy".into()),
         model: Some("legacy-model".into()),
         base_url: None,
+        provider: None,
+        max_tokens: None,
         max_steps: Some(10),
         auto_verify: None,
         auto_approve: None,
