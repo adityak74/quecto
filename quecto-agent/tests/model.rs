@@ -2,7 +2,7 @@ mod common;
 
 use common::{mock, mock_capture};
 use quecto_agent::{
-    parse_assistant_completion, CompletionOptions, HttpModel, Message, Model, ReasoningMode,
+    parse_assistant_completion, CompletionOptions, HttpModel, Message, Model, Provider, ReasoningMode,
 };
 use serde_json::{json, Value};
 
@@ -81,6 +81,8 @@ fn http_model_completes_against_mock() {
         url: format!("{base}/chat/completions"),
         api_key: None,
         model: "m".to_string(),
+        provider: Provider::OpenAiCompatible,
+        max_tokens: None,
     };
     let msg = m.complete(&[Message::user("hey")], &[]).unwrap();
     assert_eq!(msg.content, "hi");
@@ -98,6 +100,8 @@ fn chat_completions_sends_top_level_reasoning_effort() {
         url: format!("{base}/v1/chat/completions"),
         api_key: None,
         model: "reasoning-model".into(),
+        provider: Provider::OpenAiCompatible,
+        max_tokens: None,
     };
 
     let completion = model
@@ -133,6 +137,8 @@ fn unsupported_endpoint_omits_reasoning_parameters() {
         url: format!("{base}/v1/responses"),
         api_key: None,
         model: "reasoning-model".into(),
+        provider: Provider::OpenAiCompatible,
+        max_tokens: None,
     };
 
     let completion = model
@@ -175,6 +181,8 @@ fn failed_completion_fields(status: u16, body: &str) -> HashMap<String, String> 
         url: format!("{base}/v1/chat/completions"),
         api_key: None,
         model: "reasoning-model".into(),
+        provider: Provider::OpenAiCompatible,
+        max_tokens: None,
     };
     let fields = Arc::new(Mutex::new(HashMap::new()));
     let subscriber = tracing_subscriber::registry().with(CaptureLayer {

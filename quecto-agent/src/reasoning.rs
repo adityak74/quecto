@@ -94,6 +94,32 @@ pub fn apply_reasoning_mode(
     Some(payload)
 }
 
+/// Anthropic's `thinking.budget_tokens` for each `ReasoningMode`.
+/// `None` omits the `thinking` parameter entirely (thinking disabled).
+/// Anthropic's minimum `budget_tokens` is 1024, hence `Minimal` maps there
+/// rather than to 0.
+pub fn anthropic_thinking_budget(mode: ReasoningMode) -> Option<u64> {
+    match mode {
+        ReasoningMode::None => None,
+        ReasoningMode::Minimal => Some(1024),
+        ReasoningMode::Low => Some(4000),
+        ReasoningMode::Medium => Some(10000),
+        ReasoningMode::High => Some(24000),
+        ReasoningMode::XHigh => Some(32000),
+    }
+}
+
+/// Inject Anthropic's `thinking: {"type":"enabled","budget_tokens":N}` into
+/// the request body for the given mode, if any. Returns the injected
+/// payload (for telemetry), or `None` if no mode was requested or the mode
+/// maps to no budget (`ReasoningMode::None`).
+pub fn apply_anthropic_thinking(body: &mut Value, mode: Option<ReasoningMode>) -> Option<Value> {
+    let budget = anthropic_thinking_budget(mode?)?;
+    let payload = json!({"type": "enabled", "budget_tokens": budget});
+    body.as_object_mut()?.insert("thinking".to_string(), payload.clone());
+    Some(json!({"thinking": payload}))
+}
+
 pub fn parse_reasoning_tokens(resp: &Value) -> Option<u64> {
     let usage = resp.get("usage")?;
     [
@@ -142,5 +168,48 @@ mod tests {
     #[test]
     fn rejects_unknown_reasoning_modes() {
         assert!("turbo".parse::<ReasoningMode>().is_err());
+    }
+
+    #[test]
+    fn anthropic_budget_ladder_covers_every_mode() {
+        assert_eq!(anthropic_thinking_budget(ReasoningMode::None), None);
+        assert_eq!(anthropic_thinking_budget(ReasoningMode::Minimal), Some(1024));
+        assert_eq!(anthropic_thinking_budget(ReasoningMode::Low), Some(4000));
+        assert_eq!(anthropic_thinking_budget(ReasoningMode::Medium), Some(10000));
+        assert_eq!(anthropic_thinking_budget(ReasoningMode::High), Some(24000));
+        assert_eq!(anthropic_thinking_budget(ReasoningMode::XHigh), Some(32000));
+    }
+
+    #[test]
+    fn applies_thinking_payload_to_body() {
+        let mut body = json!({"model": "claude-x", "messages": []});
+
+        let payload = apply_anthropic_thinking(&mut body, Some(ReasoningMode::High)).unwrap();
+
+        assert_eq!(
+            body["thinking"],
+            json!({"type": "enabled", "budget_tokens": 24000})
+        );
+        assert_eq!(payload, json!({"thinking": {"type": "enabled", "budget_tokens": 24000}}));
+    }
+
+    #[test]
+    fn none_mode_omits_thinking_entirely() {
+        let mut body = json!({"model": "claude-x", "messages": []});
+
+        let payload = apply_anthropic_thinking(&mut body, Some(ReasoningMode::None));
+
+        assert!(payload.is_none());
+        assert!(body.get("thinking").is_none());
+    }
+
+    #[test]
+    fn no_mode_omits_thinking_entirely() {
+        let mut body = json!({"model": "claude-x", "messages": []});
+
+        let payload = apply_anthropic_thinking(&mut body, None);
+
+        assert!(payload.is_none());
+        assert!(body.get("thinking").is_none());
     }
 }
