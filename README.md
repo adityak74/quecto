@@ -51,6 +51,7 @@
 
 ## 📣 Announcements
 
+- **`2026-07-18` — Reasoning & Mermaid chat support shipped.** `quecto-agent chat` now supports session-scoped reasoning controls via `/reasoning`, persists that session default across `resume`, renders assistant markdown in interactive TTY sessions, and renders fenced Mermaid diagrams inline with Unicode box drawing via `merman`. Non-TTY output stays raw/plain markdown, and non-renderable Mermaid fences fall back to their original source text.
 - **`2026-07-16` — Agent core tightened.** Merged a hygiene refactor that removed **126 lines** from `quecto-agent` with no behavior change: deduped chat command dispatch across TTY and piped-stdin REPL paths, deleted redundant `canonical_json`, removed dead code, wired up `/commands`, and named the repeat-guard limit. Live cmux UAT covered both REPL branches, a real local-Ollama chat turn, and `/undo`.
 - **`2026-07-16` — Chat UI Polish & Tool Enhancements.** Dramatically improved the terminal UI for `quecto-agent chat`. Tool summaries are now highly verbose (e.g., `diff (449 lines)`, `exited 1`, `created src/a.rs (12 lines)`) instead of terse single words, and `.qkb` note tools explicitly enforce their directory in both descriptions and output to prevent model hallucination.
 - **`2026-07-16` — Chat UX & Agent Delegation shipped.** Upgraded the chat REPL to a `crossterm` event loop with native Bracketed Paste support. Added tracking for background processes (`start_background_process`, `kill_background_process`), a new `invoke_subagent` tool for agent delegation, and project-local `.qkb` Markdown notes.
@@ -176,7 +177,7 @@ Interactive chat with the rotating loading verbs:
 | `/reasoning <mode>` | `/reasoning off` | Set or clear the reasoning default for future turns in this chat session |
 | `/exit` | `/quit`, `/q` | Leave chat |
 
-**What's in it:** multi-step tool use (file read/write/patch, search, git, shell, background processes, `.qkb` notes, subagent delegation), edits gated by an approval preset, a hard-denylist sandbox (blocks `sudo`, `rm -rf /`, `git push`, etc. even under `--yes`), configurable verification commands, SQLite-backed session persistence, and named flavor manifests (`.quecto/flavors/*.toml`) with content-hash trust-on-first-use.
+**What's in it:** multi-step tool use (file read/write/patch, search, git, shell, background processes, `.qkb` notes, subagent delegation), edits gated by an approval preset, a hard-denylist sandbox (blocks `sudo`, `rm -rf /`, `git push`, etc. even under `--yes`), configurable verification commands, SQLite-backed session persistence, named flavor manifests (`.quecto/flavors/*.toml`) with content-hash trust-on-first-use, session-scoped reasoning defaults, interactive markdown rendering, and inline Mermaid rendering for fenced `mermaid` code blocks in TTY chat.
 
 ### Configuration
 
@@ -199,6 +200,12 @@ Reads the same core env vars as `quecto`, plus a few agent-specific ones:
 empty entries are ignored, and an empty-only value falls back to the defaults.
 The spinner is enabled only for `quecto-agent chat` when stdout is a TTY; it
 stays off for piped/non-TTY output.
+
+Assistant output rendering is also TTY-sensitive:
+- interactive TTY chat and one-shot output render markdown for readability
+- fenced `mermaid` blocks are preprocessed with `merman` and shown inline as Unicode diagrams when rendering succeeds
+- if Mermaid parsing/rendering fails, the original fenced Mermaid block is preserved
+- piped/non-TTY output stays raw/plain markdown text
 
 ```bash
 # Local (Ollama / LM Studio / vLLM) — QUECTO_BASE_URL already defaults here
@@ -234,6 +241,12 @@ Inside `quecto-agent chat`, `/reasoning` shows the current session default,
 `/reasoning high` updates it for future turns, and `/reasoning off` clears it.
 That session-level setting persists across `quecto-agent resume <session-id>`.
 It does not mutate environment variables, flavor files, or one-shot runs.
+
+Example interactive prompt that exercises the Mermaid renderer:
+
+```text
+Give me a markdown answer with a heading, a mermaid flowchart code block from A to B, and a bullet list.
+```
 
 See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test results, and `docs/superpowers/` for the milestone specs and plans (M1–M7b).
 
