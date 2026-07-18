@@ -6,3 +6,4 @@ evals/results/
 __pycache__/
 evals/**/__pycache__/
 evals/**/*.pyc
+scratchpad/
