@@ -227,8 +227,10 @@ impl Agent {
         for tool in crate::tools::builtin_tools_filtered(enabled) {
             self.registry.register(tool);
         }
-        if enabled.map_or(true, |list| list.iter().any(|n| n == "invoke_subagent")) {
-            let subagent_tool = crate::tools::subagent::InvokeSubagent::new(self.config());
+        if enabled.map_or(true, |list| list.iter().any(|n| n == "invoke_subagent" || n == "spawn_subagent")) {
+            // Temporary pool for compilation in Task 5
+            let pool = crate::tools::subagent::SubagentPool::new();
+            let subagent_tool = crate::tools::subagent::InvokeSubagent::new(self.config(), pool);
             self.registry.register(Box::new(subagent_tool));
         }
         self

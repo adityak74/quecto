@@ -4,7 +4,7 @@ use crate::tools::{Context, Tool, ToolError, ToolOutput, ToolResult, FileChange}
 use serde_json::{json, Value};
 use crate::sandbox::CancelToken;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -348,21 +348,23 @@ impl Tool for CancelSubagent {
 #[derive(Clone)]
 pub struct InvokeSubagent {
     pub config: AgentConfig,
+    pub pool: SubagentPool,
 }
 
 impl InvokeSubagent {
-    pub fn new(config: AgentConfig) -> Self {
-        InvokeSubagent { config }
+    pub fn new(config: AgentConfig, pool: SubagentPool) -> Self {
+        InvokeSubagent { config, pool }
     }
 }
 
 impl Tool for InvokeSubagent {
     fn name(&self) -> &str {
-        "invoke_subagent"
+        "spawn_subagent"
     }
 
     fn description(&self) -> &str {
-        "Delegates a task to a subagent running in the same repository. Use this to branch off complex sub-tasks."
+        "Delegates a task to a subagent running concurrently in the background. \
+Returns an ID immediately; use monitor_subagents to check progress and cancel_subagent to stop it."
     }
 
     fn schema(&self) -> Value {
@@ -383,6 +385,13 @@ impl Tool for InvokeSubagent {
     }
 
     fn run(&self, args: &Value, _cx: &mut Context) -> ToolResult {
+        if self.pool.running_count() >= MAX_CONCURRENT_SUBAGENTS {
+            return Err(ToolError::new(format!(
+                "Cannot spawn subagent: at capacity ({} running). Wait for one to finish or cancel one.",
+                MAX_CONCURRENT_SUBAGENTS
+            )));
+        }
+
         let prompt = args
             .get("prompt")
             .and_then(|v| v.as_str())
@@ -398,61 +407,62 @@ impl Tool for InvokeSubagent {
             system_prompt.push_str(&format!("\n\nYou are acting as a specialized subagent: {}", role));
         }
 
-        let mut subagent = Agent::new(
-            self.config.model.clone(),
-            system_prompt,
-            self.config.max_steps,
-            self.config.repo_root.clone(),
-            self.config.cancel.clone(),
-            self.config.approval.clone(),
-        ).register_builtins();
+        let child_cancel = Arc::new(AtomicBool::new(false));
+        let (id, progress_buf, _status_token) =
+            self.pool.allocate(role.into(), prompt.into(), child_cancel.clone());
 
-        subagent = subagent.register(Box::new(self.clone()));
+        let config = self.config.clone();
+        let pool = self.pool.clone();
+        let prompt_clone = prompt.to_string();
+        let child_tool = self.clone();
 
-        let outcome = subagent.run(prompt);
-        let progress = || progress_summary(&subagent.messages, 6);
-        match outcome {
-            Outcome::Complete(result) => {
-                Ok(ToolOutput::new(
-                    format!("Subagent completed successfully:\n{}", result),
-                    "subagent finished"
-                ))
-            }
-            Outcome::StepLimit => {
-                let mut msg = "Subagent stopped: step limit reached before finishing.".to_string();
-                if let Some(p) = progress() {
-                    msg.push_str("\nLast steps attempted:\n");
-                    msg.push_str(&p);
+        std::thread::spawn(move || {
+            let mut subagent = Agent::new(
+                config.model,
+                system_prompt,
+                config.max_steps,
+                config.repo_root,
+                child_cancel,
+                config.approval,
+            )
+            .register_builtins()
+            .register(Box::new(child_tool))
+            .with_recorder(Box::new(ProgressRecorder { buf: progress_buf }));
+
+            let outcome = subagent.run(&prompt_clone);
+            let result_status = match outcome {
+                Outcome::Complete(text) => RunStatus::Complete(text),
+                Outcome::Cancelled => RunStatus::Cancelled,
+                Outcome::StepLimit => {
+                    let mut text = "Subagent stopped: step limit reached before finishing.".to_string();
+                    if let Some(p) = progress_summary(&subagent.messages, 6) {
+                        text.push_str("\nLast steps attempted:\n");
+                        text.push_str(&p);
+                    }
+                    RunStatus::Failed(text)
                 }
-                Ok(ToolOutput::new(msg, "step limit"))
-            }
-            Outcome::VerificationFailed { attempts } => {
-                Ok(ToolOutput::new(format!("Subagent stopped: Verification failed after {} attempts", attempts), "verification failed"))
-            }
-            Outcome::Cancelled => {
-                Ok(ToolOutput::new("Subagent was cancelled", "cancelled"))
-            }
-            Outcome::RepeatedAction => {
-                let mut msg = "Subagent stopped: it got stuck repeating the same tool call without making progress.".to_string();
-                if let Some(p) = progress() {
-                    msg.push_str("\nLast steps attempted:\n");
-                    msg.push_str(&p);
+                Outcome::RepeatedAction => {
+                    let mut text = "Subagent stopped: got stuck repeating the same tool call without making progress.".to_string();
+                    if let Some(p) = progress_summary(&subagent.messages, 6) {
+                        text.push_str("\nLast steps attempted:\n");
+                        text.push_str(&p);
+                    }
+                    RunStatus::Failed(text)
                 }
-                msg.push_str("\nConsider retrying with a narrower, more concrete prompt, or completing this task directly.");
-                Ok(ToolOutput::new(msg, "repeated action"))
-            }
-            Outcome::Blocked => {
-                let mut msg = "Subagent stopped: blocked by policy or approval.".to_string();
-                if let Some(p) = progress() {
-                    msg.push_str("\nLast steps attempted:\n");
-                    msg.push_str(&p);
+                Outcome::VerificationFailed { attempts } => {
+                    RunStatus::Failed(format!("Subagent stopped: Verification failed after {} attempts", attempts))
                 }
-                Ok(ToolOutput::new(msg, "blocked"))
-            }
-            Outcome::Error(e) => {
-                Err(ToolError::new(format!("Subagent error: {}", e)))
-            }
-        }
+                Outcome::Error(e) => RunStatus::Failed(format!("Subagent error: {}", e)),
+                Outcome::Blocked => RunStatus::Failed("blocked by policy or approval".into()),
+            };
+
+            pool.set_status(id, result_status);
+        });
+
+        Ok(ToolOutput::new(
+            format!("spawned subagent #{id}"),
+            format!("spawned #{id}")
+        ))
     }
 }
 
@@ -805,5 +815,25 @@ mod tests {
         let mut cx = Context::new(std::env::current_dir().unwrap(), token());
         let out = tool.run(&json!({"id": id}), &mut cx).unwrap();
         assert!(out.content.contains("already finished"));
+    }
+
+    #[test]
+    fn spawn_subagent_rejects_new_spawns_if_at_capacity() {
+        let config = test_config(ImmediateReply { text: "done" });
+        let pool = SubagentPool::new();
+        // fill capacity
+        for _ in 0..MAX_CONCURRENT_SUBAGENTS {
+            pool.allocate("role".into(), "prompt".into(), token());
+        }
+        let tool = InvokeSubagent::new(config, pool);
+        let mut cx = Context::new(std::env::current_dir().unwrap(), token());
+        let res = tool.run(
+            &json!({"role": "Agent", "prompt": "do work"}),
+            &mut cx,
+        );
+        match res {
+            Err(e) => assert!(e.message.contains("capacity")),
+            Ok(_) => panic!("expected error"),
+        }
     }
 }
