@@ -293,6 +293,59 @@ spawn_subagent. Pass an id to check one; omit it to list all spawned this sessio
 }
 
 #[derive(Clone)]
+pub struct CancelSubagent {
+    pub pool: SubagentPool,
+}
+
+impl CancelSubagent {
+    pub fn new(pool: SubagentPool) -> Self {
+        CancelSubagent { pool }
+    }
+}
+
+impl Tool for CancelSubagent {
+    fn name(&self) -> &str {
+        "cancel_subagent"
+    }
+
+    fn description(&self) -> &str {
+        "Stops a subagent started with spawn_subagent before it finishes."
+    }
+
+    fn schema(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": {
+                    "type": "integer",
+                    "description": "The id returned by spawn_subagent."
+                }
+            },
+            "required": ["id"]
+        })
+    }
+
+    fn run(&self, args: &Value, _cx: &mut Context) -> ToolResult {
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32)
+            .ok_or_else(|| ToolError::new("missing \"id\" parameter"))?;
+        match self.pool.cancel(id) {
+            Some(true) => Ok(ToolOutput::new(
+                format!("cancel requested for subagent #{id}"),
+                "cancel requested",
+            )),
+            Some(false) => Ok(ToolOutput::new(
+                format!("subagent #{id} already finished"),
+                "already finished",
+            )),
+            None => Err(ToolError::new(format!("no subagent with id {id}"))),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct InvokeSubagent {
     pub config: AgentConfig,
 }
@@ -407,6 +460,7 @@ impl Tool for InvokeSubagent {
 mod tests {
     use super::*;
     use std::sync::atomic::AtomicBool;
+    use std::thread;
 
     fn token() -> CancelToken {
         Arc::new(AtomicBool::new(false))
@@ -572,5 +626,184 @@ mod tests {
         let mut cx = Context::new(std::env::current_dir().unwrap(), token());
         let out = tool.run(&json!({}), &mut cx).unwrap();
         assert!(out.content.contains("no subagents"));
+    }
+
+    #[derive(Clone)]
+    struct ImmediateReply {
+        text: &'static str,
+    }
+    impl crate::model::Model for ImmediateReply {
+        fn clone_box(&self) -> Box<dyn crate::model::Model> {
+            Box::new(self.clone())
+        }
+        fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[Value],
+        ) -> Result<crate::model::AssistantMessage, crate::BoxErr> {
+            Ok(crate::model::AssistantMessage {
+                content: self.text.to_string(),
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                reasoning_content: None,
+            })
+        }
+        fn complete_with_options(
+            &self,
+            messages: &[Message],
+            tools: &[Value],
+            _options: &crate::reasoning::CompletionOptions,
+        ) -> Result<crate::model::ModelCompletion, crate::BoxErr> {
+            self.complete(messages, tools).map(crate::model::ModelCompletion::from)
+        }
+    }
+
+    #[derive(Clone)]
+    struct AlwaysWantsTool {
+        replies_left: Arc<AtomicU32>,
+    }
+    impl crate::model::Model for AlwaysWantsTool {
+        fn clone_box(&self) -> Box<dyn crate::model::Model> {
+            Box::new(self.clone())
+        }
+        fn complete(
+            &self,
+            _messages: &[Message],
+            _tools: &[Value],
+        ) -> Result<crate::model::AssistantMessage, crate::BoxErr> {
+            let n = self.replies_left.fetch_sub(1, Ordering::SeqCst);
+            if n == 0 {
+                return Ok(crate::model::AssistantMessage {
+                    content: "gave up".to_string(),
+                    tool_calls: vec![],
+                    finish_reason: "stop".to_string(),
+                    reasoning_content: None,
+                });
+            }
+            Ok(crate::model::AssistantMessage {
+                content: String::new(),
+                tool_calls: vec![crate::model::ToolCall {
+                    id: n.to_string(),
+                    name: "read_file".to_string(),
+                    arguments: json!({}),
+                }],
+                finish_reason: "tool_calls".to_string(),
+                reasoning_content: None,
+            })
+        }
+        fn complete_with_options(
+            &self,
+            messages: &[Message],
+            tools: &[Value],
+            _options: &crate::reasoning::CompletionOptions,
+        ) -> Result<crate::model::ModelCompletion, crate::BoxErr> {
+            self.complete(messages, tools).map(crate::model::ModelCompletion::from)
+        }
+    }
+
+    struct SlowCounter {
+        count: Arc<AtomicU32>,
+    }
+    impl Tool for SlowCounter {
+        fn name(&self) -> &str {
+            "read_file"
+        }
+        fn description(&self) -> &str {
+            "test-only tool that sleeps briefly and returns a changing value"
+        }
+        fn schema(&self) -> Value {
+            json!({"type": "object", "properties": {}, "required": []})
+        }
+        fn run(&self, _args: &Value, _cx: &mut Context) -> ToolResult {
+            std::thread::sleep(Duration::from_millis(30));
+            let n = self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolOutput::new(format!("tick {n}"), "tick"))
+        }
+    }
+
+    fn test_config(model: impl crate::model::Model + 'static) -> AgentConfig {
+        AgentConfig {
+            model: Box::new(model),
+            base_system_prompt: "you are a test agent".to_string(),
+            max_steps: 30,
+            repo_root: std::env::current_dir().unwrap(),
+            cancel: token(),
+            approval: crate::approval::ApprovalMode::AutoApprove,
+        }
+    }
+
+    fn wait_until_finished(pool: &SubagentPool, id: u32) -> SubagentSnapshot {
+        for _ in 0..200 {
+            let snap = pool.get(id).unwrap();
+            if snap.status != RunStatus::Running {
+                return snap;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("subagent #{id} did not finish within 2s");
+    }
+
+    #[test]
+    fn cancel_subagent_stops_a_running_subagent() {
+        let model = AlwaysWantsTool {
+            replies_left: Arc::new(AtomicU32::new(30)),
+        };
+        let config = test_config(model);
+        let pool = SubagentPool::new();
+
+        let child_cancel: CancelToken = Arc::new(AtomicBool::new(false));
+        let (id, progress, _status) =
+            pool.allocate("Subagent".into(), "count forever".into(), child_cancel.clone());
+        let pool_for_thread = pool.clone();
+        thread::spawn(move || {
+            let mut subagent = Agent::new(
+                config.model.clone(),
+                config.base_system_prompt.clone(),
+                config.max_steps,
+                config.repo_root.clone(),
+                child_cancel,
+                config.approval.clone(),
+            )
+            .register(Box::new(SlowCounter {
+                count: Arc::new(AtomicU32::new(0)),
+            }))
+            .with_recorder(Box::new(ProgressRecorder { buf: progress }));
+            let outcome = subagent.run("count forever");
+            let status = match outcome {
+                Outcome::Cancelled => RunStatus::Cancelled,
+                Outcome::Complete(t) => RunStatus::Complete(t),
+                _ => RunStatus::Failed("unexpected outcome".to_string()),
+            };
+            pool_for_thread.set_status(id, status);
+        });
+
+        // Give the thread a moment to start looping before cancelling it.
+        std::thread::sleep(Duration::from_millis(300));
+        let tool = CancelSubagent::new(pool.clone());
+        let mut cx = Context::new(std::env::current_dir().unwrap(), token());
+        let out = tool.run(&json!({"id": id}), &mut cx).unwrap();
+        assert!(out.content.contains("cancel requested"));
+
+        let snap = wait_until_finished(&pool, id);
+        assert_eq!(snap.status, RunStatus::Cancelled);
+    }
+
+    #[test]
+    fn cancel_subagent_unknown_id_is_an_error() {
+        let pool = SubagentPool::new();
+        let tool = CancelSubagent::new(pool);
+        let mut cx = Context::new(std::env::current_dir().unwrap(), token());
+        assert!(tool.run(&json!({"id": 999}), &mut cx).is_err());
+    }
+
+    #[test]
+    fn cancel_subagent_already_finished_says_so() {
+        let pool = SubagentPool::new();
+        let (id, ..) = pool.allocate("Subagent".into(), "a".into(), token());
+        pool.set_status(id, RunStatus::Complete("done".into()));
+        let tool = CancelSubagent::new(pool);
+        let mut cx = Context::new(std::env::current_dir().unwrap(), token());
+        let out = tool.run(&json!({"id": id}), &mut cx).unwrap();
+        assert!(out.content.contains("already finished"));
     }
 }
