@@ -2,32 +2,73 @@
 
 # quecto
 
-### The leanest, fastest, smallest AI harness — and the coding agent built on it.
+### A minimal, vendor-neutral execution layer for LLM agents.
 
-*One endpoint. Zero async. A 1.3 MB core, a 3.5 MB agent — both shipped.*
+*One endpoint. Zero async. A 1.3 MB core and a 3.5 MB coding agent.*
+*Reasoning controls, tools, verification, persistence, MCP, evaluation, and OpenTelemetry.*
 
 <br/>
 
-[![The Moat](https://img.shields.io/badge/the%20moat-1.3%20MB%20core%20%C2%B7%203.5%20MB%20agent-2ea44f?style=for-the-badge)](#-the-moat-13-mb-core-35-mb-agent)
+[![Small by construction](https://img.shields.io/badge/small%20by%20construction-1.3%20MB%20core%20%C2%B7%203.5%20MB%20agent-2ea44f?style=for-the-badge)](#small-by-construction)
 
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/core%20dependencies-2-brightgreen?style=flat-square)](#dependencies)
-[![Async](https://img.shields.io/badge/async-zero-black?style=flat-square)](#philosophy)
+[![Async](https://img.shields.io/badge/async-zero-black?style=flat-square)](#architecture-principles)
 [![Rust](https://img.shields.io/badge/rust-edition%202021-orange?style=flat-square&logo=rust)](https://www.rust-lang.org)
-[![Tests](https://img.shields.io/badge/tests-183%20passing-success?style=flat-square)](#testing)
-[![Evals](https://img.shields.io/badge/evals-10%20smoke%20tasks-blueviolet?style=flat-square)](#-evaluation-suite)
+[![Tests](https://img.shields.io/badge/tests-183%20passing-success?style=flat-square)](#testing-and-contributing)
+[![Evals](https://img.shields.io/badge/evaluation-smoke%20suite%20%2B%20terminal--bench%202.x-blueviolet?style=flat-square)](#evaluation)
 [![Status](https://img.shields.io/badge/status-M1--M7b%20shipped-success?style=flat-square)](#status)
 
 </div>
 
 ---
 
-`quecto` — the [SI metric prefix](https://en.wikipedia.org/wiki/Metric_prefix) for **10⁻³⁰**, the smallest unit in the metric system. If *kilo* is 10³ and *quecto* is 10⁻³⁰, this project lives at the extreme: a universal harness built from the smallest possible composable units — and the proof that "smallest" scales all the way up to a full coding agent.
+`quecto` — the [SI metric prefix](https://en.wikipedia.org/wiki/Metric_prefix) for **10⁻³⁰**, the smallest unit in the metric system. This project takes that literally: a minimal, vendor-neutral execution layer for LLM agents, built from the smallest possible composable units — and proof that "minimal" scales all the way up to a complete, observable coding agent.
 
 **Two crates, one philosophy:**
 
 - **`quecto`** — the core. Take a prompt, run it through any OpenAI-compatible LLM — cloud (OpenAI) or local (Ollama, LM Studio, vLLM) — and return the output, buffered or streamed. One job, zero opinions.
-- **`quecto-agent`** — the coding agent, built entirely on top of the core. Multi-step tool use, file edits under approval, a hard-denylist sandbox, verification gates, session persistence (resume/undo/diff), and named "flavor" manifests with trust-on-first-use — all in a **3.5 MB** binary with **no async runtime**.
+- **`quecto-agent`** — a real coding agent, built entirely on top of the core. Multi-step tool use, native reasoning controls, verification gates, session persistence (resume/undo/diff), MCP tool sources, OpenTelemetry tracing, and a deterministic evaluation suite — all in a **3.5 MB** binary with **no async runtime**.
+
+---
+
+## Why QuECTO?
+
+LLM agents are increasingly defined by the harness around the model: system prompts, reasoning controls, tools, verification, memory, execution policy, and telemetry.
+
+Most agent frameworks bundle these concerns into a large runtime and impose their own abstractions on top of the model API.
+
+QuECTO takes the opposite approach:
+
+- keep the model interface minimal;
+- make every policy replaceable;
+- preserve model responses instead of hiding them;
+- expose reasoning, execution, and verification through observable primitives;
+- scale from one synchronous request to a complete coding agent.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    U[Prompt / Task] --> P[System Policy]
+    P --> R[Reasoning Mode]
+    R --> A[Agent Loop]
+    A --> T[Tools and MCP]
+    T --> V[Verification]
+    V --> S[Session Store]
+    A --> O[OpenTelemetry]
+    R --> O
+    T --> O
+    V --> O
+    A --> E[Evaluation]
+```
+
+| Layer          | Purpose                                                                             |
+| -------------- | ------------------------------------------------------------------------------------ |
+| `quecto`       | Minimal synchronous model transport and raw primitives                              |
+| `quecto-agent` | Tools, reasoning controls, verification, persistence, telemetry, evaluation, and MCP |
 
 ---
 
@@ -49,44 +90,101 @@
 
 ---
 
-## 📣 Announcements
+## What's new
 
-- **`2026-07-18` — Reasoning & Mermaid chat support shipped.** `quecto-agent chat` now supports session-scoped reasoning controls via `/reasoning`, persists that session default across `resume`, renders assistant markdown in interactive TTY sessions, and renders fenced Mermaid diagrams inline with Unicode box drawing via `merman`. Non-TTY output stays raw/plain markdown, and non-renderable Mermaid fences fall back to their original source text.
-- **`2026-07-16` — Agent core tightened.** Merged a hygiene refactor that removed **126 lines** from `quecto-agent` with no behavior change: deduped chat command dispatch across TTY and piped-stdin REPL paths, deleted redundant `canonical_json`, removed dead code, wired up `/commands`, and named the repeat-guard limit. Live cmux UAT covered both REPL branches, a real local-Ollama chat turn, and `/undo`.
-- **`2026-07-16` — Chat UI Polish & Tool Enhancements.** Dramatically improved the terminal UI for `quecto-agent chat`. Tool summaries are now highly verbose (e.g., `diff (449 lines)`, `exited 1`, `created src/a.rs (12 lines)`) instead of terse single words, and `.qkb` note tools explicitly enforce their directory in both descriptions and output to prevent model hallucination.
-- **`2026-07-16` — Chat UX & Agent Delegation shipped.** Upgraded the chat REPL to a `crossterm` event loop with native Bracketed Paste support. Added tracking for background processes (`start_background_process`, `kill_background_process`), a new `invoke_subagent` tool for agent delegation, and project-local `.qkb` Markdown notes.
-- **`2026-07-15` — Evaluation suite shipped.** A 10-task TerminalBench-style smoke suite (`evals/smoke/`) with deterministic `verify.sh` verifiers and a [Harbor](https://harborframework.com) adapter (`evals/harbor/quecto_agent.py`) for the full 89-task Terminal-Bench 2.x benchmark. Run `./evals/run_evals.sh` — no API key needed.
-- **`2026-07-15` — OpenTelemetry (OTEL) support.** Gated behind the `otel` feature flag, `quecto-agent` now supports end-to-end tracing for run loops, steps, tool dispatches (with argument sanitization), and model completions—including parsed reasoning/thinking traces.
-- **`2026-07-14` — Bug-fix release.** Seven issues from a post-UAT audit fixed: CRLF patch compatibility (with double-conversion guard), `take_last_change` DB error propagation, millisecond timestamps, `record_message` transaction safety, `/status` session-specific querying, `/context` character count, and REPL UX polish (aliases, `--version`, clear confirmation). 183 tests, 0 failures.
-- **`2026-07-12` — `quecto-agent` shipped (M1–M7b).** The full coding agent — tool use, editing under approval, sandbox denylist, verification gates, session persistence (resume/undo/diff), and manifest flavors with trust-on-first-use — is complete and merged to `main`.
-- **`2026-07-12` — UAT accepted.** 41 black-box scenarios across CLI, chat, tools, persistence, and flavors run against a live model: 34 pass, 7 minor polish partials, **0 failures, 0 blocking defects**. See [`docs/UAT-report.md`](docs/UAT-report.md).
-- **`2026-07-10` — Core crate landed.** The full `quecto` core: four-function library API, streaming with SSE + non-SSE fallback, and a one-shot / REPL / `--init` CLI. 24 tests, clippy-clean, two dependencies.
-- **`2026-07-10` — Size-optimized build.** A tuned release profile ships both binaries statically-linked, no runtime: the core at **~1.3 MB**, the agent at **~3.5 MB**.
-- **Next up — `quecto-mcp`.** MCP server/client integrations are planned as the next companion crate.
+- **Reasoning controls:** session-scoped `none` through `xhigh`, persisted across resume.
+- **Agent telemetry:** OTEL spans for runs, steps, tools, completions, and reasoning traces.
+- **MCP support:** STDIO and Streamable HTTP tool servers.
 
----
-
-## 🛡️ The Moat: 1.3 MB core, 3.5 MB agent
-
-Both binaries are **self-contained** — no runtime, no interpreter, statically-linked rustls TLS:
-
-| Build | Size | Lines of Code (Rust) |
-|---|---:|---:|
-| `quecto` — default `--release` | 2.6 MB | ~450 LOC |
-| `quecto` — stripped | 2.3 MB | ~450 LOC |
-| **`quecto` — size-optimized profile (shipped)** | **~1.3 MB** (1,300,896 bytes) | **~450 LOC** |
-| **`quecto-agent` — size-optimized profile (shipped)** | **~3.5 MB** (3,506,784 bytes) | **~8,100 LOC** |
-
-Two direct dependencies on the core (`ureq` + `serde_json`), ~30 transitive crates, **no `tokio`, no `reqwest`, no async runtime.** The agent adds a full tool loop, sandbox, SQLite-backed session store, and manifest parsing — and still fits in 3.5 MB. Small is the feature, at every layer.
+See [CHANGELOG.md](CHANGELOG.md) for the complete release history.
 
 ---
 
 ## Quick start
 
 ```bash
-# Build the ~1.3 MB binary
 git clone https://github.com/adityak74/quecto
 cd quecto
+cargo build --release -p quecto-agent
+export QUECTO_MODEL=qwen2.5-coder
+./target/release/quecto-agent chat
+```
+
+Then, inside the chat session:
+
+```text
+/reasoning high
+/approve
+Add tests for the parser and run them.
+```
+
+<details>
+<summary><strong>Local model</strong> — Ollama, LM Studio, vLLM (no API key)</summary>
+
+```bash
+export QUECTO_BASE_URL="http://localhost:11434/v1"   # quecto-agent defaults here already
+export QUECTO_MODEL="qwen2.5-coder"
+quecto-agent "refactor this function"
+```
+
+</details>
+
+<details>
+<summary><strong>Cloud model</strong> — OpenAI or any OpenAI-compatible endpoint</summary>
+
+```bash
+export QUECTO_BASE_URL="https://api.openai.com/v1"
+export QUECTO_API_KEY="sk-..."
+export QUECTO_MODEL="YOUR_OPENAI_CHAT_MODEL"
+quecto-agent "refactor this function"
+```
+
+</details>
+
+<details>
+<summary><strong>Library API</strong> — embed the core directly in Rust</summary>
+
+```rust
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let reply = quecto::quecto("What is the smallest SI prefix?")?;
+    println!("{reply}");
+    Ok(())
+}
+```
+
+See [Library API](#library-api) below for the full four-function surface.
+
+</details>
+
+Prefer the core alone, or the raw CLI without building from source? See [Building the core](#quecto-core) and [Configuration reference](#configuration-reference).
+
+---
+
+## What you get
+
+| Capability                      | Core | Agent |
+| -------------------------------- | :--: | :---: |
+| OpenAI-compatible endpoints     |   ✓  |   ✓   |
+| Local and cloud models          |   ✓  |   ✓   |
+| Synchronous streaming           |   ✓  |   ✓   |
+| System-prompt override          |   ✓  |   ✓   |
+| Native reasoning modes          |   —  |   ✓   |
+| Multi-step tool execution       |   —  |   ✓   |
+| Verification gates              |   —  |   ✓   |
+| Session resume/undo/diff        |   —  |   ✓   |
+| Reasoning-trace persistence     |   —  |   ✓   |
+| OpenTelemetry                   |   —  |   ✓   |
+| MCP tools                       |   —  |   ✓   |
+| Harbor / Terminal-Bench adapter |   —  |   ✓   |
+
+---
+
+## `quecto` core
+
+Built entirely on the core's `quecto_raw` primitive: same zero-async, statically-linked philosophy, scaled up to a full agent loop below.
+
+```bash
+# Build the ~1.3 MB binary
 cargo build --release      # → target/release/quecto
 
 # target/release isn't on $PATH by default — either call it directly:
@@ -103,35 +201,9 @@ quecto
 eval "$(quecto --init)"
 ```
 
-Point it anywhere OpenAI-compatible — **no API key needed for local models:**
-
-```bash
-# Local (Ollama / LM Studio / vLLM)
-export QUECTO_BASE_URL="http://localhost:11434/v1"
-export QUECTO_MODEL="qwen2.5-coder"
-quecto "refactor this function"
-
-# Cloud (OpenAI)
-export QUECTO_BASE_URL="https://api.openai.com/v1"
-export QUECTO_API_KEY="sk-..."
-export QUECTO_MODEL="YOUR_OPENAI_CHAT_MODEL"
-```
-
-### Configuration
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `QUECTO_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint |
-| `QUECTO_API_KEY` | *(optional)* | Bearer token; omit for local servers |
-| `QUECTO_MODEL` | `gpt-4o` | Model name |
-| `QUECTO_SYSTEM` | *(optional)* | System prompt, prepended as a `{role:system}` message |
-| `QUECTO_STREAM` | `1` | `0` uses the buffered path instead of streaming |
-
 ---
 
 ## `quecto-agent` — the coding agent
-
-Built entirely on the core's `quecto_raw` primitive: same zero-async, statically-linked philosophy, scaled up to a full agent loop.
 
 ```bash
 cargo build --release -p quecto-agent   # → target/release/quecto-agent (~3.5 MB)
@@ -179,122 +251,113 @@ Interactive chat with the rotating loading verbs:
 
 **What's in it:** multi-step tool use (file read/write/patch, search, git, shell, background processes, `.qkb` notes, subagent delegation), edits gated by an approval preset, a hard-denylist sandbox (blocks `sudo`, `rm -rf /`, `git push`, etc. even under `--yes`), configurable verification commands, SQLite-backed session persistence, named flavor manifests (`.quecto/flavors/*.toml`) with content-hash trust-on-first-use, session-scoped reasoning defaults, interactive markdown rendering, and inline Mermaid rendering for fenced `mermaid` code blocks in TTY chat.
 
-### Configuration
+A note on small local models: tool-call reliability is the model's job, not the agent's — `quecto-agent` executes whatever `tool_calls` the model returns and does nothing when it returns none. Small quantized models are inconsistent at this. For reliable multi-step tool use, prefer a larger tool-tuned model (e.g. `qwen2.5-coder`, `qwen2.5:7b-instruct`, or a 30B+ model like `qwen3.6:35b`).
 
-Reads the same core env vars as `quecto`, plus a few agent-specific ones:
+---
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `QUECTO_BASE_URL` | `http://localhost:11434/v1` | OpenAI-compatible endpoint — **note: defaults to local Ollama**, unlike the core's `api.openai.com` default |
-| `QUECTO_API_KEY` | *(optional)* | Bearer token; omit for local servers |
-| `QUECTO_MODEL` | *(interactive fallback)* | Model name; interactively prompts to pick from available Ollama models if omitted and `QUECTO_BASE_URL` is set to the default local Ollama endpoint |
-| `QUECTO_SYSTEM` | built-in agent system prompt | Overrides the base system prompt (repo rules + seed context are still appended after it) |
-| `QUECTO_MAX_STEPS` | `20` | Cap on agent loop steps |
-| `QUECTO_VERIFY` | *(unset)* | Newline-separated shell commands run as a post-edit verification gate |
-| `QUECTO_REASONING_MODE` | *(optional)* | Default reasoning effort; accepted normalized values are `none`, `minimal`, `low`, `medium`, `high`, and `xhigh` |
-| `QUECTO_SPINNER_VERBS` | built-in verb list | Comma-separated replacement verbs for the interactive chat spinner |
-| `QUECTO_STATE_DB` | `$XDG_STATE_HOME/quecto/sessions.db` (falls back to `~/.local/state/...`) | SQLite session store path |
-| `QUECTO_TRUST_FILE` | `$XDG_STATE_HOME/quecto/trust` (falls back to `~/.local/state/...`) | Trust-on-first-use hash store for flavor manifests |
+## Reasoning controls and traces
 
-`QUECTO_SPINNER_VERBS` replaces the built-in verb list. Entries are trimmed,
-empty entries are ignored, and an empty-only value falls back to the defaults.
-The spinner is enabled only for `quecto-agent chat` when stdout is a TTY; it
-stays off for piped/non-TTY output.
+QuECTO separates three concepts:
 
-Assistant output rendering is also TTY-sensitive:
-- interactive TTY chat and one-shot output render markdown for readability
-- fenced `mermaid` blocks are preprocessed with `merman` and shown inline as Unicode diagrams when rendering succeeds
-- if Mermaid parsing/rendering fails, the original fenced Mermaid block is preserved
-- piped/non-TTY output stays raw/plain markdown text
+1. **Reasoning configuration** — the requested native reasoning effort.
+2. **Reasoning content** — provider-exposed reasoning or thinking output.
+3. **Execution behavior** — tool calls, edits, verification, retries, and outcomes.
 
-```bash
-# Local (Ollama / LM Studio / vLLM) — QUECTO_BASE_URL already defaults here
-export QUECTO_MODEL="qwen2.5-coder"
-quecto-agent "add a test for the parse_args function"
-
-# Cloud (OpenAI)
-export QUECTO_BASE_URL="https://api.openai.com/v1"
-export QUECTO_API_KEY="sk-..."
-export QUECTO_MODEL="YOUR_OPENAI_CHAT_MODEL"
-
-# Customize the interactive chat spinner (replaces the built-in defaults)
-export QUECTO_SPINNER_VERBS="Thinking,Planning,Coding"
-quecto-agent chat
-
-# Set the default reasoning effort for a model that supports reasoning_effort
-export QUECTO_MODEL="YOUR_REASONING_CAPABLE_CHAT_MODEL"
-export QUECTO_REASONING_MODE=low
-quecto-agent "inspect this repository and summarize the test harness"
-```
-
-Reasoning support is provider- and model-dependent. QuECTO sends the normalized
-mode as `reasoning_effort` only to OpenAI-compatible Chat Completions endpoints;
-the selected model must support that parameter.
-
-Harness code can override the default per completion by passing
-`CompletionOptions { reasoning_mode: Some(ReasoningMode::High) }`
-to `Model::complete_with_options(...)`; that options-aware path returns a
-`ModelCompletion` containing the legacy `AssistantMessage` plus additive
-`CompletionTelemetry`.
-
-Inside `quecto-agent chat`, `/reasoning` shows the current session default,
-`/reasoning high` updates it for future turns, and `/reasoning off` clears it.
-That session-level setting persists across `quecto-agent resume <session-id>`.
-It does not mutate environment variables, flavor files, or one-shot runs.
-
-Example interactive prompt that exercises the Mermaid renderer:
+### Native mode control
 
 ```text
-Give me a markdown answer with a heading, a mermaid flowchart code block from A to B, and a bullet list.
+none · minimal · low · medium · high · xhigh
 ```
 
-See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test results, and `docs/superpowers/` for the milestone specs and plans (M1–M7b).
+### Per-session control
 
-**A note on small local models:** tool-call reliability is the model's job, not the agent's — `quecto-agent` executes whatever `tool_calls` the model returns and does nothing when it returns none. Small quantized models (e.g. 2B-parameter local models) are inconsistent at this: the same prompt may get answered with plain text ("I'll create the file...") instead of an actual `write_file` call, or may target the wrong path. Watch for a `● tool_name ...` activity line to confirm a tool actually ran. For reliable multi-step tool use, prefer a larger tool-tuned model (e.g. `qwen2.5-coder`, `qwen2.5:7b-instruct`, or a 30B+ model like `qwen3.6:35b`).
+```text
+/reasoning high
+/reasoning off
+```
 
-**A note on approval in `chat`:** by default `quecto-agent chat` asks for approval before writes/commands and shows `● tool_name  denied` if none is given (there's no way to approve mid-turn over a non-interactive pipe, so the model typically falls back to a manual snippet). Type `/approve` inside the session to approve edits and commands for the rest of that session, or start with `quecto-agent chat --yes` to skip asking entirely.
+### Per-completion control
 
-### Session storage — what's kept and where
+```rust
+CompletionOptions {
+    reasoning_mode: Some(ReasoningMode::High),
+}
+```
 
-**In memory (per run):** the `Agent` holds the full transcript — system prompt, every user message, assistant reply, tool call, and tool result — and resends all of it to the model on each turn. This is what gives `chat` its conversational context.
+### Provider boundary
 
-**On disk (persisted, plaintext):** when a session store is available (default `~/.local/state/quecto/sessions.db`, or `$QUECTO_STATE_DB`), every message is written to a SQLite `messages` table keyed by session id — role, content, tool calls, and tool results included. File edits are recorded separately in a `file_changes` table. This is what powers `resume`, `undo`, and `diff`.
+QuECTO normalizes the user-facing reasoning mode, but provider adapters decide how — or whether — that mode can be represented by a particular endpoint. QuECTO sends the normalized mode as `reasoning_effort` only to OpenAI-compatible Chat Completions endpoints; unsupported controls fail explicitly rather than being silently simulated.
 
-There's no encryption or expiry on that store — it's a local dev database, not a hardened secrets store. Avoid pasting anything sensitive into a session, or point `QUECTO_STATE_DB` at somewhere ephemeral (e.g. `/tmp`) if you need to.
+### What reasoning capture actually means
 
-### Telemetry & Tracing (OpenTelemetry)
+QuECTO captures reasoning only when the provider exposes it through the API, such as a `reasoning_content` field or model-generated `<think>` blocks. It does not recover private or hidden reasoning that the provider does not return. For providers that expose only reasoning-token counts or summaries, QuECTO records only those available signals.
+
+### Captured telemetry
+
+- requested reasoning mode
+- provider reasoning content
+- reasoning timestamps
+- completion metadata
+- tool execution
+- verification result
+- cost and token metadata where available
+
+---
+
+## Verified completion
+
+QuECTO can run deterministic post-edit checks before a task is considered complete:
+
+```bash
+export QUECTO_VERIFY=$'cargo fmt --check\ncargo test\ncargo clippy'
+```
+
+Verification produces an observable execution result rather than relying only on the model's claim that the task is complete.
+
+---
+
+## Telemetry and observability
 
 When compiled with the optional `otel` feature flag, `quecto-agent` supports end-to-end tracing via OpenTelemetry over OTLP/HTTP:
 
 ```bash
-# Build the binary with OpenTelemetry support
 cargo build --release -p quecto-agent --features otel
 
-# Run a task; traces are exported to http://localhost:4318/v1/traces by default
 export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:4318"
 ./target/release/quecto-agent "some task"
 ```
 
-The tracing subscriber captures:
-* **Hierarchical Spans**: `agent_run` (overall agent lifecycle), `agent_step` (each loop step), and `tool_execute` (tool dispatching).
-* **Security & GDPR**: Secrets, passwords, and tokens matching standard environment patterns (e.g. `API_KEY`, `PASSWORD`) are automatically redacted from trace attributes and event logs. Large argument payloads (like tool command strings or files) are sanitized to prevent memory overhead and data leakage.
-* **Reasoning traces**: Model-specific intermediate reasoning traces (both DeepSeek-style `reasoning_content` fields and tag-enclosed `<think>...</think>` outputs) are extracted, logged as tracing events (`model_thinking`), persisted in SQLite, and safely re-embedded back to the model on subsequent turns to maintain thinking context.
+### Event hierarchy
 
-### BYOC — Bring Your Own Config
+```text
+agent_run
+├── model_completion
+│   ├── reasoning_mode
+│   ├── reasoning_tokens
+│   └── model_thinking
+├── agent_step
+│   ├── tool_execute
+│   ├── tool_result
+│   └── verification
+└── session_persist
+```
 
-Nothing in quecto is hardcoded to a vendor, a model, or a persona. Every layer is swappable via plain env vars and files, no forking required:
+### Representative attributes
 
-- **System prompt** — `QUECTO_SYSTEM` overrides the default persona entirely (repo rules and seed context still get appended after it for `quecto-agent`).
-- **Model & endpoint** — `QUECTO_BASE_URL` + `QUECTO_MODEL` point at any OpenAI-compatible server: local (Ollama, LM Studio, vLLM) or cloud (OpenAI, or anything else speaking the same API shape).
-- **Behavior presets** — `.quecto/flavors/*.toml` manifests bundle a system prompt, tool policy, and defaults into a named, trust-on-first-use profile you can switch between per project.
-- **Verification gate** — `QUECTO_VERIFY` runs your own shell commands (tests, linters, type checks) as a post-edit gate before the agent calls a step done.
-- **Storage locations** — `QUECTO_STATE_DB` and `QUECTO_TRUST_FILE` relocate session and trust state anywhere you want (ephemeral, encrypted volume, shared path).
+| Span/event         | Key attributes                             |
+| ------------------ | ------------------------------------------- |
+| `agent_run`        | model, endpoint, session ID, prompt hash   |
+| `model_completion` | reasoning mode, token counts, latency      |
+| `model_thinking`   | provider format, content length, persisted |
+| `tool_execute`     | tool name, sanitized arguments, duration   |
+| `verification`     | command, exit code, pass/fail              |
+| `agent_step`       | step number, termination reason            |
 
-Because the core primitives (`quecto_raw`, `quecto_stream`) shape nothing and discard nothing, none of this is a special case — it's the same config surface the library itself is built from.
+Secrets, passwords, and tokens matching standard environment patterns (e.g. `API_KEY`, `PASSWORD`) are automatically redacted from trace attributes and event logs. Large argument payloads (like tool command strings or files) are sanitized to prevent memory overhead and data leakage.
 
 ---
 
-## `quecto-mcp` — MCP client for the agent
+## MCP
 
 Build the agent with MCP support to consume any MCP-compatible server as a tool source:
 
@@ -308,7 +371,7 @@ quecto-agent --mcp stdio:filesystem:npx:-y:@modelcontextprotocol/server-filesyst
 # Remote Streamable HTTP server (current standard)
 quecto-agent --mcp streamable_http:github:https://api.githubcopilot.com/mcp/ "open issues"
 
-# Or configure in .quecto/mcp.toml (see docs/superpowers/specs/2026-07-15-quecto-mcp-design.md)
+# Or configure in .quecto/mcp.toml
 ```
 
 MCP tools are prefixed `mcp__<server>__<tool>` — no collision with native tools. Server failures at startup are non-fatal.
@@ -318,6 +381,128 @@ MCP tools are prefixed `mcp__<server>__<tool>` — no collision with native tool
 | `stdio` | Local single-user tools (Claude Desktop / Cursor pattern) |
 | `streamable_http` | Remote/production (current MCP standard, March 2025+) |
 | `sse` | Legacy servers only — deprecated, compat support |
+
+---
+
+## Evaluation
+
+QuECTO ships a self-contained evaluation harness to measure coding-agent quality on local models: **deterministic smoke suite + Terminal-Bench 2.x adapter.**
+
+- **Smoke suite** (`evals/smoke/`, 10 tasks) — regression and development testing, no LLM judge required. Each task has a `verify.sh` that exits 0 on pass:
+
+  ```bash
+  ./evals/run_evals.sh
+  ```
+
+  Use `--llm-judge` to override with a model judge (requires `OPENROUTER_API_KEY`) as an optional qualitative check on top of the deterministic verifier.
+
+- **Terminal-Bench 2.x** — external, independent evaluation via [Harbor](https://harborframework.com)'s `BaseInstalledAgent` adapter (`evals/harbor/quecto_agent.py`), covering the full 89-task benchmark:
+
+  ```bash
+  pip install harbor
+  harbor run -d terminal-bench/terminal-bench-2 -m qwen3.6:35b-mlx \
+    --agent evals.harbor.quecto_agent:QuectoAgent
+  ```
+
+The 10-task smoke suite establishes local regression coverage, not broad coding-agent quality — Terminal-Bench is the credible external benchmark. To add a task, drop a directory under `evals/smoke/` with `prompt.md`, `setup.sh`, and `verify.sh` (exit 0 = PASS) — the harness auto-discovers it on the next run.
+
+---
+
+## Research with QuECTO
+
+QuECTO can be used to study agent behavior while independently controlling:
+
+- the model and provider;
+- the system prompt;
+- native reasoning effort;
+- tool availability;
+- approval policy;
+- verification gates;
+- maximum steps;
+- retained conversation and reasoning state;
+- MCP servers;
+- evaluation tasks.
+
+Runs can be observed through OpenTelemetry and evaluated with deterministic verifiers or Harbor-compatible benchmarks.
+
+```bash
+for mode in low medium high; do
+  QUECTO_REASONING_MODE=$mode \
+  QUECTO_SYSTEM="$(cat policies/verify-before-completion.txt)" \
+  quecto-agent "repair the failing test suite"
+done
+```
+
+### Reproducibility roadmap
+
+Not all fields below are implemented yet; every run should eventually expose or export:
+
+QuECTO version/commit, model, endpoint/provider, system-prompt hash, reasoning mode, temperature and sampling settings, maximum steps, tool configuration, flavor hash, verification commands, session ID, task ID, start/end time, token usage, latency, cost (when supplied), and final verifier result.
+
+---
+
+## Security model
+
+QuECTO is a local developer agent, not a hardened multi-tenant sandbox.
+
+It provides:
+- explicit approval modes;
+- a hard command denylist;
+- trust-on-first-use flavor manifests;
+- telemetry redaction and argument truncation;
+- configurable local storage.
+
+It does not currently provide:
+- container isolation;
+- encrypted session storage;
+- automatic secret classification guarantees;
+- multi-user authorization.
+
+Session storage in particular is a local, plaintext SQLite database (default `~/.local/state/quecto/sessions.db`, or `$QUECTO_STATE_DB`) with no encryption or expiry — the `Agent` holds the full transcript in memory per run and persists every message, tool call, and file change to disk to power `resume`, `undo`, and `diff`. Avoid pasting anything sensitive into a session, or point `QUECTO_STATE_DB` at somewhere ephemeral (e.g. `/tmp`) if you need to.
+
+---
+
+## Configuration reference
+
+### `quecto` core
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `QUECTO_BASE_URL` | `https://api.openai.com/v1` | OpenAI-compatible endpoint |
+| `QUECTO_API_KEY` | *(optional)* | Bearer token; omit for local servers |
+| `QUECTO_MODEL` | `gpt-4o` | Model name |
+| `QUECTO_SYSTEM` | *(optional)* | System prompt, prepended as a `{role:system}` message |
+| `QUECTO_STREAM` | `1` | `0` uses the buffered path instead of streaming |
+
+### `quecto-agent`
+
+Reads the same core env vars, plus:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `QUECTO_BASE_URL` | `http://localhost:11434/v1` | **Note: defaults to local Ollama**, unlike the core's `api.openai.com` default |
+| `QUECTO_MODEL` | *(interactive fallback)* | Interactively prompts to pick from available Ollama models if omitted and `QUECTO_BASE_URL` is the default local endpoint |
+| `QUECTO_SYSTEM` | built-in agent system prompt | Repo rules and seed context are still appended after it |
+| `QUECTO_MAX_STEPS` | `20` | Cap on agent loop steps |
+| `QUECTO_VERIFY` | *(unset)* | Newline-separated shell commands run as a post-edit verification gate |
+| `QUECTO_REASONING_MODE` | *(optional)* | Default reasoning effort: `none`, `minimal`, `low`, `medium`, `high`, `xhigh` |
+| `QUECTO_SPINNER_VERBS` | built-in verb list | Comma-separated replacement verbs for the interactive chat spinner |
+| `QUECTO_STATE_DB` | `$XDG_STATE_HOME/quecto/sessions.db` | SQLite session store path |
+| `QUECTO_TRUST_FILE` | `$XDG_STATE_HOME/quecto/trust` | Trust-on-first-use hash store for flavor manifests |
+
+Assistant output rendering is TTY-sensitive: interactive TTY chat and one-shot output render markdown (including inline Mermaid via `merman`, falling back to the raw fenced block on render failure); piped/non-TTY output stays raw/plain markdown text.
+
+### BYOC — Bring Your Own Config
+
+Nothing in quecto is hardcoded to a vendor, a model, or a persona:
+
+- **System prompt** — `QUECTO_SYSTEM` overrides the default persona entirely.
+- **Model & endpoint** — `QUECTO_BASE_URL` + `QUECTO_MODEL` point at any OpenAI-compatible server.
+- **Behavior presets** — `.quecto/flavors/*.toml` manifests bundle a system prompt, tool policy, and defaults into a named, trust-on-first-use profile.
+- **Verification gate** — `QUECTO_VERIFY` runs your own shell commands as a post-edit gate.
+- **Storage locations** — `QUECTO_STATE_DB` and `QUECTO_TRUST_FILE` relocate session and trust state anywhere you want.
+
+Because the core primitives (`quecto_raw`, `quecto_stream`) shape nothing and discard nothing, none of this is a special case — it's the same config surface the library itself is built from.
 
 ---
 
@@ -335,134 +520,109 @@ quecto_to(prompt, base_url, api_key, model)    -> Result<String, _>
 quecto(prompt)                                 -> Result<String, _> // reads env
 ```
 
-```rust
-fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let reply = quecto::quecto("What is the smallest SI prefix?")?;
-    println!("{reply}");
-    Ok(())
-}
-```
-
 Because the primitives neither shape the request nor discard the response, you can pass a `tools` array and read `tool_calls` straight off the returned `Value` — the only hook an agent layer needs.
 
 ---
 
-## Use it for
+## Small by construction
 
-- **Agents** — multi-step reasoning, tool use, autonomous workflows
-- **Data** — extract, transform, classify, summarize at scale
-- **Code** — scaffolding, refactoring, reviews, tests
-- **Content** — writing, editing, SEO, translation, formatting
-- **Research** — fact-checking, synthesis, comparison, deep-dive
-- **Anything** — if an LLM can reason through it
+Both binaries are **self-contained** — no runtime, no interpreter, statically-linked rustls TLS:
+
+| Build | Size | Lines of Code (Rust) |
+|---|---:|---:|
+| `quecto` — default `--release` | 2.6 MB | ~450 LOC |
+| `quecto` — stripped | 2.3 MB | ~450 LOC |
+| **`quecto` — size-optimized profile (shipped)** | **~1.3 MB** (1,300,896 bytes) | **~450 LOC** |
+| **`quecto-agent` — size-optimized profile (shipped)** | **~3.5 MB** (3,506,784 bytes) | **~8,100 LOC** |
+
+Two direct dependencies on the core (`ureq` + `serde_json`), ~30 transitive crates. What that buys, architecturally:
+
+- no Python runtime, no Node runtime, no Tokio
+- statically linked
+- fast startup
+- easy distribution
+- lower dependency surface
+- simple embedding
+- predictable execution model
+
+The agent adds a full tool loop, sandbox, SQLite-backed session store, and manifest parsing — and still fits in 3.5 MB.
 
 ---
 
-## Philosophy
+## Comparison
+
+| Project type       | QuECTO's difference                                       |
+| ------------------- | ------------------------------------------------------------ |
+| HTTP client        | Adds a complete agent while retaining raw primitives      |
+| Agent framework    | Minimal synchronous runtime with bypassable abstractions   |
+| Coding agent        | Embeddable core, OTEL telemetry, deterministic evaluation |
+| Observability tool  | Produces execution and reasoning telemetry directly        |
+| Benchmark harness   | Also runs interactively as a usable agent                  |
+
+---
+
+## Architecture principles
 
 ```
 … → mega (10⁶) → kilo (10³) → base → milli (10⁻³) → micro (10⁻⁶) → … → quecto (10⁻³⁰)
 ```
 
-1. **LLMs are the backend.** The harness is just the glue.
-2. **Everything is composable.** Small pieces → big things.
-3. **Describe it, run it.** If you can explain it to an LLM, quecto handles it.
-
-`quecto` is the smallest possible unit. This project takes that literally: break any task down to its smallest composable piece, then compose them back up. The primitives decide nothing; every opinion is optional sugar you can bypass.
-
----
-
-## 🧪 Evaluation Suite
-
-QuECTO ships a self-contained evaluation harness to measure coding-agent quality on local models.
-
-### Smoke Tests (10 tasks, deterministic)
-
-No LLM judge required — each task has a `verify.sh` that exits 0 on pass:
-
-```bash
-./evals/run_evals.sh
-```
-
-| Task | Category | What it tests |
-|---|---|---|
-| `tb_01_git_conflict_resolution` | Git / VCS | Resolve a 3-way merge conflict and commit |
-| `tb_02_package_refactoring` | Refactoring | Restructure flat scripts into a Python package |
-| `tb_03_advanced_sed_awk` | CLI / Data | Clean a CSV using only `awk`/`sed` (no Python) |
-| `tb_04_openssl_decryption` | Security | Decrypt an AES-256-CBC ciphertext with `openssl` |
-| `tb_05_dynamic_dependency_script` | Python | BeautifulSoup scraper with self-installing fallback |
-| `tb_06_docker_build` | Docker | Diagnose and fix a broken Dockerfile, build & run |
-| `tb_07_debug_c_crash` | Debugging | Fix a NULL-deref segfault, recompile, verify output |
-| `tb_08_sqlite_query` | Data | Query a SQLite DB and write the result to a file |
-| `tb_09_fix_rust_build` | Rust / Compiler | Fix immutability + logic errors, `cargo build --release` |
-| `tb_10_openssl_selfsigned_cert` | TLS / Security | Generate a self-signed cert for a domain, verify expiry |
-
-Use `--llm-judge` to override with a model judge (requires `OPENROUTER_API_KEY`):
-
-```bash
-OPENROUTER_API_KEY=sk-or-... ./evals/run_evals.sh --llm-judge
-```
-
-### Harbor / Terminal-Bench 2.x (89 tasks)
-
-`evals/harbor/quecto_agent.py` is a [Harbor](https://harborframework.com) `BaseInstalledAgent` adapter. Install Harbor and run the full benchmark:
-
-```bash
-pip install harbor
-harbor run \
-  -d terminal-bench/terminal-bench-2 \
-  -m qwen3.6:35b-mlx \
-  --agent evals.harbor.quecto_agent:QuectoAgent
-```
-
-Smoke-test the adapter without Harbor installed:
-
-```bash
-python3 evals/harbor/test_smoke.py   # 6 tests, ~8 s, no deps
-```
-
-### Adding a task
-
-Drop a directory under `evals/smoke/` with three files:
-
-```
-evals/smoke/my_task/
-├── prompt.md    # instruction for the agent
-├── setup.sh     # initialise the workspace
-└── verify.sh    # exit 0 = PASS, non-zero = FAIL
-```
-
-The harness auto-discovers it on the next run.
+1. **The model is replaceable.** The execution contract should survive model changes.
+2. **The harness should stay inspectable.** Policies, tools, state, and telemetry must remain explicit.
+3. **Every abstraction should be bypassable.** Raw requests and responses remain available.
+4. **Correctness should be observable.** Execution and verification matter more than self-reported success.
+5. **Small pieces should compose.** The full agent is built from the same minimal primitives as the core.
 
 ---
 
 ## Roadmap
 
-| Component | Home | Status |
-|---|---|---|
-| Model adapter (talk to the model) | **`quecto` core** | ✅ shipped |
-| Agent loop · tools · sandbox · verify · session · flavors/trust · OTEL tracing | `quecto-agent` | ✅ shipped, UAT accepted |
-| Evaluation suite (10 smoke tasks + Harbor/Terminal-Bench adapter) | `evals/` | ✅ shipped |
-| MCP client (STDIO · Streamable HTTP · legacy SSE compat) | `quecto-mcp` | 🚧 in progress |
+### Runtime
+- provider adapter normalization
+- cancellation and timeout policy
+- structured completion metadata
+- checkpoint/fork/replay
+
+### Telemetry
+- stable semantic conventions
+- JSONL trace export
+- cost normalization
+- trace viewer
+
+### Evaluation
+- experiment manifests
+- repeated-run statistics
+- paired mode comparisons
+- benchmark result bundles
+
+### Ecosystem
+- MCP server support
+- SDK bindings
+- external harness adapters
+- trace dataset publication
 
 The core never gains an async runtime, tool execution, or state — companions build on top of `quecto_raw`.
 
 ---
 
-## Dependencies
+## Testing and contributing
+
+### Dependencies
 
 ```toml
 ureq = { version = "2", features = ["json"] }   # synchronous HTTP (rustls TLS)
 serde_json = "1"                                 # build bodies, parse responses
 ```
 
-## Testing
+### Tests
 
 ```bash
 cargo test --workspace   # 183 tests across both crates, clippy-clean
 cargo test               # 24 tests: unit + HTTP + streaming + CLI (core only, dependency-free mock server)
 cargo clippy --all-targets --workspace
 ```
+
+See [`docs/UAT-report.md`](docs/UAT-report.md) for the full acceptance test results, and `docs/superpowers/` for the milestone specs and plans (M1–M7b).
 
 ## Status
 
