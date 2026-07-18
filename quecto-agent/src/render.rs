@@ -145,6 +145,18 @@ pub trait Renderer: Send {
     fn assistant(&mut self, text: &str);
 }
 
+/// Discards all activity. Used for subagents running on a background thread,
+/// where interleaving raw stderr output from several concurrent runs would
+/// be unreadable — their progress is inspected via `monitor_subagents` instead.
+pub struct NullRenderer;
+
+impl Renderer for NullRenderer {
+    fn tool(&mut self, _name: &str, _summary: &str) {}
+    fn verify(&mut self, _command: &str, _passed: bool) {}
+    fn notice(&mut self, _text: &str) {}
+    fn assistant(&mut self, _text: &str) {}
+}
+
 /// Line-based renderer over any writer. Colors are applied only when `color`
 /// is true; with `color = false` the output is byte-identical to the agent's
 /// historical plain output.

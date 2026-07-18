@@ -198,10 +198,7 @@ impl Context {
     
     pub fn background_process_count(&mut self) -> usize {
         self.background_processes.retain(|_, (_, child)| {
-            match child.try_wait() {
-                Ok(None) => true,
-                _ => false,
-            }
+            matches!(child.try_wait(), Ok(None))
         });
         self.background_processes.len()
     }
@@ -240,6 +237,10 @@ impl Registry {
 
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
+    }
+
+    pub fn has_tool(&self, name: &str) -> bool {
+        self.tools.iter().any(|t| t.name() == name)
     }
 
     /// Return the names of all registered tools.

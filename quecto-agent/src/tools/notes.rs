@@ -110,7 +110,7 @@ impl Tool for SearchNotes {
             if !dent.file_type().map(|t| t.is_file()).unwrap_or(false) {
                 continue;
             }
-            if !dent.path().extension().map_or(false, |ext| ext == "md") {
+            if dent.path().extension().is_none_or(|ext| ext != "md") {
                 continue;
             }
             let text = match std::fs::read_to_string(dent.path()) {
