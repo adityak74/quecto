@@ -57,7 +57,7 @@ struct RepeatGuard {
 
 impl RepeatGuard {
     fn observe(&mut self, call: &crate::model::ToolCall, result: &str, changes: usize) -> bool {
-        let fingerprint = format!("{}\n{}\n{}", call.name, call.arguments, result);
+        let fingerprint = format!("{}\n{}\n{}", call.name, canonical_to_string(&call.arguments), result);
         if self.fingerprint.as_deref() == Some(&fingerprint) && self.changes == changes {
             self.streak += 1;
         } else {
@@ -476,6 +476,40 @@ impl Agent {
     }
 }
 
+fn canonical_to_string(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<_> = map.iter().collect();
+            entries.sort_by_key(|(k, _)| *k);
+            let mut out = String::new();
+            out.push('{');
+            for (i, (k, v)) in entries.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&serde_json::to_string(k).unwrap());
+                out.push(':');
+                out.push_str(&canonical_to_string(v));
+            }
+            out.push('}');
+            out
+        }
+        serde_json::Value::Array(arr) => {
+            let mut out = String::new();
+            out.push('[');
+            for (i, v) in arr.iter().enumerate() {
+                if i > 0 {
+                    out.push(',');
+                }
+                out.push_str(&canonical_to_string(v));
+            }
+            out.push(']');
+            out
+        }
+        _ => val.to_string(),
+    }
+}
+
 #[cfg(feature = "otel")]
 fn sanitize_arguments(name: &str, args: &serde_json::Value) -> String {
     match name {
@@ -492,12 +526,12 @@ fn sanitize_arguments(name: &str, args: &serde_json::Value) -> String {
                         map.insert(k.clone(), v.clone());
                     }
                 }
-                serde_json::Value::Object(map).to_string()
+                canonical_to_string(&serde_json::Value::Object(map))
             } else {
-                args.to_string()
+                canonical_to_string(args)
             }
         }
-        _ => args.to_string(),
+        _ => canonical_to_string(args),
     }
 }
 
