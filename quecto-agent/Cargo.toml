@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 crossterm = "0.27"
 termimad = "0.35"
+merman = { version = "0.7", features = ["ascii"] }
 quecto = { path = ".." }
 serde_json = "1"
 ignore = "0.4"

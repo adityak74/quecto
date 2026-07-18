@@ -37,13 +37,69 @@ const DEFAULT_SPINNER_VERBS: &[&str] = &[
     "Wrangling", "Zesting", "Zigzagging",
 ];
 
+fn try_render_mermaid_block(source: &str) -> Option<String> {
+    use merman::ascii::{AsciiRenderOptions, HeadlessAsciiRenderer};
+    HeadlessAsciiRenderer::new()
+        .with_ascii_options(AsciiRenderOptions::unicode())
+        .render_ascii_sync(source)
+        .ok()
+        .flatten()
+}
+
+fn preprocess_mermaid_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut in_block = false;
+    let mut block_content = String::new();
+
+    let mut lines = text.split('\n').peekable();
+    while let Some(line) = lines.next() {
+        if !in_block && line.trim() == "```mermaid" {
+            in_block = true;
+            block_content.clear();
+        } else if in_block && line.trim() == "```" {
+            in_block = false;
+            let source = if block_content.ends_with('\n') {
+                &block_content[..block_content.len() - 1]
+            } else {
+                &block_content
+            };
+            if let Some(rendered) = try_render_mermaid_block(source) {
+                out.push_str(&rendered);
+            } else {
+                out.push_str("```mermaid\n");
+                out.push_str(&block_content);
+                out.push_str("```");
+            }
+            if lines.peek().is_some() {
+                out.push('\n');
+            }
+        } else if in_block {
+            block_content.push_str(line);
+            block_content.push('\n');
+        } else {
+            out.push_str(line);
+            if lines.peek().is_some() {
+                out.push('\n');
+            }
+        }
+    }
+
+    if in_block {
+        out.push_str("```mermaid\n");
+        out.push_str(&block_content);
+    }
+
+    out
+}
+
 pub fn render_assistant_text(text: &str, markdown: bool) -> String {
     if !markdown {
         return text.to_string();
     }
 
+    let preprocessed = preprocess_mermaid_blocks(text);
     let skin = termimad::MadSkin::default();
-    skin.term_text(text).to_string()
+    skin.term_text(&preprocessed).to_string()
 }
 
 pub fn parse_spinner_verbs(raw: Option<&str>) -> Vec<String> {
@@ -530,8 +586,25 @@ mod tests {
 
     #[test]
     fn render_assistant_text_preserves_plain_output_when_markdown_disabled() {
-        let input = "# Title\n\n- item\n\n```rust\nfn main() {}\n```";
+        let input = "```mermaid\ngraph TD\nA --> B\n```";
         assert_eq!(render_assistant_text(input, false), input);
+    }
+
+    #[test]
+    fn render_assistant_text_renders_simple_mermaid_when_enabled() {
+        let rendered = render_assistant_text("```mermaid\ngraph TD\nA --> B\n```", true);
+        assert!(rendered.contains("A"));
+        assert!(rendered.contains("B"));
+        assert!(rendered.contains('┌') || rendered.contains('│') || rendered.contains('─'));
+        assert!(!rendered.contains("```mermaid"));
+    }
+
+    #[test]
+    fn render_assistant_text_preserves_invalid_mermaid_block_when_enabled() {
+        let input = "```mermaid\nthis is not valid mermaid\n```";
+        let rendered = render_assistant_text(input, true);
+        assert!(rendered.contains("this is not valid mermaid"));
+        assert!(!rendered.contains("error"));
     }
 
     #[test]
@@ -540,5 +613,17 @@ mod tests {
         assert!(rendered.contains("Title"));
         assert!(rendered.contains("item"));
         assert_ne!(rendered, "# Title\n\n- item");
+    }
+
+    #[test]
+    fn render_assistant_text_keeps_markdown_rendering_after_mermaid_preprocessing() {
+        let rendered = render_assistant_text(
+            "# Title\n\n```mermaid\ngraph TD\nA --> B\n```\n\n- item",
+            true,
+        );
+        assert!(rendered.contains("Title"));
+        assert!(rendered.contains("item"));
+        assert!(rendered.contains("A"));
+        assert!(rendered.contains("B"));
     }
 }
