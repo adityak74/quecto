@@ -83,12 +83,11 @@ impl Policy {
 
     pub fn decide(&self, call: &ToolCall) -> Decision {
         match call.name.as_str() {
-            "read_file" | "list_files" | "search_text" | "git_diff" | "git_status" | "search_notes" | "list_background_processes" | "invoke_subagent" => {
+            "read_file" | "list_files" | "search_text" | "git_diff" | "git_status" | "search_notes" | "list_background_processes" | "invoke_subagent" | "monitor_subagents" => {
                 Decision::Allow
             }
             "write_file" | "apply_patch" | "take_note" => self.edit.clone(),
-            "kill_background_process" => self.run.clone(),
-            "run_command" | "start_background_process" => {
+            "run_command" | "start_background_process" | "kill_background_process" | "spawn_subagent" | "cancel_subagent" => {
                 let command = call
                     .arguments
                     .get("command")
@@ -547,5 +546,31 @@ mod tests {
         assert!(matches!(Preset::parse("editor"), Some(Preset::Editor)));
         assert!(matches!(Preset::parse("full"), Some(Preset::Full)));
         assert!(Preset::parse("bogus").is_none());
+    }
+
+    #[test]
+    fn monitor_subagents_is_always_allowed() {
+        let p = Policy::from_preset(Preset::ReadOnly);
+        let call = ToolCall {
+            id: "1".into(),
+            name: "monitor_subagents".into(),
+            arguments: serde_json::json!({}),
+        };
+        assert_eq!(p.decide(&call), Decision::Allow);
+    }
+
+    #[test]
+    fn spawn_and_cancel_subagent_follow_the_run_decision() {
+        let read_only = Policy::from_preset(Preset::ReadOnly);
+        let full = Policy::from_preset(Preset::Full);
+        for name in ["spawn_subagent", "cancel_subagent"] {
+            let call = ToolCall {
+                id: "1".into(),
+                name: name.into(),
+                arguments: serde_json::json!({}),
+            };
+            assert_eq!(read_only.decide(&call), Decision::Ask);
+            assert_eq!(full.decide(&call), Decision::Allow);
+        }
     }
 }

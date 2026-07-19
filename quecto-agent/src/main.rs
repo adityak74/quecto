@@ -372,7 +372,7 @@ fn attach_verifier(mut agent: Agent, no_verify: bool, user_flavor: &Flavor) -> A
 fn finish(outcome: Outcome, store_status: Option<(&Store, &str)>) {
     let status = match &outcome {
         Outcome::Complete(answer) => {
-            let rendered = render_assistant_text(&answer, std::io::stdout().is_terminal());
+            let rendered = render_assistant_text(answer, std::io::stdout().is_terminal());
             println!("{rendered}");
             "done"
         }
