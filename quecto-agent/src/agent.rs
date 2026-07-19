@@ -15,16 +15,10 @@ use std::io::Write;
 #[derive(Serialize)]
 pub struct TraceEvent {
     pub event_type: String,
+    pub turn: usize,
     pub tokens_used: u32,
     pub duration_ms: u64,
-}
-
-pub fn log_trace(event: TraceEvent) {
-    if let Ok(path) = std::env::var("QUECTO_TRACE_FILE") {
-        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-            let _ = writeln!(file, "{}", serde_json::to_string(&event).unwrap());
-        }
-    }
+    pub message: String,
 }
 
 /// Terminal state of an agent run.
@@ -99,6 +93,7 @@ pub struct Agent {
     approval: ApprovalMode,
     verifier: Option<Verifier>,
     recorder: Option<Box<dyn RunRecorder>>,
+    trace_file: Option<std::fs::File>,
     recorded_messages: usize,
     recorded_changes: usize,
     renderer: Box<dyn Renderer>,
@@ -141,6 +136,10 @@ impl Agent {
         cancel: CancelToken,
         approval: ApprovalMode,
     ) -> Self {
+        let trace_file = std::env::var("QUECTO_TRACE_FILE")
+            .ok()
+            .and_then(|path| OpenOptions::new().create(true).append(true).open(path).ok());
+
         Agent {
             model,
             registry: Registry::new(),
@@ -152,6 +151,7 @@ impl Agent {
             approval,
             verifier: None,
             recorder: None,
+            trace_file,
             recorded_messages: 0,
             recorded_changes: 0,
             renderer: stderr_renderer(),
@@ -395,11 +395,20 @@ impl Agent {
             let telemetry = completion.telemetry;
             
             let usage = telemetry.actual_reasoning_tokens.unwrap_or(0) as u32;
-            log_trace(TraceEvent {
-                event_type: "turn".into(),
-                tokens_used: usage,
-                duration_ms: duration,
-            });
+            if let Some(file) = &mut self.trace_file {
+                let event = TraceEvent {
+                    event_type: "turn".into(),
+                    turn: step,
+                    tokens_used: usage,
+                    duration_ms: duration,
+                    message: msg.content.clone(),
+                };
+                let s = serde_json::to_string(&event).unwrap();
+                if let Err(err) = writeln!(file, "{}", s) {
+                    #[cfg(feature = "otel")]
+                    tracing::warn!("Failed to write trace telemetry: {}", err);
+                }
+            }
 
             let mut assistant_msg =
                 Message::assistant_with_calls(msg.content.clone(), msg.tool_calls.clone());
@@ -586,17 +595,6 @@ fn sanitize_arguments(name: &str, args: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::approval::ApprovalMode;
-
-    #[test]
-    fn test_trace_event_serialization() {
-        let event = TraceEvent {
-            event_type: "turn".to_string(),
-            tokens_used: 150,
-            duration_ms: 1000,
-        };
-        let s = serde_json::to_string(&event).unwrap();
-        assert!(s.contains("turn"));
-    }
     use crate::model::{AssistantMessage, ModelCompletion, ToolCall};
     use crate::sandbox::cancel_token;
     use crate::tools::{Context, Tool, ToolOutput, ToolResult};
@@ -1507,5 +1505,24 @@ mod tests {
         assert!(!names.contains(&"monitor_subagents".to_string()));
         assert!(!names.contains(&"cancel_subagent".to_string()));
         assert!(!names.contains(&"invoke_subagent".to_string()));
+    }
+
+    #[test]
+    fn test_trace_event_serialization() {
+        let event = TraceEvent {
+            event_type: "turn".to_string(),
+            turn: 42,
+            tokens_used: 150,
+            duration_ms: 1000,
+            message: "hello".to_string(),
+        };
+        let s = serde_json::to_string(&event).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&s).unwrap();
+        
+        assert_eq!(val["event_type"], "turn");
+        assert_eq!(val["turn"], 42);
+        assert_eq!(val["duration_ms"], 1000);
+        assert_eq!(val["tokens_used"], 150);
+        assert_eq!(val["message"], "hello");
     }
 }
