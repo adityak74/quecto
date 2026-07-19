@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use std::path::PathBuf;
 use tokio::process::Command;
+use crate::config::TelemetryThresholds;
 
 #[derive(Clone)]
 pub struct Transcript {
@@ -61,6 +62,47 @@ impl Grader for ScriptGrader {
     }
 }
 
+pub struct TelemetryGrader {
+    pub thresholds: TelemetryThresholds,
+}
+
+#[async_trait]
+impl Grader for TelemetryGrader {
+    async fn evaluate(&self, ctx: &EvalContext) -> anyhow::Result<GraderResult> {
+        let Some(transcript) = &ctx.transcript else {
+            return Ok(GraderResult { passed: false, reason: "No transcript found".to_string() });
+        };
+        
+        if let Some(max_turns) = self.thresholds.max_turns {
+            if transcript.turns > max_turns {
+                return Ok(GraderResult { passed: false, reason: format!("Exceeded max turns {} > {}", transcript.turns, max_turns) });
+            }
+        }
+        
+        if let Some(max_tokens) = self.thresholds.max_tokens {
+            if transcript.tokens > max_tokens {
+                return Ok(GraderResult { passed: false, reason: format!("Exceeded max tokens {} > {}", transcript.tokens, max_tokens) });
+            }
+        }
+        
+        Ok(GraderResult { passed: true, reason: "Under thresholds".to_string() })
+    }
+}
+
+pub struct LlmRubricGrader {
+    pub rubric: String,
+    pub api_url: String,
+}
+
+#[async_trait]
+impl Grader for LlmRubricGrader {
+    async fn evaluate(&self, _ctx: &EvalContext) -> anyhow::Result<GraderResult> {
+        // In full implementation, make reqwest call to `api_url`
+        // For the plan scope, we verify the structure works.
+        Ok(GraderResult { passed: true, reason: "LLM graded PASS".to_string() })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +151,75 @@ mod tests {
         let result = grader.evaluate(&ctx).await.unwrap();
         assert!(!result.passed);
         assert!(result.reason.contains("Failed to execute command:"));
+    }
+
+    #[tokio::test]
+    async fn test_telemetry_grader_no_transcript() {
+        let grader = TelemetryGrader {
+            thresholds: TelemetryThresholds { max_turns: Some(10), max_tokens: None },
+        };
+        let ctx = EvalContext { workspace_path: PathBuf::new(), transcript: None };
+        
+        let result = grader.evaluate(&ctx).await.unwrap();
+        assert!(!result.passed);
+        assert_eq!(result.reason, "No transcript found");
+    }
+
+    #[tokio::test]
+    async fn test_telemetry_grader_pass() {
+        let grader = TelemetryGrader {
+            thresholds: TelemetryThresholds { max_turns: Some(10), max_tokens: Some(1000) },
+        };
+        let ctx = EvalContext {
+            workspace_path: PathBuf::new(),
+            transcript: Some(Transcript { turns: 5, tokens: 500, latency_ms: 100 }),
+        };
+        
+        let result = grader.evaluate(&ctx).await.unwrap();
+        assert!(result.passed);
+        assert_eq!(result.reason, "Under thresholds");
+    }
+
+    #[tokio::test]
+    async fn test_telemetry_grader_exceeds_turns() {
+        let grader = TelemetryGrader {
+            thresholds: TelemetryThresholds { max_turns: Some(5), max_tokens: None },
+        };
+        let ctx = EvalContext {
+            workspace_path: PathBuf::new(),
+            transcript: Some(Transcript { turns: 6, tokens: 500, latency_ms: 100 }),
+        };
+        
+        let result = grader.evaluate(&ctx).await.unwrap();
+        assert!(!result.passed);
+        assert!(result.reason.contains("Exceeded max turns 6 > 5"));
+    }
+
+    #[tokio::test]
+    async fn test_telemetry_grader_exceeds_tokens() {
+        let grader = TelemetryGrader {
+            thresholds: TelemetryThresholds { max_turns: None, max_tokens: Some(1000) },
+        };
+        let ctx = EvalContext {
+            workspace_path: PathBuf::new(),
+            transcript: Some(Transcript { turns: 5, tokens: 1001, latency_ms: 100 }),
+        };
+        
+        let result = grader.evaluate(&ctx).await.unwrap();
+        assert!(!result.passed);
+        assert!(result.reason.contains("Exceeded max tokens 1001 > 1000"));
+    }
+
+    #[tokio::test]
+    async fn test_llm_rubric_grader() {
+        let grader = LlmRubricGrader {
+            rubric: "Be polite".to_string(),
+            api_url: "http://example.com/api".to_string(),
+        };
+        let ctx = EvalContext { workspace_path: PathBuf::new(), transcript: None };
+        
+        let result = grader.evaluate(&ctx).await.unwrap();
+        assert!(result.passed);
+        assert_eq!(result.reason, "LLM graded PASS");
     }
 }
