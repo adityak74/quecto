@@ -8,6 +8,24 @@ use crate::verify::Verifier;
 use crate::BoxErr;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
+use serde::Serialize;
+use std::fs::OpenOptions;
+use std::io::Write;
+
+#[derive(Serialize)]
+pub struct TraceEvent {
+    pub event_type: String,
+    pub tokens_used: u32,
+    pub duration_ms: u64,
+}
+
+pub fn log_trace(event: TraceEvent) {
+    if let Ok(path) = std::env::var("QUECTO_TRACE_FILE") {
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{}", serde_json::to_string(&event).unwrap());
+        }
+    }
+}
 
 /// Terminal state of an agent run.
 pub enum Outcome {
@@ -361,11 +379,13 @@ impl Agent {
             let _step_guard = step_span.enter();
 
             self.renderer.working();
+            let start = std::time::Instant::now();
             let completed = self.model.complete_with_options(
                 &self.messages,
                 &schemas,
                 &crate::reasoning::CompletionOptions::default(),
             );
+            let duration = start.elapsed().as_millis() as u64;
             self.renderer.working_done();
             let completion = match completed {
                 Ok(completion) => completion,
@@ -373,6 +393,14 @@ impl Agent {
             };
             let msg = completion.message;
             let telemetry = completion.telemetry;
+            
+            let usage = telemetry.actual_reasoning_tokens.unwrap_or(0) as u32;
+            log_trace(TraceEvent {
+                event_type: "turn".into(),
+                tokens_used: usage,
+                duration_ms: duration,
+            });
+
             let mut assistant_msg =
                 Message::assistant_with_calls(msg.content.clone(), msg.tool_calls.clone());
             assistant_msg.reasoning_content = msg.reasoning_content.clone();
@@ -558,6 +586,17 @@ fn sanitize_arguments(name: &str, args: &serde_json::Value) -> String {
 mod tests {
     use super::*;
     use crate::approval::ApprovalMode;
+
+    #[test]
+    fn test_trace_event_serialization() {
+        let event = TraceEvent {
+            event_type: "turn".to_string(),
+            tokens_used: 150,
+            duration_ms: 1000,
+        };
+        let s = serde_json::to_string(&event).unwrap();
+        assert!(s.contains("turn"));
+    }
     use crate::model::{AssistantMessage, ModelCompletion, ToolCall};
     use crate::sandbox::cancel_token;
     use crate::tools::{Context, Tool, ToolOutput, ToolResult};
