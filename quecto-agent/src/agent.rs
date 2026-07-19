@@ -1519,7 +1519,7 @@ mod tests {
         let val: serde_json::Value = serde_json::from_str(&s).unwrap();
         
         assert_eq!(val["event_type"], "turn");
-        assert_eq!(val["duration_ms"], 1000);
-        assert_eq!(val["tokens_used"], 150);
+        assert_eq!(val["duration_ms"].as_u64(), Some(1000));
+        assert_eq!(val["tokens_used"].as_u64(), Some(150));
     }
 }
