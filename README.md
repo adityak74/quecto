@@ -251,6 +251,8 @@ Interactive chat with the rotating loading verbs:
 
 **What's in it:** multi-step tool use (file read/write/patch, search, git, shell, background processes, `.qkb` notes, subagent delegation), edits gated by an approval preset, a hard-denylist sandbox (blocks `sudo`, `rm -rf /`, `git push`, etc. even under `--yes`), configurable verification commands, SQLite-backed session persistence, named flavor manifests (`.quecto/flavors/*.toml`) with content-hash trust-on-first-use, session-scoped reasoning defaults, interactive markdown rendering, and inline Mermaid rendering for fenced `mermaid` code blocks in TTY chat.
 
+**Subagent delegation:** `invoke_subagent` runs a subagent synchronously and blocks until it finishes. For running more than one at a time, `spawn_subagent` starts a subagent on a background thread and returns immediately with an id (up to 8 concurrent); `monitor_subagents` reports status, elapsed time, and recent activity for one or all spawned subagents; `cancel_subagent` stops one early.
+
 A note on small local models: tool-call reliability is the model's job, not the agent's — `quecto-agent` executes whatever `tool_calls` the model returns and does nothing when it returns none. Small quantized models are inconsistent at this. For reliable multi-step tool use, prefer a larger tool-tuned model (e.g. `qwen2.5-coder`, `qwen2.5:7b-instruct`, or a 30B+ model like `qwen3.6:35b`).
 
 ---
