@@ -15,10 +15,8 @@ use std::io::Write;
 #[derive(Serialize)]
 pub struct TraceEvent {
     pub event_type: String,
-    pub turn: usize,
     pub tokens_used: u32,
     pub duration_ms: u64,
-    pub message: String,
 }
 
 /// Terminal state of an agent run.
@@ -136,9 +134,15 @@ impl Agent {
         cancel: CancelToken,
         approval: ApprovalMode,
     ) -> Self {
-        let trace_file = std::env::var("QUECTO_TRACE_FILE")
-            .ok()
-            .and_then(|path| OpenOptions::new().create(true).append(true).open(path).ok());
+        let trace_file = std::env::var("QUECTO_TRACE_FILE").ok().and_then(|path| {
+            match OpenOptions::new().create(true).append(true).open(&path) {
+                Ok(file) => Some(file),
+                Err(err) => {
+                    eprintln!("Warning: Failed to open trace file '{}': {}", path, err);
+                    None
+                }
+            }
+        });
 
         Agent {
             model,
@@ -398,15 +402,12 @@ impl Agent {
             if let Some(file) = &mut self.trace_file {
                 let event = TraceEvent {
                     event_type: "turn".into(),
-                    turn: step,
                     tokens_used: usage,
                     duration_ms: duration,
-                    message: msg.content.clone(),
                 };
                 let s = serde_json::to_string(&event).unwrap();
                 if let Err(err) = writeln!(file, "{}", s) {
-                    #[cfg(feature = "otel")]
-                    tracing::warn!("Failed to write trace telemetry: {}", err);
+                    eprintln!("Warning: Failed to write trace telemetry: {}", err);
                 }
             }
 
@@ -1511,18 +1512,14 @@ mod tests {
     fn test_trace_event_serialization() {
         let event = TraceEvent {
             event_type: "turn".to_string(),
-            turn: 42,
             tokens_used: 150,
             duration_ms: 1000,
-            message: "hello".to_string(),
         };
         let s = serde_json::to_string(&event).unwrap();
         let val: serde_json::Value = serde_json::from_str(&s).unwrap();
         
         assert_eq!(val["event_type"], "turn");
-        assert_eq!(val["turn"], 42);
         assert_eq!(val["duration_ms"], 1000);
         assert_eq!(val["tokens_used"], 150);
-        assert_eq!(val["message"], "hello");
     }
 }
