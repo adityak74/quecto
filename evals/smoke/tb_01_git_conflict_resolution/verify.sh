@@ -6,4 +6,4 @@ grep -q "line2 feature" file.txt
 ! grep -q "<<<<<<" file.txt
 ! grep -q "=======" file.txt
 ! grep -q ">>>>>>>" file.txt
-git log --oneline | grep -q "resolved"
+git log --oneline | grep "resolved" > /dev/null

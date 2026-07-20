@@ -75,7 +75,7 @@ run_task() {
     (
         cd "$workdir"
         QUECTO_BASE_URL="$AGENT_URL" QUECTO_MODEL="$AGENT_MODEL" \
-            "$AGENT_BIN" --yes "$prompt" > agent_output.log 2>&1
+            "$AGENT_BIN" --yes --approval full "$prompt" > agent_output.log 2>&1
     ) || true   # agent exit code doesn't fail the harness
 
     # ── Verify ─────────────────────────────────
