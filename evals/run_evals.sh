@@ -53,6 +53,7 @@ run_task() {
     local task_dir="$1"
     local task_id
     task_id="$(basename "$task_dir")"
+    local ROOT="$(pwd)"
 
     echo ""
     echo "════════════════════════════════════════"
@@ -64,7 +65,7 @@ run_task() {
     mkdir -p "$workdir"
 
     # ── Setup ──────────────────────────────────
-    (cd "$workdir" && bash "$(pwd)/$task_dir/setup.sh") 2>&1 | sed 's/^/  [setup] /'
+    (cd "$workdir" && bash "$ROOT/$task_dir/setup.sh") 2>&1 | sed 's/^/  [setup] /'
 
     # ── Execute agent ──────────────────────────
     echo "--> Running quecto-agent..."
@@ -82,7 +83,7 @@ run_task() {
 
     if [[ -f "$task_dir/verify.sh" ]] && [[ "$USE_LLM_JUDGE" == "false" ]]; then
         echo "--> Verifying (deterministic)..."
-        if (cd "$workdir" && bash "$(pwd)/$task_dir/verify.sh" > verify.log 2>&1); then
+        if (cd "$workdir" && bash "$ROOT/$task_dir/verify.sh" > verify.log 2>&1); then
             result="PASS"
         fi
     else
