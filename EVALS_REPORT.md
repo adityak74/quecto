@@ -1,7 +1,6 @@
 ⚠️  Warning: OPENROUTER_API_KEY is not set — LLM judge may fail.
-    Finished `release` profile [optimized] target(s) in 0.10s
-   Compiling quecto-agent v0.1.0 (/Users/adityakarnam/Projects/quecto/quecto-agent)
-    Finished `release` profile [optimized] target(s) in 19.18s
+    Finished `release` profile [optimized] target(s) in 0.15s
+    Finished `release` profile [optimized] target(s) in 0.20s
 QuECTO Smoke Eval Suite
 Agent : qwen3.6:35b-mlx @ http://localhost:11434/v1
 Judge : deterministic verify.sh
@@ -10,14 +9,14 @@ Judge : deterministic verify.sh
  Task: tb_01_git_conflict_resolution
 ════════════════════════════════════════
   [setup] Initialized empty Git repository in /Users/adityakarnam/Projects/quecto/evals/results/workspace_tb_01_git_conflict_resolution/.git/
-  [setup] [main (root-commit) f07de9c] init
+  [setup] [main (root-commit) 88c84d9] init
   [setup]  1 file changed, 1 insertion(+)
   [setup]  create mode 100644 file.txt
   [setup] Switched to a new branch 'feature'
-  [setup] [feature fb68305] feature
+  [setup] [feature bd9b85f] feature
   [setup]  1 file changed, 1 insertion(+)
   [setup] Switched to branch 'main'
-  [setup] [main 0de6d8d] main
+  [setup] [main 62fb089] main
   [setup]  1 file changed, 1 insertion(+)
   [setup] Auto-merging file.txt
   [setup] CONFLICT (content): Merge conflict in file.txt
@@ -59,7 +58,7 @@ Result: ✅  PASS
 ════════════════════════════════════════
 --> Running quecto-agent...
 --> Verifying (deterministic)...
-Result: ❌  FAIL
+Result: ✅  PASS
 
 ════════════════════════════════════════
  Task: tb_07_debug_c_crash
@@ -90,5 +89,5 @@ Result: ✅  PASS
 Result: ✅  PASS
 
 ════════════════════════════════════════
- Results: 9/10 passed
+ Results: 10/10 passed
 ════════════════════════════════════════
