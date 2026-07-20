@@ -1,6 +1,6 @@
 ⚠️  Warning: OPENROUTER_API_KEY is not set — LLM judge may fail.
+    Finished `release` profile [optimized] target(s) in 0.13s
     Finished `release` profile [optimized] target(s) in 0.16s
-    Finished `release` profile [optimized] target(s) in 0.20s
 QuECTO Smoke Eval Suite
 Agent : qwen3.6:35b-mlx @ http://localhost:11434/v1
 Judge : deterministic verify.sh
@@ -9,21 +9,21 @@ Judge : deterministic verify.sh
  Task: tb_01_git_conflict_resolution
 ════════════════════════════════════════
   [setup] Initialized empty Git repository in /Users/adityakarnam/Projects/quecto/evals/results/workspace_tb_01_git_conflict_resolution/.git/
-  [setup] [main (root-commit) 1a0d386] init
+  [setup] [main (root-commit) 80078d7] init
   [setup]  1 file changed, 1 insertion(+)
   [setup]  create mode 100644 file.txt
   [setup] Switched to a new branch 'feature'
-  [setup] [feature bd04288] feature
+  [setup] [feature bb16762] feature
   [setup]  1 file changed, 1 insertion(+)
   [setup] Switched to branch 'main'
-  [setup] [main 4e7c4ee] main
+  [setup] [main 73741cd] main
   [setup]  1 file changed, 1 insertion(+)
   [setup] Auto-merging file.txt
   [setup] CONFLICT (content): Merge conflict in file.txt
   [setup] Automatic merge failed; fix conflicts and then commit the result.
 --> Running quecto-agent...
 --> Verifying (deterministic)...
-Result: ❌  FAIL
+Result: ✅  PASS
 
 ════════════════════════════════════════
  Task: tb_02_package_refactoring
@@ -44,7 +44,7 @@ Result: ❌  FAIL
 ════════════════════════════════════════
 --> Running quecto-agent...
 --> Verifying (deterministic)...
-Result: ✅  PASS
+Result: ❌  FAIL
 
 ════════════════════════════════════════
  Task: tb_05_dynamic_dependency_script
@@ -58,7 +58,7 @@ Result: ✅  PASS
 ════════════════════════════════════════
 --> Running quecto-agent...
 --> Verifying (deterministic)...
-Result: ✅  PASS
+Result: ❌  FAIL
 
 ════════════════════════════════════════
  Task: tb_07_debug_c_crash
@@ -89,5 +89,5 @@ Result: ✅  PASS
 Result: ✅  PASS
 
 ════════════════════════════════════════
- Results: 8/10 passed
+ Results: 7/10 passed
 ════════════════════════════════════════
