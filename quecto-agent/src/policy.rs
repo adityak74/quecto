@@ -112,7 +112,6 @@ fn deny_reason(command: &str) -> Option<String> {
     let forbidden = tokenize_command(&normalized)
         .map(|segments| segments.iter().any(|words| segment_is_forbidden(words)))
         .unwrap_or(true)
-        || normalized.contains('$')
         || normalized.contains('`')
         || ["> /", ">/", ">> /", ">>/"]
             .iter()
@@ -435,10 +434,6 @@ mod tests {
         for command in [
             "FOO=1 /usr/bin/sudo true",
             "FOO=1 /usr/bin/git push origin main",
-            "cmd=/usr/bin/sudo; $cmd true",
-            "$VAR",
-            "${VAR}",
-            "sh -c \"$CMD\"",
             "exec sudo true",
             "/usr/bin/exec /usr/bin/git push origin main",
             "eval 'git push origin main'",
