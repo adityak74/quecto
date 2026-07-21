@@ -12,11 +12,112 @@ use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::Write;
 
+#[derive(Serialize, Clone, Default)]
+pub struct TraceIdentity {
+    pub experiment_id: Option<String>,
+    pub task_id: Option<String>,
+    pub runtime_id: Option<String>,
+    pub run_id: Option<String>,
+    pub repetition: Option<u32>,
+    pub quecto_commit: Option<String>,
+    pub snapshot_hash: Option<String>,
+}
+
+impl TraceIdentity {
+    pub fn from_env() -> Self {
+        TraceIdentity {
+            experiment_id: std::env::var("QUECTO_EXPERIMENT_ID").ok(),
+            task_id: std::env::var("QUECTO_TASK_ID").ok(),
+            runtime_id: std::env::var("QUECTO_RUNTIME_ID").ok(),
+            run_id: std::env::var("QUECTO_RUN_ID").ok(),
+            repetition: std::env::var("QUECTO_REPETITION")
+                .ok()
+                .and_then(|s| s.parse().ok()),
+            quecto_commit: std::env::var("QUECTO_COMMIT").ok(),
+            snapshot_hash: std::env::var("QUECTO_SNAPSHOT_HASH").ok(),
+        }
+    }
+}
+
 #[derive(Serialize)]
-pub struct TraceEvent {
-    pub event_type: String,
-    pub tokens_used: u32,
-    pub duration_ms: u64,
+#[serde(tag = "event_type")]
+pub enum TraceEvent {
+    #[serde(rename = "turn")]
+    Turn {
+        seq: u64,
+        tokens_used: u32,
+        duration_ms: u64,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
+    #[serde(rename = "run.start")]
+    RunStart {
+        seq: u64,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
+    #[serde(rename = "run.end")]
+    RunEnd {
+        seq: u64,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
+    #[serde(rename = "tool.call")]
+    ToolCall {
+        seq: u64,
+        tool_name: String,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
+    #[serde(rename = "tool.result")]
+    ToolResult {
+        seq: u64,
+        tool_name: String,
+        success: bool,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
+    #[serde(rename = "mutation")]
+    Mutation {
+        seq: u64,
+        path: String,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
+    #[serde(rename = "verifier.start")]
+    VerifierStart {
+        seq: u64,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
+    #[serde(rename = "verifier.result")]
+    VerifierResult {
+        seq: u64,
+        passed: bool,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
+    #[serde(rename = "assistant.claim")]
+    AssistantClaim {
+        seq: u64,
+        content_length: usize,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
+    #[serde(rename = "termination")]
+    Termination {
+        seq: u64,
+        reason: String,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
+    #[serde(rename = "infrastructure.error")]
+    InfrastructureError {
+        seq: u64,
+        message: String,
+        #[serde(flatten)]
+        identity: TraceIdentity,
+    },
 }
 
 /// Terminal state of an agent run.
@@ -92,6 +193,8 @@ pub struct Agent {
     verifier: Option<Verifier>,
     recorder: Option<Box<dyn RunRecorder>>,
     trace_file: Option<std::fs::File>,
+    trace_identity: TraceIdentity,
+    trace_seq: u64,
     recorded_messages: usize,
     recorded_changes: usize,
     renderer: Box<dyn Renderer>,
@@ -143,6 +246,7 @@ impl Agent {
                 }
             }
         });
+        let trace_identity = TraceIdentity::from_env();
 
         Agent {
             model,
@@ -156,6 +260,8 @@ impl Agent {
             verifier: None,
             recorder: None,
             trace_file,
+            trace_identity,
+            trace_seq: 0,
             recorded_messages: 0,
             recorded_changes: 0,
             renderer: stderr_renderer(),
@@ -174,6 +280,39 @@ impl Agent {
     pub fn with_policy(mut self, policy: Policy) -> Self {
         self.policy = policy;
         self
+    }
+
+    /// Override the trace file, bypassing the `QUECTO_TRACE_FILE` env var —
+    /// primarily for tests, which cannot safely share a process-global env var.
+    pub fn with_trace_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.trace_file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path.into())
+            .ok();
+        self
+    }
+
+    /// Override the trace identity, bypassing env vars — primarily for tests.
+    pub fn with_trace_identity(mut self, identity: TraceIdentity) -> Self {
+        self.trace_identity = identity;
+        self
+    }
+
+    fn next_seq(&mut self) -> u64 {
+        let s = self.trace_seq;
+        self.trace_seq += 1;
+        s
+    }
+
+    fn emit_trace_event(&mut self, event: TraceEvent) {
+        if let Some(file) = &mut self.trace_file {
+            if let Ok(s) = serde_json::to_string(&event) {
+                if let Err(err) = writeln!(file, "{}", s) {
+                    eprintln!("Warning: Failed to write trace telemetry: {}", err);
+                }
+            }
+        }
     }
 
     /// Attach a recorder for session persistence.
@@ -399,17 +538,14 @@ impl Agent {
             let telemetry = completion.telemetry;
             
             let usage = telemetry.actual_reasoning_tokens.unwrap_or(0) as u32;
-            if let Some(file) = &mut self.trace_file {
-                let event = TraceEvent {
-                    event_type: "turn".into(),
-                    tokens_used: usage,
-                    duration_ms: duration,
-                };
-                let s = serde_json::to_string(&event).unwrap();
-                if let Err(err) = writeln!(file, "{}", s) {
-                    eprintln!("Warning: Failed to write trace telemetry: {}", err);
-                }
-            }
+            let seq = self.next_seq();
+            let identity = self.trace_identity.clone();
+            self.emit_trace_event(TraceEvent::Turn {
+                seq,
+                tokens_used: usage,
+                duration_ms: duration,
+                identity,
+            });
 
             let mut assistant_msg =
                 Message::assistant_with_calls(msg.content.clone(), msg.tool_calls.clone());
@@ -1510,16 +1646,60 @@ mod tests {
 
     #[test]
     fn test_trace_event_serialization() {
-        let event = TraceEvent {
-            event_type: "turn".to_string(),
+        let event = TraceEvent::Turn {
+            seq: 0,
             tokens_used: 150,
             duration_ms: 1000,
+            identity: TraceIdentity::default(),
         };
         let s = serde_json::to_string(&event).unwrap();
         let val: serde_json::Value = serde_json::from_str(&s).unwrap();
-        
+
         assert_eq!(val["event_type"], "turn");
+        assert_eq!(val["seq"], 0);
         assert_eq!(val["duration_ms"].as_u64(), Some(1000));
         assert_eq!(val["tokens_used"].as_u64(), Some(150));
+    }
+
+    #[test]
+    fn trace_identity_serializes_flattened() {
+        let identity = TraceIdentity {
+            experiment_id: Some("exp-1".into()),
+            task_id: Some("task-1".into()),
+            runtime_id: Some("reference".into()),
+            run_id: Some("run-1".into()),
+            repetition: Some(0),
+            quecto_commit: Some("abc123".into()),
+            snapshot_hash: Some("deadbeef".into()),
+        };
+        let event = TraceEvent::RunStart { seq: 0, identity };
+        let s = serde_json::to_string(&event).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(val["event_type"], "run.start");
+        assert_eq!(val["seq"], 0);
+        assert_eq!(val["experiment_id"], "exp-1");
+        assert_eq!(val["run_id"], "run-1");
+    }
+
+    #[test]
+    fn with_trace_file_and_identity_write_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let trace_path = dir.path().join("trace.jsonl");
+        let mut a = agent(Scripted::new(vec![text("done")]))
+            .with_trace_file(&trace_path)
+            .with_trace_identity(TraceIdentity {
+                run_id: Some("run-xyz".into()),
+                ..Default::default()
+            });
+        let seq0 = a.next_seq();
+        let seq1 = a.next_seq();
+        assert_eq!((seq0, seq1), (0, 1));
+        a.emit_trace_event(TraceEvent::RunStart {
+            seq: seq0,
+            identity: a.trace_identity.clone(),
+        });
+        let contents = std::fs::read_to_string(&trace_path).unwrap();
+        assert!(contents.contains("\"run.start\""));
+        assert!(contents.contains("run-xyz"));
     }
 }
