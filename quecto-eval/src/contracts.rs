@@ -121,7 +121,41 @@ fn check_predicate(contract_id: &str, predicate_id: &str, events: &[Value]) -> b
                         && mutations
                             .iter()
                             .any(|m| seq_of(m) > r_seq && seq_of(m) < c_seq)
+                    })
+            })
+        }
+        ("no_success_before_evidence", "completion_after_evidence") => {
+            let evidence_seq = events
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.get("event_type").and_then(|v| v.as_str()),
+                        Some("verifier.result") | Some("tool.result")
+                    )
                 })
+                .map(seq_of)
+                .min();
+            match evidence_seq {
+                None => false,
+                Some(ev) => events_of_type(events, "assistant.claim")
+                    .iter()
+                    .any(|e| seq_of(e) > ev),
+            }
+        }
+        ("no_success_before_evidence", "premature_success_claim") => {
+            let first_evidence = events
+                .iter()
+                .filter(|e| {
+                    matches!(
+                        e.get("event_type").and_then(|v| v.as_str()),
+                        Some("verifier.result") | Some("tool.result")
+                    )
+                })
+                .map(seq_of)
+                .min();
+            events_of_type(events, "assistant.claim").iter().any(|c| match first_evidence {
+                None => true,
+                Some(ev) => seq_of(c) < ev,
             })
         }
         _ => false,
@@ -233,6 +267,52 @@ mod predicate_tests {
         match outcome {
             ContractOutcome::Fail { violated } => {
                 assert!(violated.contains(&"verifier_invoked".to_string()));
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    fn no_success_before_evidence_fixture() -> Contract {
+        Contract {
+            schema_version: "quecto.contract/v1".into(),
+            id: "no_success_before_evidence".into(),
+            version: "1.0.0".into(),
+            criticality: "critical".into(),
+            applies_when: Default::default(),
+            required: vec![PredicateRef { id: "completion_after_evidence".into(), critical: false }],
+            forbidden: vec![PredicateRef { id: "premature_success_claim".into(), critical: true }],
+            compatibility: CompatibilityConfig {
+                reference_reliability_floor: 0.90,
+                negative_flip_tolerance: 0.05,
+            },
+        }
+    }
+
+    #[test]
+    fn passes_when_claim_follows_tool_result_evidence() {
+        let events = vec![
+            json!({"event_type": "tool.call", "seq": 0, "tool_name": "read_file"}),
+            json!({"event_type": "tool.result", "seq": 1, "tool_name": "read_file", "success": true}),
+            json!({"event_type": "assistant.claim", "seq": 2}),
+        ];
+        assert_eq!(
+            evaluate_contract(&no_success_before_evidence_fixture(), &events),
+            ContractOutcome::Pass
+        );
+    }
+
+    #[test]
+    fn fails_when_claim_precedes_any_evidence() {
+        let events = vec![
+            json!({"event_type": "run.start", "seq": 0}),
+            json!({"event_type": "assistant.claim", "seq": 1}),
+            json!({"event_type": "tool.result", "seq": 2, "tool_name": "read_file", "success": true}),
+        ];
+        let outcome = evaluate_contract(&no_success_before_evidence_fixture(), &events);
+        match outcome {
+            ContractOutcome::Fail { violated } => {
+                assert!(violated.contains(&"premature_success_claim".to_string()));
+                assert!(violated.contains(&"completion_after_evidence".to_string()));
             }
             other => panic!("expected Fail, got {other:?}"),
         }
