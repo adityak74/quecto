@@ -542,7 +542,16 @@ impl Agent {
             self.renderer.working_done();
             let completion = match completed {
                 Ok(completion) => completion,
-                Err(e) => break Outcome::Error(e),
+                Err(e) => {
+                    let seq = self.next_seq();
+                    let identity = self.trace_identity.clone();
+                    self.emit_trace_event(TraceEvent::InfrastructureError {
+                        seq,
+                        message: e.to_string(),
+                        identity,
+                    });
+                    break Outcome::Error(e);
+                }
             };
             let msg = completion.message;
             let telemetry = completion.telemetry;
@@ -608,6 +617,15 @@ impl Agent {
                             continue;
                         }
                     }
+                }
+                {
+                    let seq = self.next_seq();
+                    let identity = self.trace_identity.clone();
+                    self.emit_trace_event(TraceEvent::AssistantClaim {
+                        seq,
+                        content_length: msg.content.len(),
+                        identity,
+                    });
                 }
                 break Outcome::Complete(msg.content);
             }
@@ -1863,5 +1881,25 @@ mod tests {
         let contents = std::fs::read_to_string(&trace_path).unwrap();
         assert!(contents.lines().any(|l| l.contains("\"verifier.start\"")));
         assert!(contents.lines().any(|l| l.contains("\"verifier.result\"") && l.contains("\"passed\":true")));
+    }
+
+    #[test]
+    fn completion_emits_assistant_claim_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let trace_path = dir.path().join("trace.jsonl");
+        let mut a = agent(Scripted::new(vec![text("done")])).with_trace_file(&trace_path);
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        let contents = std::fs::read_to_string(&trace_path).unwrap();
+        assert!(contents.lines().any(|l| l.contains("\"assistant.claim\"")));
+    }
+
+    #[test]
+    fn model_error_emits_infrastructure_error_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let trace_path = dir.path().join("trace.jsonl");
+        let mut a = agent(Scripted::new(vec![])).with_trace_file(&trace_path);
+        assert!(matches!(a.run("hi"), Outcome::Error(_)));
+        let contents = std::fs::read_to_string(&trace_path).unwrap();
+        assert!(contents.lines().any(|l| l.contains("\"infrastructure.error\"")));
     }
 }
