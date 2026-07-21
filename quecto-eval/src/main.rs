@@ -1,5 +1,5 @@
 use clap::Parser;
-use quecto_eval::{contracts, manifest, runner, snapshot};
+use quecto_eval::runner;
 mod cli;
 
 #[tokio::main]

@@ -97,6 +97,12 @@ pub fn run_suite(
             .unwrap()
             .to_string_lossy()
             .to_string();
+        // Skip our own leftover snapshot-backup dirs (e.g. from a prior run
+        // that crashed before cleanup) — otherwise they get treated as
+        // bogus extra tasks since they contain a copy of prompt.md/setup.sh.
+        if task_id.starts_with('.') && task_id.ends_with(".snapshot-backup") {
+            continue;
+        }
         let prompt = fs::read_to_string(task_dir.join("prompt.md"))?;
 
         let backup_dir = tasks_dir.join(format!(".{task_id}.snapshot-backup"));
@@ -109,10 +115,20 @@ pub fn run_suite(
             for repetition in 0..manifest.experiment.repetitions {
                 crate::snapshot::restore(&backup_dir, &task_dir)?;
                 if setup_script.exists() {
-                    std::process::Command::new("sh")
+                    let setup_status = std::process::Command::new("sh")
                         .arg("setup.sh")
                         .current_dir(&task_dir)
                         .status()?;
+                    if !setup_status.success() {
+                        // Restore before bailing so a setup failure doesn't
+                        // also leave the task directory dirty.
+                        crate::snapshot::restore(&backup_dir, &task_dir)?;
+                        fs::remove_dir_all(&backup_dir)?;
+                        anyhow::bail!(
+                            "setup.sh failed for task {task_id} (runtime {}, repetition {repetition}): exit status {setup_status}",
+                            runtime.id
+                        );
+                    }
                 }
                 let snapshot_hash = crate::snapshot::snapshot_hash(&task_dir)?;
                 let run_id = format!(
@@ -173,6 +189,9 @@ pub fn run_suite(
                 )?;
             }
         }
+        // Leave the task directory exactly as it was found — otherwise the
+        // last repetition's mutations linger in a git-tracked eval suite.
+        crate::snapshot::restore(&backup_dir, &task_dir)?;
         fs::remove_dir_all(&backup_dir)?;
     }
     Ok(())
@@ -355,5 +374,122 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM contract_results", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn run_suite_restores_task_dir_after_final_repetition() {
+        let root = tempdir().unwrap();
+        let tasks_dir = root.path().join("tasks");
+        let task_dir = tasks_dir.join("tb_dirty");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
+
+        // A fake agent binary that mutates the workspace it runs in.
+        let fake_agent = root.path().join("fake_agent.sh");
+        fs::write(&fake_agent, "#!/bin/sh\necho mutated > scratch.txt\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_agent).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_agent, perms).unwrap();
+        }
+
+        let manifest_path = root.path().join("manifest.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: quecto.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 1\nreference:\n  id: reference-high\n  reasoning_mode: high\ncandidates: []\ncontracts:\n  suite_dir: NOT_USED\n  critical: []\n",
+        )
+        .unwrap();
+
+        let db_path = root.path().join("telemetry.db");
+        run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent).unwrap();
+
+        assert!(
+            !task_dir.join("scratch.txt").exists(),
+            "task dir should be restored to its pristine state after the last repetition"
+        );
+        assert!(
+            !tasks_dir.join(".tb_dirty.snapshot-backup").exists(),
+            "backup dir should be cleaned up"
+        );
+    }
+
+    #[test]
+    fn run_suite_ignores_leftover_snapshot_backup_dirs() {
+        let root = tempdir().unwrap();
+        let tasks_dir = root.path().join("tasks");
+        let task_dir = tasks_dir.join("tb_real");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
+
+        // Simulate a leftover backup dir from a previous crashed run — it
+        // has the same shape as a real task dir (a copy of prompt.md etc.)
+        // and must not be treated as one.
+        let stray_backup = tasks_dir.join(".tb_real.snapshot-backup");
+        fs::create_dir_all(&stray_backup).unwrap();
+        fs::write(stray_backup.join("prompt.md"), "do the thing").unwrap();
+
+        let fake_agent = root.path().join("fake_agent.sh");
+        fs::write(&fake_agent, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_agent).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_agent, perms).unwrap();
+        }
+
+        let manifest_path = root.path().join("manifest.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: quecto.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 1\nreference:\n  id: reference-high\n  reasoning_mode: high\ncandidates: []\ncontracts:\n  suite_dir: NOT_USED\n  critical: []\n",
+        )
+        .unwrap();
+
+        let db_path = root.path().join("telemetry.db");
+        run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
+            .unwrap();
+        // Only tb_real should have run, not the stray backup dir.
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn run_suite_fails_when_setup_script_exits_nonzero() {
+        let root = tempdir().unwrap();
+        let tasks_dir = root.path().join("tasks");
+        let task_dir = tasks_dir.join("tb_broken_setup");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
+        fs::write(task_dir.join("setup.sh"), "#!/bin/sh\nexit 1\n").unwrap();
+
+        let fake_agent = root.path().join("fake_agent.sh");
+        fs::write(&fake_agent, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_agent).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_agent, perms).unwrap();
+        }
+
+        let manifest_path = root.path().join("manifest.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: quecto.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 1\nreference:\n  id: reference-high\n  reasoning_mode: high\ncandidates: []\ncontracts:\n  suite_dir: NOT_USED\n  critical: []\n",
+        )
+        .unwrap();
+
+        let db_path = root.path().join("telemetry.db");
+        let result = run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent);
+        assert!(result.is_err(), "expected an error when setup.sh fails");
+        assert!(
+            !tasks_dir.join(".tb_broken_setup.snapshot-backup").exists(),
+            "backup dir should still be cleaned up on setup failure"
+        );
     }
 }
