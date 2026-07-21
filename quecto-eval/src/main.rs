@@ -1,5 +1,6 @@
 use clap::Parser;
 mod cli;
+mod contracts;
 mod runner;
 
 #[tokio::main]
