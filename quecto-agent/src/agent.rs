@@ -451,6 +451,10 @@ impl Agent {
         #[cfg(feature = "otel")]
         let _guard = span.enter();
 
+        let seq = self.next_seq();
+        let identity = self.trace_identity.clone();
+        self.emit_trace_event(TraceEvent::RunStart { seq, identity });
+
         self.push_message(Message::user(task), MessageMetadata::default());
         self.run_loop()
     }
@@ -466,6 +470,10 @@ impl Agent {
         );
         #[cfg(feature = "otel")]
         let _guard = span.enter();
+
+        let seq = self.next_seq();
+        let identity = self.trace_identity.clone();
+        self.emit_trace_event(TraceEvent::RunStart { seq, identity });
 
         self.run_loop()
     }
@@ -665,6 +673,25 @@ impl Agent {
             step += 1;
         };
         self.sync();
+        let reason = match &outcome {
+            Outcome::Complete(_) => "complete",
+            Outcome::StepLimit => "step_limit",
+            Outcome::VerificationFailed { .. } => "verification_failed",
+            Outcome::Cancelled => "cancelled",
+            Outcome::RepeatedAction => "repeated_action",
+            Outcome::Blocked => "blocked",
+            Outcome::Error(_) => "error",
+        };
+        let seq = self.next_seq();
+        let identity = self.trace_identity.clone();
+        self.emit_trace_event(TraceEvent::Termination {
+            seq,
+            reason: reason.to_string(),
+            identity,
+        });
+        let seq = self.next_seq();
+        let identity = self.trace_identity.clone();
+        self.emit_trace_event(TraceEvent::RunEnd { seq, identity });
         outcome
     }
 }
@@ -1701,5 +1728,27 @@ mod tests {
         let contents = std::fs::read_to_string(&trace_path).unwrap();
         assert!(contents.contains("\"run.start\""));
         assert!(contents.contains("run-xyz"));
+    }
+
+    #[test]
+    fn run_emits_start_termination_and_end_events_in_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let trace_path = dir.path().join("trace.jsonl");
+        let mut a = agent(Scripted::new(vec![text("done")])).with_trace_file(&trace_path);
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        let contents = std::fs::read_to_string(&trace_path).unwrap();
+        let types: Vec<&str> = contents
+            .lines()
+            .map(|l| {
+                let v: serde_json::Value = serde_json::from_str(l).unwrap();
+                v["event_type"].as_str().unwrap().to_string()
+            })
+            .collect::<Vec<String>>()
+            .iter()
+            .map(|s| Box::leak(s.clone().into_boxed_str()) as &str)
+            .collect();
+        assert_eq!(types.first(), Some(&"run.start"));
+        assert_eq!(types.last(), Some(&"run.end"));
+        assert!(types.contains(&"termination"));
     }
 }
