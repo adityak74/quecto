@@ -1,9 +1,6 @@
 use clap::Parser;
+use quecto_eval::{contracts, manifest, runner, snapshot};
 mod cli;
-mod contracts;
-mod manifest;
-mod runner;
-mod snapshot;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
