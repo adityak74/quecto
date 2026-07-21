@@ -195,6 +195,7 @@ pub struct Agent {
     trace_file: Option<std::fs::File>,
     trace_identity: TraceIdentity,
     trace_seq: u64,
+    trace_emitted_changes: usize,
     recorded_messages: usize,
     recorded_changes: usize,
     renderer: Box<dyn Renderer>,
@@ -262,6 +263,7 @@ impl Agent {
             trace_file,
             trace_identity,
             trace_seq: 0,
+            trace_emitted_changes: 0,
             recorded_messages: 0,
             recorded_changes: 0,
             renderer: stderr_renderer(),
@@ -648,6 +650,17 @@ impl Agent {
                         identity,
                     });
                 }
+                while self.trace_emitted_changes < self.cx.changes().len() {
+                    let change = self.cx.changes()[self.trace_emitted_changes].clone();
+                    let seq = self.next_seq();
+                    let identity = self.trace_identity.clone();
+                    self.emit_trace_event(TraceEvent::Mutation {
+                        seq,
+                        path: change.path,
+                        identity,
+                    });
+                    self.trace_emitted_changes += 1;
+                }
                 let display_name = match call.arguments.get("command").and_then(|v| v.as_str()) {
                     Some(cmd)
                         if matches!(
@@ -876,6 +889,23 @@ mod tests {
     struct RecordingNamed {
         name: &'static str,
         ran: Arc<AtomicBool>,
+    }
+
+    struct WritesFile;
+    impl Tool for WritesFile {
+        fn name(&self) -> &str {
+            "write_file"
+        }
+        fn description(&self) -> &str {
+            "writes a fixed file for testing"
+        }
+        fn schema(&self) -> Value {
+            json!({"name": "write_file", "parameters": {"type": "object"}})
+        }
+        fn run(&self, _args: &Value, cx: &mut Context) -> ToolResult {
+            cx.record_change("foo.txt", None, "hi".into());
+            Ok(ToolOutput::new("wrote foo.txt", "ok"))
+        }
     }
 
     struct CaptureRenderer {
@@ -1788,5 +1818,18 @@ mod tests {
         assert!(has("\"tool.call\""));
         assert!(has("\"tool.result\""));
         assert!(has("\"tool_name\":\"read_file\""));
+    }
+
+    #[test]
+    fn tool_dispatch_emits_mutation_event_for_new_file_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let trace_path = dir.path().join("trace.jsonl");
+        let mut a = agent(Scripted::new(vec![wants_tool("write_file"), text("done")]))
+            .register(Box::new(WritesFile))
+            .with_policy(crate::policy::Policy::from_preset(crate::policy::Preset::Editor))
+            .with_trace_file(&trace_path);
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        let contents = std::fs::read_to_string(&trace_path).unwrap();
+        assert!(contents.lines().any(|l| l.contains("\"mutation\"") && l.contains("foo.txt")));
     }
 }
