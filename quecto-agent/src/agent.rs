@@ -614,6 +614,16 @@ impl Agent {
                 #[cfg(feature = "otel")]
                 let _tool_guard = tool_span.enter();
 
+                {
+                    let seq = self.next_seq();
+                    let identity = self.trace_identity.clone();
+                    self.emit_trace_event(TraceEvent::ToolCall {
+                        seq,
+                        tool_name: call.name.clone(),
+                        identity,
+                    });
+                }
+
                 let out = match self.policy.decide(call) {
                     Decision::Allow => self.registry.dispatch(call, &mut self.cx),
                     Decision::Ask if self.approval.allows(call) => {
@@ -627,6 +637,16 @@ impl Agent {
                 if self.cancel.load(Ordering::SeqCst) {
                     stop = Some(Outcome::Cancelled);
                     break;
+                }
+                {
+                    let seq = self.next_seq();
+                    let identity = self.trace_identity.clone();
+                    self.emit_trace_event(TraceEvent::ToolResult {
+                        seq,
+                        tool_name: call.name.clone(),
+                        success: out.summary != "denied",
+                        identity,
+                    });
                 }
                 let display_name = match call.arguments.get("command").and_then(|v| v.as_str()) {
                     Some(cmd)
@@ -1750,5 +1770,23 @@ mod tests {
         assert_eq!(types.first(), Some(&"run.start"));
         assert_eq!(types.last(), Some(&"run.end"));
         assert!(types.contains(&"termination"));
+    }
+
+    #[test]
+    fn tool_dispatch_emits_call_and_result_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let trace_path = dir.path().join("trace.jsonl");
+        let mut a = agent(Scripted::new(vec![wants_tool("read_file"), text("done")]))
+            .register(Box::new(RecordingNamed {
+                name: "read_file",
+                ran: Arc::new(AtomicBool::new(false)),
+            }))
+            .with_trace_file(&trace_path);
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        let contents = std::fs::read_to_string(&trace_path).unwrap();
+        let has = |needle: &str| contents.lines().any(|l| l.contains(needle));
+        assert!(has("\"tool.call\""));
+        assert!(has("\"tool.result\""));
+        assert!(has("\"tool_name\":\"read_file\""));
     }
 }
