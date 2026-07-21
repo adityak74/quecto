@@ -68,6 +68,13 @@ pub fn run_suite(
     let agent_binary = agent_binary.canonicalize()?;
     let agent_binary = agent_binary.as_path();
 
+    // Same problem applies to tasks_dir: paths derived from it (trace files,
+    // etc.) get handed to the child process via env vars/args after we've
+    // already chdir'd into the task workspace via current_dir, so a relative
+    // tasks_dir would resolve against the wrong directory inside the child.
+    let tasks_dir = tasks_dir.canonicalize()?;
+    let tasks_dir = tasks_dir.as_path();
+
     // suite_dir in the manifest is relative to the manifest file's own
     // location (matching how the manifest's paired contracts.critical
     // entries are authored), not the process's current working directory.
@@ -374,6 +381,57 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM contract_results", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn run_suite_works_with_a_relative_tasks_dir() {
+        // Regression test: task-derived paths (e.g. the trace file) are
+        // handed to the child agent process via env vars/args, but the
+        // process also chdirs into the task workspace via current_dir. A
+        // relative tasks_dir would then resolve those paths against the
+        // wrong (post-chdir) directory inside the child. Reproduced by
+        // giving run_suite a tasks_dir that is relative to the crate root
+        // (cargo test's cwd), rather than tempdir's absolute path.
+        let unique = format!(
+            "target/relative_tasks_dir_uat_{}",
+            std::process::id()
+        );
+        let root = PathBuf::from(&unique);
+        let tasks_dir = root.join("tasks");
+        let task_dir = tasks_dir.join("tb_relative");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
+
+        // A fake agent binary that writes to $QUECTO_TRACE_FILE after the
+        // harness has chdir'd it into the task workspace — this is exactly
+        // what fails if QUECTO_TRACE_FILE is left as a tasks_dir-relative
+        // path instead of being canonicalized up front.
+        let fake_agent = root.join("fake_agent.sh");
+        fs::write(
+            &fake_agent,
+            "#!/bin/sh\necho '{\"event_type\":\"run.start\",\"seq\":0}' >> \"$QUECTO_TRACE_FILE\"\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_agent).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_agent, perms).unwrap();
+        }
+
+        let manifest_path = root.join("manifest.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: quecto.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 1\nreference:\n  id: reference-high\n  reasoning_mode: high\ncandidates: []\ncontracts:\n  suite_dir: NOT_USED\n  critical: []\n",
+        )
+        .unwrap();
+
+        let db_path = root.join("telemetry.db");
+        let result = run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent);
+
+        fs::remove_dir_all(&root).unwrap();
+        result.unwrap();
     }
 
     #[test]
