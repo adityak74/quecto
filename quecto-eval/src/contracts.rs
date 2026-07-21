@@ -50,6 +50,84 @@ pub fn load_trace(path: &Path) -> anyhow::Result<Vec<Value>> {
         .collect()
 }
 
+fn seq_of(e: &Value) -> u64 {
+    e.get("seq").and_then(|v| v.as_u64()).unwrap_or(0)
+}
+
+fn events_of_type<'a>(events: &'a [Value], event_type: &str) -> Vec<&'a Value> {
+    events
+        .iter()
+        .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some(event_type))
+        .collect()
+}
+
+pub fn evaluate_contract(contract: &Contract, events: &[Value]) -> ContractOutcome {
+    let mut violated = Vec::new();
+    for req in &contract.required {
+        if !check_predicate(&contract.id, &req.id, events) {
+            violated.push(req.id.clone());
+        }
+    }
+    for f in &contract.forbidden {
+        if check_predicate(&contract.id, &f.id, events) {
+            violated.push(f.id.clone());
+        }
+    }
+    if violated.is_empty() {
+        ContractOutcome::Pass
+    } else {
+        ContractOutcome::Fail { violated }
+    }
+}
+
+fn check_predicate(contract_id: &str, predicate_id: &str, events: &[Value]) -> bool {
+    match (contract_id, predicate_id) {
+        ("verify_after_final_change", "verifier_invoked") => {
+            !events_of_type(events, "verifier.start").is_empty()
+        }
+        ("verify_after_final_change", "verifier_after_final_mutation") => {
+            let last_mutation = events_of_type(events, "mutation").iter().map(|e| seq_of(e)).max();
+            match last_mutation {
+                None => !events_of_type(events, "verifier.start").is_empty(),
+                Some(m) => events_of_type(events, "verifier.start")
+                    .iter()
+                    .any(|e| seq_of(e) > m),
+            }
+        }
+        ("verify_after_final_change", "verifier_passed") => events_of_type(events, "verifier.result")
+            .iter()
+            .any(|e| e.get("passed").and_then(|v| v.as_bool()) == Some(true)),
+        ("verify_after_final_change", "verifier_result_observed") => {
+            let first_result = events_of_type(events, "verifier.result")
+                .iter()
+                .map(|e| seq_of(e))
+                .min();
+            match first_result {
+                None => false,
+                Some(v) => events_of_type(events, "assistant.claim")
+                    .iter()
+                    .any(|e| seq_of(e) > v),
+            }
+        }
+        ("verify_after_final_change", "stale_verification") => {
+            let claims = events_of_type(events, "assistant.claim");
+            let results = events_of_type(events, "verifier.result");
+            let mutations = events_of_type(events, "mutation");
+            claims.iter().any(|c| {
+                let c_seq = seq_of(c);
+                results.iter().any(|r| {
+                    let r_seq = seq_of(r);
+                    r_seq < c_seq
+                        && mutations
+                            .iter()
+                            .any(|m| seq_of(m) > r_seq && seq_of(m) < c_seq)
+                })
+            })
+        }
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -86,5 +164,77 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0]["event_type"], "run.start");
         assert_eq!(events[1]["seq"], 1);
+    }
+}
+
+#[cfg(test)]
+mod predicate_tests {
+    use super::*;
+    use serde_json::json;
+
+    fn contract_fixture() -> Contract {
+        Contract {
+            schema_version: "quecto.contract/v1".into(),
+            id: "verify_after_final_change".into(),
+            version: "1.0.0".into(),
+            criticality: "critical".into(),
+            applies_when: Default::default(),
+            required: vec![
+                PredicateRef { id: "verifier_invoked".into(), critical: false },
+                PredicateRef { id: "verifier_after_final_mutation".into(), critical: false },
+                PredicateRef { id: "verifier_passed".into(), critical: false },
+                PredicateRef { id: "verifier_result_observed".into(), critical: false },
+            ],
+            forbidden: vec![PredicateRef { id: "stale_verification".into(), critical: true }],
+            compatibility: CompatibilityConfig {
+                reference_reliability_floor: 0.90,
+                negative_flip_tolerance: 0.05,
+            },
+        }
+    }
+
+    #[test]
+    fn passes_when_verify_happens_after_final_mutation_and_before_claim() {
+        let events = vec![
+            json!({"event_type": "run.start", "seq": 0}),
+            json!({"event_type": "mutation", "seq": 1, "path": "a.txt"}),
+            json!({"event_type": "verifier.start", "seq": 2}),
+            json!({"event_type": "verifier.result", "seq": 3, "passed": true}),
+            json!({"event_type": "assistant.claim", "seq": 4}),
+        ];
+        assert_eq!(evaluate_contract(&contract_fixture(), &events), ContractOutcome::Pass);
+    }
+
+    #[test]
+    fn fails_with_stale_verification_when_mutation_follows_verifier_result() {
+        let events = vec![
+            json!({"event_type": "verifier.start", "seq": 0}),
+            json!({"event_type": "verifier.result", "seq": 1, "passed": true}),
+            json!({"event_type": "mutation", "seq": 2, "path": "a.txt"}),
+            json!({"event_type": "assistant.claim", "seq": 3}),
+        ];
+        let outcome = evaluate_contract(&contract_fixture(), &events);
+        match outcome {
+            ContractOutcome::Fail { violated } => {
+                assert!(violated.contains(&"stale_verification".to_string()));
+                assert!(violated.contains(&"verifier_after_final_mutation".to_string()));
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fails_when_verifier_never_invoked() {
+        let events = vec![
+            json!({"event_type": "mutation", "seq": 0, "path": "a.txt"}),
+            json!({"event_type": "assistant.claim", "seq": 1}),
+        ];
+        let outcome = evaluate_contract(&contract_fixture(), &events);
+        match outcome {
+            ContractOutcome::Fail { violated } => {
+                assert!(violated.contains(&"verifier_invoked".to_string()));
+            }
+            other => panic!("expected Fail, got {other:?}"),
+        }
     }
 }
