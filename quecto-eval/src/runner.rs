@@ -98,9 +98,17 @@ pub fn run_suite(
         let backup_dir = tasks_dir.join(format!(".{task_id}.snapshot-backup"));
         crate::snapshot::snapshot_copy(&task_dir, &backup_dir)?;
 
+        let setup_script = task_dir.join("setup.sh");
+
         for runtime in &runtimes {
             for repetition in 0..manifest.experiment.repetitions {
                 crate::snapshot::restore(&backup_dir, &task_dir)?;
+                if setup_script.exists() {
+                    std::process::Command::new("sh")
+                        .arg("setup.sh")
+                        .current_dir(&task_dir)
+                        .status()?;
+                }
                 let snapshot_hash = crate::snapshot::snapshot_hash(&task_dir)?;
                 let run_id = format!(
                     "{}-{}-{}-{}",
@@ -242,5 +250,47 @@ mod tests {
             .unwrap();
         // 1 task * 2 runtimes (reference + 1 candidate) * 2 repetitions = 4 runs.
         assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn run_suite_executes_setup_script_before_each_repetition() {
+        let root = tempdir().unwrap();
+        let tasks_dir = root.path().join("tasks");
+        let task_dir = tasks_dir.join("tb_setup");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
+        fs::write(task_dir.join("setup.sh"), "#!/bin/sh\necho fixture > fixture.txt\n").unwrap();
+
+        // A fake agent binary: fails loudly if setup.sh hasn't produced the fixture file.
+        let fake_agent = root.path().join("fake_agent.sh");
+        fs::write(
+            &fake_agent,
+            "#!/bin/sh\nif [ ! -f fixture.txt ]; then echo 'MISSING_FIXTURE' >&2; exit 1; fi\necho '{\"event_type\":\"run.start\",\"seq\":0}' >> \"$QUECTO_TRACE_FILE\"\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_agent).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_agent, perms).unwrap();
+        }
+
+        let manifest_path = root.path().join("manifest.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: quecto.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 2\nreference:\n  id: reference-high\n  reasoning_mode: high\ncandidates: []\ncontracts:\n  suite_dir: NOT_USED\n  critical: []\n",
+        )
+        .unwrap();
+
+        let db_path = root.path().join("telemetry.db");
+        run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let passed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM runs WHERE passed = 1", [], |r| r.get(0))
+            .unwrap();
+        // 1 task * 1 runtime * 2 repetitions = 2 runs, all must have seen the fixture.
+        assert_eq!(passed, 2);
     }
 }
