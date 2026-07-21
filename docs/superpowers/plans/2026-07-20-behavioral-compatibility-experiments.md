@@ -1800,6 +1800,7 @@ pub fn run_suite(
 
                 let status = std::process::Command::new(agent_binary)
                     .current_dir(&task_dir)
+                    .arg("--yes")
                     .arg(&prompt)
                     .env("QUECTO_TRACE_FILE", &trace_path)
                     .env("QUECTO_EXPERIMENT_ID", &manifest.experiment.id)
@@ -2254,6 +2255,7 @@ fn instrumentation_validation_gate() {
     let trace_path = workspace.path().join("trace.jsonl");
     let status = Command::new(&agent)
         .current_dir(workspace.path())
+        .arg("--yes")
         .arg("append 'world' to notes.txt, then run `cat notes.txt` to confirm, then finish")
         .env("QUECTO_TRACE_FILE", &trace_path)
         .env("QUECTO_EXPERIMENT_ID", "validation")
@@ -2262,6 +2264,7 @@ fn instrumentation_validation_gate() {
         .env("QUECTO_RUN_ID", "validation-run-0")
         .env("QUECTO_REPETITION", "0")
         .env("QUECTO_REASONING_MODE", "high")
+        .env("QUECTO_MODEL", "qwen3.6:35b-mlx")
         .status();
 
     let Ok(status) = status else {

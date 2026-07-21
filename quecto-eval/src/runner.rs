@@ -104,6 +104,7 @@ pub fn run_suite(
 
                 let status = std::process::Command::new(agent_binary)
                     .current_dir(&task_dir)
+                    .arg("--yes")
                     .arg(&prompt)
                     .env("QUECTO_TRACE_FILE", &trace_path)
                     .env("QUECTO_EXPERIMENT_ID", &manifest.experiment.id)
