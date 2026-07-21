@@ -53,8 +53,100 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> anyh
     Ok(())
 }
 
-pub fn run_suite(_suite: &str, _db_path: &Path) -> anyhow::Result<()> {
-    todo!()
+pub fn run_suite(
+    manifest_path: &Path,
+    tasks_dir: &Path,
+    db_path: &Path,
+    agent_binary: &Path,
+) -> anyhow::Result<()> {
+    let manifest = crate::manifest::load_manifest(manifest_path)?;
+    let conn = init_db(db_path)?;
+
+    let contracts: Vec<_> = manifest
+        .contracts
+        .critical
+        .iter()
+        .map(|id| {
+            crate::contracts::load_contract(
+                &Path::new(&manifest.contracts.suite_dir).join(format!("{id}.yaml")),
+            )
+        })
+        .collect::<anyhow::Result<Vec<_>>>()
+        .unwrap_or_default();
+
+    let mut runtimes = vec![manifest.reference.clone()];
+    runtimes.extend(manifest.candidates.clone());
+
+    for entry in fs::read_dir(tasks_dir)? {
+        let task_dir = entry?.path();
+        if !task_dir.is_dir() {
+            continue;
+        }
+        let task_id = task_dir
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let prompt = fs::read_to_string(task_dir.join("prompt.md"))?;
+
+        let backup_dir = tasks_dir.join(format!(".{task_id}.snapshot-backup"));
+        crate::snapshot::snapshot_copy(&task_dir, &backup_dir)?;
+
+        for runtime in &runtimes {
+            for repetition in 0..manifest.experiment.repetitions {
+                crate::snapshot::restore(&backup_dir, &task_dir)?;
+                let snapshot_hash = crate::snapshot::snapshot_hash(&task_dir)?;
+                let run_id = format!(
+                    "{}-{}-{}-{}",
+                    manifest.experiment.id, runtime.id, task_id, repetition
+                );
+                let trace_path = task_dir.join(format!(".trace-{run_id}.jsonl"));
+
+                let status = std::process::Command::new(agent_binary)
+                    .current_dir(&task_dir)
+                    .arg(&prompt)
+                    .env("QUECTO_TRACE_FILE", &trace_path)
+                    .env("QUECTO_EXPERIMENT_ID", &manifest.experiment.id)
+                    .env("QUECTO_TASK_ID", &task_id)
+                    .env("QUECTO_RUNTIME_ID", &runtime.id)
+                    .env("QUECTO_RUN_ID", &run_id)
+                    .env("QUECTO_REPETITION", repetition.to_string())
+                    .env("QUECTO_SNAPSHOT_HASH", &snapshot_hash)
+                    .env("QUECTO_REASONING_MODE", &runtime.reasoning_mode)
+                    .status()?;
+
+                let events = crate::contracts::load_trace(&trace_path).unwrap_or_default();
+                for contract in &contracts {
+                    let outcome = crate::contracts::evaluate_contract(contract, &events);
+                    let (outcome_str, violated) = match &outcome {
+                        crate::contracts::ContractOutcome::Pass => ("pass".to_string(), String::new()),
+                        crate::contracts::ContractOutcome::Fail { violated } => {
+                            ("fail".to_string(), violated.join(","))
+                        }
+                    };
+                    conn.execute(
+                        "INSERT INTO contract_results (run_id, contract_id, outcome, violated_predicates) VALUES (?1, ?2, ?3, ?4)",
+                        rusqlite::params![run_id, contract.id, outcome_str, violated],
+                    )?;
+                }
+
+                conn.execute(
+                    "INSERT INTO runs (task_id, suite, passed, experiment_id, runtime_id, run_id, repetition) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                    rusqlite::params![
+                        task_id,
+                        "pilot",
+                        status.success(),
+                        manifest.experiment.id,
+                        runtime.id,
+                        run_id,
+                        repetition
+                    ],
+                )?;
+            }
+        }
+        fs::remove_dir_all(&backup_dir)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -104,4 +196,44 @@ mod tests {
         assert_eq!(count2, 1);
     }
 
+    #[test]
+    fn run_suite_executes_reference_and_candidate_per_repetition() {
+        let root = tempdir().unwrap();
+        let tasks_dir = root.path().join("tasks");
+        let task_dir = tasks_dir.join("tb_fake");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
+
+        // A fake agent binary: writes one trace event per invocation and exits 0.
+        let fake_agent = root.path().join("fake_agent.sh");
+        fs::write(
+            &fake_agent,
+            "#!/bin/sh\necho '{\"event_type\":\"run.start\",\"seq\":0}' >> \"$QUECTO_TRACE_FILE\"\necho '{\"event_type\":\"run.end\",\"seq\":1}' >> \"$QUECTO_TRACE_FILE\"\nexit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_agent).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_agent, perms).unwrap();
+        }
+
+        let manifest_path = root.path().join("manifest.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: quecto.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 2\nreference:\n  id: reference-high\n  reasoning_mode: high\ncandidates:\n  - id: candidate-low\n    reasoning_mode: low\ncontracts:\n  suite_dir: NOT_USED\n  critical: []\n",
+        )
+        .unwrap();
+
+        let db_path = root.path().join("telemetry.db");
+        run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
+            .unwrap();
+        // 1 task * 2 runtimes (reference + 1 candidate) * 2 repetitions = 4 runs.
+        assert_eq!(count, 4);
+    }
 }
