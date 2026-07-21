@@ -103,6 +103,7 @@ pub fn run_suite(
         crate::snapshot::snapshot_copy(&task_dir, &backup_dir)?;
 
         let setup_script = task_dir.join("setup.sh");
+        let verify_script = task_dir.join("verify.sh");
 
         for runtime in &runtimes {
             for repetition in 0..manifest.experiment.repetitions {
@@ -120,8 +121,8 @@ pub fn run_suite(
                 );
                 let trace_path = task_dir.join(format!(".trace-{run_id}.jsonl"));
 
-                let status = std::process::Command::new(agent_binary)
-                    .current_dir(&task_dir)
+                let mut cmd = std::process::Command::new(agent_binary);
+                cmd.current_dir(&task_dir)
                     .arg("--yes")
                     .arg(&prompt)
                     .env("QUECTO_TRACE_FILE", &trace_path)
@@ -131,8 +132,17 @@ pub fn run_suite(
                     .env("QUECTO_RUN_ID", &run_id)
                     .env("QUECTO_REPETITION", repetition.to_string())
                     .env("QUECTO_SNAPSHOT_HASH", &snapshot_hash)
-                    .env("QUECTO_REASONING_MODE", &runtime.reasoning_mode)
-                    .status()?;
+                    .env("QUECTO_REASONING_MODE", &runtime.reasoning_mode);
+                if verify_script.exists() {
+                    // Wires the task's verify.sh into quecto-agent's own
+                    // completion-gate verifier, so it emits verifier.start/
+                    // verifier.result and the verify_after_final_change
+                    // contract has something real to evaluate — otherwise
+                    // the agent only ever runs tests as ordinary shell
+                    // commands, which the contract can't observe.
+                    cmd.env("QUECTO_VERIFY", "sh verify.sh");
+                }
+                let status = cmd.status()?;
 
                 let events = crate::contracts::load_trace(&trace_path).unwrap_or_default();
                 for contract in &contracts {
