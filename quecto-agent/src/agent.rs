@@ -564,12 +564,29 @@ impl Agent {
             self.push_message(assistant_msg, metadata);
 
             if msg.tool_calls.is_empty() {
-                if let Some(verifier) = &self.verifier {
-                    if !verifier.is_empty() && !self.cx.changes().is_empty() {
-                        let report = verifier.run(&self.cx);
+                if self
+                    .verifier
+                    .as_ref()
+                    .is_some_and(|verifier| !verifier.is_empty())
+                {
+                    if !self.cx.changes().is_empty() {
+                        let seq = self.next_seq();
+                        let identity = self.trace_identity.clone();
+                        self.emit_trace_event(TraceEvent::VerifierStart { seq, identity });
+
+                        let report = self.verifier.as_ref().unwrap().run(&self.cx);
                         for r in &report.results {
                             self.renderer.verify(&r.command, r.passed);
                         }
+
+                        let seq = self.next_seq();
+                        let identity = self.trace_identity.clone();
+                        self.emit_trace_event(TraceEvent::VerifierResult {
+                            seq,
+                            passed: report.all_passed(),
+                            identity,
+                        });
+
                         if !report.all_passed() {
                             let changes = self.cx.changes().len();
                             if failed_verify_changes == Some(changes) {
@@ -1831,5 +1848,20 @@ mod tests {
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
         let contents = std::fs::read_to_string(&trace_path).unwrap();
         assert!(contents.lines().any(|l| l.contains("\"mutation\"") && l.contains("foo.txt")));
+    }
+
+    #[test]
+    fn verifier_run_emits_start_and_result_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let trace_path = dir.path().join("trace.jsonl");
+        let mut a = agent(Scripted::new(vec![wants_tool("write_file"), text("done")]))
+            .register(Box::new(WritesFile))
+            .with_policy(crate::policy::Policy::from_preset(crate::policy::Preset::Editor))
+            .with_verifier(crate::verify::Verifier::new(vec!["true".into()]))
+            .with_trace_file(&trace_path);
+        assert!(matches!(a.run("hi"), Outcome::Complete(_)));
+        let contents = std::fs::read_to_string(&trace_path).unwrap();
+        assert!(contents.lines().any(|l| l.contains("\"verifier.start\"")));
+        assert!(contents.lines().any(|l| l.contains("\"verifier.result\"") && l.contains("\"passed\":true")));
     }
 }
