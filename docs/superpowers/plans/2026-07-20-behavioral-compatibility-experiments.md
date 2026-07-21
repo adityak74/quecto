@@ -567,13 +567,13 @@ git commit -m "feat(quecto-agent): emit tool.call/tool.result trace events"
     struct WritesFile;
     impl Tool for WritesFile {
         fn name(&self) -> &str {
-            "writes_file"
+            "write_file"
         }
         fn description(&self) -> &str {
             "writes a fixed file for testing"
         }
         fn schema(&self) -> Value {
-            json!({"name": "writes_file", "parameters": {"type": "object"}})
+            json!({"name": "write_file", "parameters": {"type": "object"}})
         }
         fn run(&self, _args: &Value, cx: &mut Context) -> ToolResult {
             cx.record_change("foo.txt", None, "hi".into());
@@ -585,8 +585,9 @@ git commit -m "feat(quecto-agent): emit tool.call/tool.result trace events"
     fn tool_dispatch_emits_mutation_event_for_new_file_changes() {
         let dir = tempfile::tempdir().unwrap();
         let trace_path = dir.path().join("trace.jsonl");
-        let mut a = agent(Scripted::new(vec![wants_tool("writes_file"), text("done")]))
+        let mut a = agent(Scripted::new(vec![wants_tool("write_file"), text("done")]))
             .register(Box::new(WritesFile))
+            .with_policy(crate::policy::Policy::from_preset(crate::policy::Preset::Editor))
             .with_trace_file(&trace_path);
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
         let contents = std::fs::read_to_string(&trace_path).unwrap();
@@ -595,6 +596,8 @@ git commit -m "feat(quecto-agent): emit tool.call/tool.result trace events"
 ```
 
 `Context::record_change(path: impl Into<String>, before: Option<String>, after: String)` already exists at `quecto-agent/src/tools/mod.rs:135-146` and pushes a `FileChange` onto `self.changes` — no new method needed, the test above calls it directly.
+
+Note: the tool is named `write_file` (not a made-up name) because `Policy::decide` (`quecto-agent/src/policy.rs:84-99`) only recognizes a hardcoded set of built-in tool names — a fictitious name would be denied before dispatch regardless of registration. `write_file` maps to the policy's `edit` decision, and `.with_policy(Policy::from_preset(Preset::Editor))` sets `edit: Decision::Allow` so dispatch actually reaches the tool.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -664,8 +667,9 @@ git commit -m "feat(quecto-agent): emit mutation trace events for new file chang
     fn verifier_run_emits_start_and_result_events() {
         let dir = tempfile::tempdir().unwrap();
         let trace_path = dir.path().join("trace.jsonl");
-        let mut a = agent(Scripted::new(vec![wants_tool("writes_file"), text("done")]))
+        let mut a = agent(Scripted::new(vec![wants_tool("write_file"), text("done")]))
             .register(Box::new(WritesFile))
+            .with_policy(crate::policy::Policy::from_preset(crate::policy::Preset::Editor))
             .with_verifier(crate::verify::Verifier::new(vec!["true".into()]))
             .with_trace_file(&trace_path);
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
