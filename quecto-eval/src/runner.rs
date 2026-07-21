@@ -62,6 +62,12 @@ pub fn run_suite(
     let manifest = crate::manifest::load_manifest(manifest_path)?;
     let conn = init_db(db_path)?;
 
+    // Command::current_dir resolves a relative program path against the new
+    // cwd on some platforms, not the caller's cwd — canonicalize up front so
+    // spawning still works once we chdir into each task's workspace below.
+    let agent_binary = agent_binary.canonicalize()?;
+    let agent_binary = agent_binary.as_path();
+
     let contracts: Vec<_> = manifest
         .contracts
         .critical
