@@ -1,5 +1,5 @@
 use rusqlite::Connection;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::fs;
 
 pub fn init_db(db_path: &Path) -> anyhow::Result<Connection> {
@@ -68,17 +68,21 @@ pub fn run_suite(
     let agent_binary = agent_binary.canonicalize()?;
     let agent_binary = agent_binary.as_path();
 
+    // suite_dir in the manifest is relative to the manifest file's own
+    // location (matching how the manifest's paired contracts.critical
+    // entries are authored), not the process's current working directory.
+    let manifest_dir = manifest_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+    let suite_dir = manifest_dir.join(&manifest.contracts.suite_dir);
+
     let contracts: Vec<_> = manifest
         .contracts
         .critical
         .iter()
-        .map(|id| {
-            crate::contracts::load_contract(
-                &Path::new(&manifest.contracts.suite_dir).join(format!("{id}.yaml")),
-            )
-        })
-        .collect::<anyhow::Result<Vec<_>>>()
-        .unwrap_or_default();
+        .map(|id| crate::contracts::load_contract(&suite_dir.join(format!("{id}.yaml"))))
+        .collect::<anyhow::Result<Vec<_>>>()?;
 
     let mut runtimes = vec![manifest.reference.clone()];
     runtimes.extend(manifest.candidates.clone());
@@ -292,5 +296,54 @@ mod tests {
             .unwrap();
         // 1 task * 1 runtime * 2 repetitions = 2 runs, all must have seen the fixture.
         assert_eq!(passed, 2);
+    }
+
+    #[test]
+    fn run_suite_resolves_suite_dir_relative_to_manifest_location() {
+        let root = tempdir().unwrap();
+        let manifest_dir = root.path().join("manifests");
+        let contracts_dir = root.path().join("contracts");
+        fs::create_dir_all(&manifest_dir).unwrap();
+        fs::create_dir_all(&contracts_dir).unwrap();
+
+        fs::write(
+            contracts_dir.join("always_pass.yaml"),
+            "schema_version: quecto.contract/v1\nid: always_pass\nversion: 1.0.0\ncriticality: critical\napplies_when: {}\nrequired: []\nforbidden: []\ncompatibility:\n  reference_reliability_floor: 0.90\n  negative_flip_tolerance: 0.05\n",
+        )
+        .unwrap();
+
+        let tasks_dir = root.path().join("tasks");
+        let task_dir = tasks_dir.join("tb_fake");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
+
+        let fake_agent = root.path().join("fake_agent.sh");
+        fs::write(&fake_agent, "#!/bin/sh\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_agent).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_agent, perms).unwrap();
+        }
+
+        // suite_dir is relative to the manifest file's directory, not the
+        // process cwd — this manifest lives in manifests/ and points at
+        // ../contracts, mirroring the real pilot manifest's layout.
+        let manifest_path = manifest_dir.join("pilot.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: quecto.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 1\nreference:\n  id: reference-high\n  reasoning_mode: high\ncandidates: []\ncontracts:\n  suite_dir: ../contracts\n  critical:\n    - always_pass\n",
+        )
+        .unwrap();
+
+        let db_path = root.path().join("telemetry.db");
+        run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM contract_results", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }
