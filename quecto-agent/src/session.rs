@@ -41,6 +41,14 @@ CREATE TABLE IF NOT EXISTS file_changes (
     path TEXT NOT NULL,
     before TEXT,
     after TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS message_images (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    message_seq INTEGER NOT NULL,
+    part_index INTEGER NOT NULL,
+    mime_type TEXT NOT NULL,
+    data BLOB NOT NULL
 );";
 
 /// A stored session's header row.
@@ -107,6 +115,34 @@ fn calls_from_json(raw: Option<String>) -> Vec<ToolCall> {
             arguments: v.get("arguments").cloned().unwrap_or(Value::Null),
         })
         .collect()
+}
+
+/// Compress image data to JPEG for storage. Returns (compressed_bytes, mime_type).
+/// Small JPEGs pass through without re-encoding.
+fn compress_for_storage(data: &[u8], mime_type: &str) -> (Vec<u8>, String) {
+    const JPEG_QUALITY: u8 = 80;
+    const PASSTHROUGH_THRESHOLD: usize = 100_000;
+
+    if mime_type == "image/jpeg" && data.len() < PASSTHROUGH_THRESHOLD {
+        return (data.to_vec(), "image/jpeg".into());
+    }
+
+    if let Ok(img) = image::load_from_memory(data) {
+        let mut buf = Vec::new();
+        let mut cursor = std::io::Cursor::new(&mut buf);
+        if img
+            .write_with_encoder(image::codecs::jpeg::JpegEncoder::new_with_quality(
+                &mut cursor,
+                JPEG_QUALITY,
+            ))
+            .is_ok()
+            && !buf.is_empty()
+        {
+            return (buf, "image/jpeg".into());
+        }
+    }
+
+    (data.to_vec(), mime_type.into())
 }
 
 fn message_column_exists(conn: &Connection, column: &str) -> Result<bool, rusqlite::Error> {
@@ -304,6 +340,16 @@ impl Store {
                 actual_reasoning_tokens,
             ),
         )?;
+        for (idx, part) in m.content.iter().enumerate() {
+            if let ContentPart::Image { data, mime_type } = part {
+                let (compressed, stored_mime) = compress_for_storage(data, mime_type);
+                tx.execute(
+                    "INSERT INTO message_images (session_id, message_seq, part_index, mime_type, data) \
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    (id, seq, idx as i64, &stored_mime, &compressed),
+                )?;
+            }
+        }
         tx.execute(
             "UPDATE sessions SET updated = ?2 WHERE id = ?1",
             (id, now()),
@@ -357,7 +403,9 @@ impl Store {
     }
 
     pub fn session_status(&self, id: &str) -> Result<Option<String>, BoxErr> {
-        let mut stmt = self.conn.prepare("SELECT status FROM sessions WHERE id = ?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT status FROM sessions WHERE id = ?1")?;
         let mut rows = stmt.query([id])?;
         if let Some(row) = rows.next()? {
             let status: String = row.get(0)?;
@@ -377,45 +425,82 @@ impl Store {
 
     pub fn load_message_records(&self, id: &str) -> Result<Vec<MessageRecord>, BoxErr> {
         let mut stmt = self.conn.prepare(
-            "SELECT role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_parameters_sent, reasoning_content_available, actual_reasoning_tokens FROM messages \
+            "SELECT seq, role, content, tool_calls, tool_call_id, reasoning_content, requested_reasoning_mode, provider_reasoning_parameters, reasoning_parameters_sent, reasoning_content_available, actual_reasoning_tokens FROM messages \
              WHERE session_id = ?1 ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([id], |row| {
-            let role: String = row.get(0)?;
-            let content: String = row.get(1)?;
-            let tool_calls: Option<String> = row.get(2)?;
-            let tool_call_id: Option<String> = row.get(3)?;
-            let reasoning_content: Option<String> = row.get(4)?;
-            let requested_reasoning_mode: Option<String> = row.get(5)?;
-            let provider_reasoning_parameters: Option<String> = row.get(6)?;
-            let reasoning_parameters_sent: Option<bool> = row.get(7)?;
-            let reasoning_content_available: Option<bool> = row.get(8)?;
-            let actual_reasoning_tokens: Option<i64> = row.get(9)?;
-            Ok(MessageRecord {
-                message: Message {
-                    role,
-                    content: vec![ContentPart::Text(content)],
-                    tool_calls: calls_from_json(tool_calls),
-                    tool_call_id,
-                    reasoning_content,
+            let seq: i64 = row.get(0)?;
+            let role: String = row.get(1)?;
+            let content: String = row.get(2)?;
+            let tool_calls: Option<String> = row.get(3)?;
+            let tool_call_id: Option<String> = row.get(4)?;
+            let reasoning_content: Option<String> = row.get(5)?;
+            let requested_reasoning_mode: Option<String> = row.get(6)?;
+            let provider_reasoning_parameters: Option<String> = row.get(7)?;
+            let reasoning_parameters_sent: Option<bool> = row.get(8)?;
+            let reasoning_content_available: Option<bool> = row.get(9)?;
+            let actual_reasoning_tokens: Option<i64> = row.get(10)?;
+            Ok((
+                seq,
+                MessageRecord {
+                    message: Message {
+                        role,
+                        content: vec![ContentPart::Text(content)],
+                        tool_calls: calls_from_json(tool_calls),
+                        tool_call_id,
+                        reasoning_content,
+                    },
+                    metadata: MessageMetadata {
+                        requested_reasoning_mode: requested_reasoning_mode
+                            .and_then(|mode| mode.parse().ok()),
+                        provider_reasoning_parameters: provider_reasoning_parameters
+                            .and_then(|parameters| serde_json::from_str(&parameters).ok()),
+                        reasoning_parameters_sent,
+                        reasoning_content_available,
+                        actual_reasoning_tokens: actual_reasoning_tokens
+                            .and_then(|tokens| u64::try_from(tokens).ok()),
+                    },
                 },
-                metadata: MessageMetadata {
-                    requested_reasoning_mode: requested_reasoning_mode
-                        .and_then(|mode| mode.parse().ok()),
-                    provider_reasoning_parameters: provider_reasoning_parameters
-                        .and_then(|parameters| serde_json::from_str(&parameters).ok()),
-                    reasoning_parameters_sent,
-                    reasoning_content_available,
-                    actual_reasoning_tokens: actual_reasoning_tokens
-                        .and_then(|tokens| u64::try_from(tokens).ok()),
-                },
-            })
+            ))
         })?;
-        let mut out = Vec::new();
+        let mut out: Vec<(i64, MessageRecord)> = Vec::new();
         for m in rows {
             out.push(m?);
         }
-        Ok(out)
+
+        let mut img_stmt = self.conn.prepare(
+            "SELECT part_index, mime_type, data FROM message_images \
+             WHERE session_id = ?1 AND message_seq = ?2 ORDER BY part_index ASC",
+        )?;
+        for (seq, record) in out.iter_mut() {
+            let img_rows = img_stmt.query_map(rusqlite::params![id, *seq], |row| {
+                let part_index: i64 = row.get(0)?;
+                let mime_type: String = row.get(1)?;
+                let data: Vec<u8> = row.get(2)?;
+                Ok((part_index as usize, mime_type, data))
+            })?;
+            let mut images: Vec<(usize, String, Vec<u8>)> = Vec::new();
+            for img in img_rows {
+                images.push(img?);
+            }
+            if !images.is_empty() {
+                let text = record.message.text();
+                let mut parts: Vec<(usize, ContentPart)> = Vec::new();
+                let image_indices: std::collections::HashSet<usize> =
+                    images.iter().map(|(idx, _, _)| *idx).collect();
+                let text_idx = (0..).find(|i| !image_indices.contains(i)).unwrap_or(0);
+                if !text.is_empty() {
+                    parts.push((text_idx, ContentPart::Text(text)));
+                }
+                for (idx, mime_type, data) in images {
+                    parts.push((idx, ContentPart::Image { data, mime_type }));
+                }
+                parts.sort_by_key(|(idx, _)| *idx);
+                record.message.content = parts.into_iter().map(|(_, part)| part).collect();
+            }
+        }
+
+        Ok(out.into_iter().map(|(_, record)| record).collect())
     }
 
     pub fn load_changes(&self, id: &str) -> Result<Vec<FileChange>, BoxErr> {
@@ -438,12 +523,13 @@ impl Store {
     }
 
     pub fn take_last_change(&self, id: &str) -> Result<Option<FileChange>, BoxErr> {
-        let query_result: Result<(i64, String, Option<String>, String), rusqlite::Error> = self.conn.query_row(
-            "SELECT id, path, before, after FROM file_changes \
+        let query_result: Result<(i64, String, Option<String>, String), rusqlite::Error> =
+            self.conn.query_row(
+                "SELECT id, path, before, after FROM file_changes \
              WHERE session_id = ?1 ORDER BY seq DESC, id DESC LIMIT 1",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-        );
+                [id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            );
         let (row_id, path, before, after) = match query_result {
             Ok(val) => val,
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
@@ -642,9 +728,15 @@ CREATE TABLE file_changes (
     fn session_status_retrieves_correct_status() {
         let store = Store::open_in_memory().unwrap();
         store.create_session("s1", "task", "/repo", "m").unwrap();
-        assert_eq!(store.session_status("s1").unwrap(), Some("running".to_string()));
+        assert_eq!(
+            store.session_status("s1").unwrap(),
+            Some("running".to_string())
+        );
         store.set_status("s1", "done").unwrap();
-        assert_eq!(store.session_status("s1").unwrap(), Some("done".to_string()));
+        assert_eq!(
+            store.session_status("s1").unwrap(),
+            Some("done".to_string())
+        );
         assert_eq!(store.session_status("nonexistent").unwrap(), None);
     }
 
@@ -717,7 +809,10 @@ CREATE TABLE file_changes (
         store.record_message("s1", 0, &m).unwrap();
         let loaded = store.load_messages("s1").unwrap();
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].reasoning_content, Some("thinking trace".to_string()));
+        assert_eq!(
+            loaded[0].reasoning_content,
+            Some("thinking trace".to_string())
+        );
     }
 
     #[test]
@@ -754,7 +849,13 @@ CREATE TABLE file_changes (
     fn session_reasoning_mode_round_trips() {
         let store = Store::open_in_memory().unwrap();
         store
-            .create_session_with_reasoning_mode("s1", "chat", "/repo", "m", Some(crate::reasoning::ReasoningMode::High))
+            .create_session_with_reasoning_mode(
+                "s1",
+                "chat",
+                "/repo",
+                "m",
+                Some(crate::reasoning::ReasoningMode::High),
+            )
             .unwrap();
         assert_eq!(
             store.session_reasoning_mode("s1").unwrap(),
@@ -763,10 +864,51 @@ CREATE TABLE file_changes (
     }
 
     #[test]
+    fn image_message_round_trips_through_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("img.db");
+        let mut store = Store::open_at(&path).unwrap();
+        store.create_session("s1", "t", "/r", "m").unwrap();
+
+        let msg = Message::user_multimodal(vec![
+            ContentPart::Text("describe this".into()),
+            ContentPart::Image {
+                data: vec![0xFF, 0xD8, 0xFF, 0xE0],
+                mime_type: "image/jpeg".into(),
+            },
+        ]);
+        store
+            .record_message_with_metadata("s1", 0, &msg, &MessageMetadata::default())
+            .unwrap();
+
+        let loaded = Store::open_at(&path)
+            .unwrap()
+            .load_message_records("s1")
+            .unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].message.text(), "describe this");
+        assert!(loaded[0].message.has_images());
+    }
+
+    #[test]
+    fn compress_for_storage_passes_through_small_jpeg() {
+        let small_jpeg = vec![0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        let (result, mime) = super::compress_for_storage(&small_jpeg, "image/jpeg");
+        assert_eq!(result, small_jpeg);
+        assert_eq!(mime, "image/jpeg");
+    }
+
+    #[test]
     fn session_reasoning_mode_can_be_cleared() {
         let store = Store::open_in_memory().unwrap();
         store
-            .create_session_with_reasoning_mode("s1", "chat", "/repo", "m", Some(crate::reasoning::ReasoningMode::Low))
+            .create_session_with_reasoning_mode(
+                "s1",
+                "chat",
+                "/repo",
+                "m",
+                Some(crate::reasoning::ReasoningMode::Low),
+            )
             .unwrap();
         store.set_session_reasoning_mode("s1", None).unwrap();
         assert_eq!(store.session_reasoning_mode("s1").unwrap(), None);

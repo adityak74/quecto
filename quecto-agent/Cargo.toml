@@ -22,6 +22,7 @@ toml = "0.8"
 sha2 = "0.10"
 ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 quecto-mcp = { path = "../quecto-mcp", optional = true }
 
 # Optional OpenTelemetry and Tracing Dependencies
