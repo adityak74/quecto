@@ -91,6 +91,9 @@ struct Cli {
     #[cfg(feature = "mcp")]
     #[arg(long = "mcp", global = true, value_name = "TRANSPORT:NAME:...")]
     mcp: Vec<String>,
+    /// Attach image file(s) to the prompt. Can be specified multiple times.
+    #[arg(long = "image", global = true, value_name = "PATH")]
+    images: Vec<PathBuf>,
     #[command(subcommand)]
     command: Option<Command>,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
@@ -161,7 +164,7 @@ fn main() {
                     )
                     .exit();
             }
-            run(cli.task.join(" "), cli.yes, cli.no_verify, &overrides);
+            run(cli.task.join(" "), &cli.images, cli.yes, cli.no_verify, &overrides);
         }
     }
 }
@@ -192,6 +195,17 @@ const SCAFFOLD_TEMPLATE: &str = r#"name = "{name}"
 # test = "cargo test"
 # lint = "cargo clippy -- -D warnings"
 "#;
+
+fn mime_from_extension(path: &Path) -> String {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        _ => "image/png",
+    }
+    .to_string()
+}
 
 fn scaffold(name: &str) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
@@ -488,7 +502,7 @@ fn resolve_max_tokens(overrides: &Overrides, merged: &Flavor) -> Option<u32> {
         .or(merged.max_tokens)
 }
 
-fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides) {
+fn run(task: String, images: &[PathBuf], auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
     let approval = ApprovalMode::terminal(auto_approve);
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
@@ -562,9 +576,26 @@ fn run(task: String, auto_approve: bool, no_verify: bool, overrides: &Overrides)
         }
     }
 
-    let outcome = agent.run(&task);
-    let status_target = recorder_store.as_ref().map(|s| (s, session_id.as_str()));
-    finish(outcome, status_target);
+    if images.is_empty() {
+        let outcome = agent.run(&task);
+        let status_target = recorder_store.as_ref().map(|s| (s, session_id.as_str()));
+        finish(outcome, status_target);
+    } else {
+        use quecto_agent::ContentPart;
+        let mut parts: Vec<ContentPart> = Vec::new();
+        for path in images {
+            let data = std::fs::read(path).unwrap_or_else(|e| {
+                eprintln!("quecto-agent: cannot read image {}: {e}", path.display());
+                std::process::exit(2);
+            });
+            let mime_type = mime_from_extension(path);
+            parts.push(ContentPart::Image { data, mime_type });
+        }
+        parts.push(ContentPart::Text(task));
+        let outcome = agent.run_multimodal(parts);
+        let status_target = recorder_store.as_ref().map(|s| (s, session_id.as_str()));
+        finish(outcome, status_target);
+    }
 }
 
 const HELP: &str = "\
