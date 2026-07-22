@@ -1,0 +1,1 @@
+Run `sh test_runner.sh` to execute tests. Make sure they pass and it produces `success.flag`.\n

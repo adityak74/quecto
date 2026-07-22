@@ -1,0 +1,1 @@
+Fix the syntax error in `main.c` and compile it to `main.out` using `gcc main.c -o main.out`.\n

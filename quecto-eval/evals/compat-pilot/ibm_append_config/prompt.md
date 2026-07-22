@@ -1,0 +1,1 @@
+Add `timeout: 30` to `settings.yaml`. Keep all existing settings intact.\n
