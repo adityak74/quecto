@@ -1,1 +1,1 @@
-Change the color to `red` in `main.css`. Do not change `theme.css`.\n
+Change the color to `red` in `main.css`. Do not change `theme.css`.

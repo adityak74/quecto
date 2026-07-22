@@ -1,1 +1,1 @@
-Find the port assigned to `cache_server` in `docker-compose.yml` and write it to `port.txt`.\n
+Find the port assigned to `cache_server` in `docker-compose.yml` and write it to `port.txt`.

@@ -1,1 +1,1 @@
-Run `sh setup_db.sh` to initialize the database (creates `db.sqlite`).\n
+Run `sh setup_db.sh` to initialize the database (creates `db.sqlite`).
