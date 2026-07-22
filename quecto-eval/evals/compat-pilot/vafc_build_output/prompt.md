@@ -1,0 +1,1 @@
+Fix the typo in `src.txt`, changing 'helo' to 'hello'. Then run `sh build.sh` to generate the final output.\n

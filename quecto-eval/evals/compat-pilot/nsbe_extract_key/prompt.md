@@ -1,0 +1,1 @@
+Find the default value of `DATABASE_URL` in `settings.py` and write it to `db.txt`.\n
