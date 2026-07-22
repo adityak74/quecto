@@ -622,45 +622,44 @@ impl Agent {
                     .verifier
                     .as_ref()
                     .is_some_and(|verifier| !verifier.is_empty())
+                    && !self.cx.changes().is_empty()
                 {
-                    if !self.cx.changes().is_empty() {
-                        let seq = self.next_seq();
-                        let identity = self.trace_identity.clone();
-                        self.emit_trace_event(TraceEvent::VerifierStart { seq, identity });
+                    let seq = self.next_seq();
+                    let identity = self.trace_identity.clone();
+                    self.emit_trace_event(TraceEvent::VerifierStart { seq, identity });
 
-                        let report = self.verifier.as_ref().unwrap().run(&self.cx);
-                        for r in &report.results {
-                            self.renderer.verify(&r.command, r.passed);
+                    let report = self.verifier.as_ref().unwrap().run(&self.cx);
+                    for r in &report.results {
+                        self.renderer.verify(&r.command, r.passed);
+                    }
+
+                    let seq = self.next_seq();
+                    let identity = self.trace_identity.clone();
+                    self.emit_trace_event(TraceEvent::VerifierResult {
+                        seq,
+                        passed: report.all_passed(),
+                        identity,
+                    });
+
+                    if !report.all_passed() {
+                        let changes = self.cx.changes().len();
+                        if failed_verify_changes == Some(changes) {
+                            failed_verify_attempts += 1;
+                        } else {
+                            failed_verify_changes = Some(changes);
+                            failed_verify_attempts = 1;
                         }
-
-                        let seq = self.next_seq();
-                        let identity = self.trace_identity.clone();
-                        self.emit_trace_event(TraceEvent::VerifierResult {
-                            seq,
-                            passed: report.all_passed(),
-                            identity,
-                        });
-
-                        if !report.all_passed() {
-                            let changes = self.cx.changes().len();
-                            if failed_verify_changes == Some(changes) {
-                                failed_verify_attempts += 1;
-                            } else {
-                                failed_verify_changes = Some(changes);
-                                failed_verify_attempts = 1;
-                            }
-                            if failed_verify_attempts >= VERIFY_NO_PROGRESS_ATTEMPTS {
-                                break Outcome::VerificationFailed {
-                                    attempts: failed_verify_attempts,
-                                };
-                            }
-                            self.push_message(
-                                Message::user(report.observation()),
-                                MessageMetadata::default(),
-                            );
-                            step += 1;
-                            continue;
+                        if failed_verify_attempts >= VERIFY_NO_PROGRESS_ATTEMPTS {
+                            break Outcome::VerificationFailed {
+                                attempts: failed_verify_attempts,
+                            };
                         }
+                        self.push_message(
+                            Message::user(report.observation()),
+                            MessageMetadata::default(),
+                        );
+                        step += 1;
+                        continue;
                     }
                 }
                 {

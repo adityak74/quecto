@@ -641,7 +641,14 @@ const HELP: &str = "\
 /deny                deny edits and commands this session
 /clear               forget the conversation (keep system prompt)
 /reasoning           show the active session reasoning mode
-/reasoning <mode>    set reasoning mode for future turns in this session";
+/reasoning <mode>    set reasoning mode for future turns in this session
+
+Images:
+  @image <path>      attach an image file to your prompt
+  @img <path>        alias for @image
+  Ctrl+V             paste image from clipboard (requires --features clipboard)
+  Drag & drop        drag an image file into the terminal
+  --image <path>     attach image in one-shot mode (repeatable)";
 
 fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let cancel = install_cancel();
