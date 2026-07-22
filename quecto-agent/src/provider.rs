@@ -34,6 +34,7 @@ impl FromStr for Provider {
     }
 }
 
+use crate::model::ContentPart;
 use serde_json::{json, Value};
 
 /// Anthropic requires `max_tokens` on every request; this is the default when
@@ -83,7 +84,31 @@ pub fn messages_to_anthropic_body(
                 anthropic_messages.push(json!({"role": "assistant", "content": blocks}));
             }
             _ => {
-                anthropic_messages.push(json!({"role": m.role, "content": m.text()}));
+                if m.has_images() {
+                    use base64::Engine;
+
+                    let blocks: Vec<Value> = m
+                        .content
+                        .iter()
+                        .map(|part| match part {
+                            ContentPart::Text(t) => json!({"type": "text", "text": t}),
+                            ContentPart::Image { data, mime_type } => {
+                                let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+                                json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": mime_type,
+                                        "data": b64,
+                                    }
+                                })
+                            }
+                        })
+                        .collect();
+                    anthropic_messages.push(json!({"role": m.role, "content": blocks}));
+                } else {
+                    anthropic_messages.push(json!({"role": m.role, "content": m.text()}));
+                }
             }
         }
     }
@@ -126,7 +151,9 @@ pub fn tools_to_anthropic(tools: &[Value]) -> Vec<Value> {
 /// `reasoning_content`. `usage.output_tokens` is recorded as a best-effort
 /// approximation of reasoning-token spend only when a thinking block was
 /// actually present in the response.
-pub fn parse_anthropic_completion(resp: &Value) -> Result<crate::model::ModelCompletion, crate::BoxErr> {
+pub fn parse_anthropic_completion(
+    resp: &Value,
+) -> Result<crate::model::ModelCompletion, crate::BoxErr> {
     let content = resp
         .get("content")
         .and_then(Value::as_array)
@@ -151,10 +178,22 @@ pub fn parse_anthropic_completion(resp: &Value) -> Result<crate::model::ModelCom
                 }
             }
             Some("tool_use") => {
-                let id = block.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-                let name = block.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+                let id = block
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let name = block
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 let arguments = block.get("input").cloned().unwrap_or(Value::Null);
-                tool_calls.push(crate::model::ToolCall { id, name, arguments });
+                tool_calls.push(crate::model::ToolCall {
+                    id,
+                    name,
+                    arguments,
+                });
             }
             _ => {}
         }
@@ -167,7 +206,11 @@ pub fn parse_anthropic_completion(resp: &Value) -> Result<crate::model::ModelCom
         .to_string();
     let reasoning_content_available = reasoning_content.is_some();
     let actual_reasoning_tokens = reasoning_content_available
-        .then(|| resp.get("usage").and_then(|u| u.get("output_tokens")).and_then(Value::as_u64))
+        .then(|| {
+            resp.get("usage")
+                .and_then(|u| u.get("output_tokens"))
+                .and_then(Value::as_u64)
+        })
         .flatten();
 
     Ok(crate::model::ModelCompletion {
@@ -188,7 +231,7 @@ pub fn parse_anthropic_completion(resp: &Value) -> Result<crate::model::ModelCom
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Message, ToolCall};
+    use crate::model::{ContentPart, Message, ToolCall};
     use serde_json::json;
 
     #[test]
@@ -205,7 +248,10 @@ mod tests {
     #[test]
     fn parses_known_aliases_case_insensitively() {
         for alias in ["openai", "OpenAI", "openai-compatible", "openai_compatible"] {
-            assert_eq!(alias.parse::<Provider>().unwrap(), Provider::OpenAiCompatible);
+            assert_eq!(
+                alias.parse::<Provider>().unwrap(),
+                Provider::OpenAiCompatible
+            );
         }
         for alias in ["anthropic", "Anthropic", "claude", "CLAUDE"] {
             assert_eq!(alias.parse::<Provider>().unwrap(), Provider::Anthropic);
@@ -291,6 +337,32 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_body_serializes_images_as_content_array() {
+        let m = Message {
+            role: "user".into(),
+            content: vec![
+                ContentPart::Text("describe".into()),
+                ContentPart::Image {
+                    data: vec![0xFF, 0xD8],
+                    mime_type: "image/jpeg".into(),
+                },
+            ],
+            tool_calls: vec![],
+            tool_call_id: None,
+            reasoning_content: None,
+        };
+        let body = messages_to_anthropic_body("claude-x", &[m], 4096);
+        let content = body["messages"][0]["content"].as_array().expect("array");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "describe");
+        assert_eq!(content[1]["type"], "image");
+        assert_eq!(content[1]["source"]["type"], "base64");
+        assert_eq!(content[1]["source"]["media_type"], "image/jpeg");
+        assert!(content[1]["source"]["data"].as_str().unwrap().len() > 0);
+    }
+
+    #[test]
     fn converts_openai_function_tools_to_anthropic_shape() {
         let tools = vec![json!({
             "type": "function",
@@ -345,7 +417,10 @@ mod tests {
         assert_eq!(completion.message.tool_calls.len(), 1);
         assert_eq!(completion.message.tool_calls[0].id, "toolu_1");
         assert_eq!(completion.message.tool_calls[0].name, "read_file");
-        assert_eq!(completion.message.tool_calls[0].arguments, json!({"path": "a.rs"}));
+        assert_eq!(
+            completion.message.tool_calls[0].arguments,
+            json!({"path": "a.rs"})
+        );
     }
 
     #[test]
@@ -361,7 +436,10 @@ mod tests {
 
         let completion = parse_anthropic_completion(&resp).unwrap();
 
-        assert_eq!(completion.message.reasoning_content.as_deref(), Some("let me think"));
+        assert_eq!(
+            completion.message.reasoning_content.as_deref(),
+            Some("let me think")
+        );
         assert_eq!(completion.message.content, "answer");
         assert!(completion.telemetry.reasoning_content_available);
         assert_eq!(completion.telemetry.actual_reasoning_tokens, Some(123));

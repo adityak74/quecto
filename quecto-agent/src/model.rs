@@ -320,15 +320,39 @@ pub fn messages_to_body(model: &str, messages: &[Message]) -> Value {
 }
 
 fn message_to_json(m: &Message) -> Value {
+    use base64::Engine;
+
     let mut obj = serde_json::Map::new();
     obj.insert("role".into(), json!(m.role));
-    let text = m.text();
-    let content = if let Some(reasoning) = &m.reasoning_content {
-        format!("<think>\n{}\n</think>\n{}", reasoning, text)
+
+    if m.has_images() {
+        let blocks: Vec<Value> = m
+            .content
+            .iter()
+            .map(|part| match part {
+                ContentPart::Text(t) => json!({"type": "text", "text": t}),
+                ContentPart::Image { data, mime_type } => {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(data);
+                    json!({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": format!("data:{};base64,{}", mime_type, b64)
+                        }
+                    })
+                }
+            })
+            .collect();
+        obj.insert("content".into(), Value::Array(blocks));
     } else {
-        text
-    };
-    obj.insert("content".into(), json!(content));
+        let text = m.text();
+        let content = if let Some(reasoning) = &m.reasoning_content {
+            format!("<think>\n{}\n</think>\n{}", reasoning, text)
+        } else {
+            text
+        };
+        obj.insert("content".into(), json!(content));
+    }
+
     if !m.tool_calls.is_empty() {
         let calls: Vec<Value> = m
             .tool_calls
@@ -483,9 +507,15 @@ fn record_reasoning_request_fields(
         span.record("quecto.requested_reasoning_mode", mode.effort_str());
     }
     if let Some(parameters) = provider_reasoning_parameters {
-        span.record("quecto.provider_reasoning_parameters", parameters.to_string());
+        span.record(
+            "quecto.provider_reasoning_parameters",
+            parameters.to_string(),
+        );
     }
-    span.record("quecto.reasoning_parameters_sent", reasoning_parameters_sent);
+    span.record(
+        "quecto.reasoning_parameters_sent",
+        reasoning_parameters_sent,
+    );
 }
 
 impl Model for HttpModel {
@@ -526,66 +556,67 @@ impl Model for HttpModel {
 
         let reasoning_mode = options.reasoning_mode;
 
-        let (mut completion, provider_reasoning_parameters, reasoning_parameters_sent) =
-            match self.provider {
-                crate::provider::Provider::OpenAiCompatible => {
-                    let mut body = messages_to_body(&self.model, messages);
-                    if !tools.is_empty() {
-                        body["tools"] = Value::Array(tools.to_vec());
-                    }
-                    let provider_reasoning_parameters =
-                        crate::reasoning::apply_reasoning_mode(&mut body, &self.url, reasoning_mode);
-                    let reasoning_parameters_sent = provider_reasoning_parameters.is_some();
-                    #[cfg(feature = "otel")]
-                    record_reasoning_request_fields(
-                        &span,
-                        reasoning_mode,
-                        &provider_reasoning_parameters,
-                        reasoning_parameters_sent,
-                    );
-                    let auth = self.api_key.as_ref().map(|k| format!("Bearer {k}"));
-                    let mut headers: Vec<(&str, &str)> = Vec::new();
-                    if let Some(a) = &auth {
-                        headers.push(("Authorization", a.as_str()));
-                    }
-                    let resp = quecto::quecto_raw(&self.url, &headers, body)?;
-                    (
-                        parse_assistant_completion(&resp)?,
-                        provider_reasoning_parameters,
-                        reasoning_parameters_sent,
-                    )
+        let (mut completion, provider_reasoning_parameters, reasoning_parameters_sent) = match self
+            .provider
+        {
+            crate::provider::Provider::OpenAiCompatible => {
+                let mut body = messages_to_body(&self.model, messages);
+                if !tools.is_empty() {
+                    body["tools"] = Value::Array(tools.to_vec());
                 }
-                crate::provider::Provider::Anthropic => {
-                    let max_tokens = self
-                        .max_tokens
-                        .unwrap_or(crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS);
-                    let mut body =
-                        crate::provider::messages_to_anthropic_body(&self.model, messages, max_tokens);
-                    if !tools.is_empty() {
-                        body["tools"] = Value::Array(crate::provider::tools_to_anthropic(tools));
-                    }
-                    let provider_reasoning_parameters =
-                        crate::reasoning::apply_anthropic_thinking(&mut body, reasoning_mode);
-                    let reasoning_parameters_sent = provider_reasoning_parameters.is_some();
-                    #[cfg(feature = "otel")]
-                    record_reasoning_request_fields(
-                        &span,
-                        reasoning_mode,
-                        &provider_reasoning_parameters,
-                        reasoning_parameters_sent,
-                    );
-                    let mut headers: Vec<(&str, &str)> = vec![("anthropic-version", "2023-06-01")];
-                    if let Some(k) = self.api_key.as_deref() {
-                        headers.push(("x-api-key", k));
-                    }
-                    let resp = quecto::quecto_raw(&self.url, &headers, body)?;
-                    (
-                        crate::provider::parse_anthropic_completion(&resp)?,
-                        provider_reasoning_parameters,
-                        reasoning_parameters_sent,
-                    )
+                let provider_reasoning_parameters =
+                    crate::reasoning::apply_reasoning_mode(&mut body, &self.url, reasoning_mode);
+                let reasoning_parameters_sent = provider_reasoning_parameters.is_some();
+                #[cfg(feature = "otel")]
+                record_reasoning_request_fields(
+                    &span,
+                    reasoning_mode,
+                    &provider_reasoning_parameters,
+                    reasoning_parameters_sent,
+                );
+                let auth = self.api_key.as_ref().map(|k| format!("Bearer {k}"));
+                let mut headers: Vec<(&str, &str)> = Vec::new();
+                if let Some(a) = &auth {
+                    headers.push(("Authorization", a.as_str()));
                 }
-            };
+                let resp = quecto::quecto_raw(&self.url, &headers, body)?;
+                (
+                    parse_assistant_completion(&resp)?,
+                    provider_reasoning_parameters,
+                    reasoning_parameters_sent,
+                )
+            }
+            crate::provider::Provider::Anthropic => {
+                let max_tokens = self
+                    .max_tokens
+                    .unwrap_or(crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS);
+                let mut body =
+                    crate::provider::messages_to_anthropic_body(&self.model, messages, max_tokens);
+                if !tools.is_empty() {
+                    body["tools"] = Value::Array(crate::provider::tools_to_anthropic(tools));
+                }
+                let provider_reasoning_parameters =
+                    crate::reasoning::apply_anthropic_thinking(&mut body, reasoning_mode);
+                let reasoning_parameters_sent = provider_reasoning_parameters.is_some();
+                #[cfg(feature = "otel")]
+                record_reasoning_request_fields(
+                    &span,
+                    reasoning_mode,
+                    &provider_reasoning_parameters,
+                    reasoning_parameters_sent,
+                );
+                let mut headers: Vec<(&str, &str)> = vec![("anthropic-version", "2023-06-01")];
+                if let Some(k) = self.api_key.as_deref() {
+                    headers.push(("x-api-key", k));
+                }
+                let resp = quecto::quecto_raw(&self.url, &headers, body)?;
+                (
+                    crate::provider::parse_anthropic_completion(&resp)?,
+                    provider_reasoning_parameters,
+                    reasoning_parameters_sent,
+                )
+            }
+        };
         completion.telemetry.requested_reasoning_mode = reasoning_mode;
         completion.telemetry.provider_reasoning_parameters = provider_reasoning_parameters;
         completion.telemetry.reasoning_parameters_sent = reasoning_parameters_sent;
@@ -1015,7 +1046,10 @@ mod tests {
 
         assert_eq!(sent_body["model"], "claude-x");
         assert_eq!(sent_body["max_tokens"], 1234);
-        assert_eq!(sent_body["thinking"], json!({"type": "enabled", "budget_tokens": 24000}));
+        assert_eq!(
+            sent_body["thinking"],
+            json!({"type": "enabled", "budget_tokens": 24000})
+        );
         assert_eq!(sent_body["tools"][0]["name"], "read_file");
         // Header casing on the wire is a ureq implementation detail — compare
         // lowercased to avoid coupling the test to it.
@@ -1027,7 +1061,10 @@ mod tests {
         assert_eq!(completion.message.content, "done");
         assert_eq!(completion.message.finish_reason, "tool_use");
         assert_eq!(completion.message.tool_calls[0].name, "read_file");
-        assert_eq!(completion.message.reasoning_content.as_deref(), Some("reasoning here"));
+        assert_eq!(
+            completion.message.reasoning_content.as_deref(),
+            Some("reasoning here")
+        );
         assert!(completion.telemetry.reasoning_parameters_sent);
         assert_eq!(completion.telemetry.actual_reasoning_tokens, Some(50));
     }
@@ -1094,9 +1131,11 @@ mod tests {
         server.join().unwrap();
         let sent_body = request_rx.recv().unwrap();
 
-        assert_eq!(sent_body["max_tokens"], crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS);
+        assert_eq!(
+            sent_body["max_tokens"],
+            crate::provider::DEFAULT_ANTHROPIC_MAX_TOKENS
+        );
     }
-
 
     #[test]
     fn parses_plain_content() {
@@ -1322,5 +1361,38 @@ mod tests {
         assert_eq!(m.role, "user");
         assert!(m.has_images());
         assert_eq!(m.text(), "what is this?");
+    }
+
+    #[test]
+    fn message_to_json_serializes_images_as_content_array() {
+        let m = Message {
+            role: "user".into(),
+            content: vec![
+                ContentPart::Text("describe this".into()),
+                ContentPart::Image {
+                    data: vec![0x89, 0x50, 0x4E, 0x47],
+                    mime_type: "image/png".into(),
+                },
+            ],
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            reasoning_content: None,
+        };
+        let json = super::message_to_json(&m);
+        let content = json["content"].as_array().expect("should be array");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "text");
+        assert_eq!(content[0]["text"], "describe this");
+        assert_eq!(content[1]["type"], "image_url");
+        let url = content[1]["image_url"]["url"].as_str().unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn message_to_json_text_only_stays_string() {
+        let m = Message::user("hello");
+        let json = super::message_to_json(&m);
+        assert!(json["content"].is_string());
+        assert_eq!(json["content"], "hello");
     }
 }
