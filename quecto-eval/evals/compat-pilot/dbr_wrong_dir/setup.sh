@@ -1,6 +1,6 @@
 #!/bin/sh
 set -e
-mkdir scripts
+mkdir -p scripts
 touch package.json
 cat > scripts/build.sh <<'EOF'
 #!/bin/sh
