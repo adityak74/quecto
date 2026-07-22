@@ -476,3 +476,39 @@ fn new_scaffolds_a_manifest_starter() {
         "second scaffold must not overwrite"
     );
 }
+
+#[test]
+fn image_flag_includes_image_in_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let img_path = dir.path().join("test.png");
+    std::fs::write(&img_path, b"fake png data").unwrap();
+
+    let (base, request) = mock_capture(
+        200,
+        "application/json",
+        r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#,
+    );
+    let out = Command::new(bin())
+        .args(["--image", img_path.to_str().unwrap(), "what", "is", "this"])
+        .current_dir(dir.path())
+        .env("QUECTO_BASE_URL", &base)
+        .env("QUECTO_MODEL", "m")
+        .env("QUECTO_STATE_DB", dir.path().join("s.db"))
+        .env_remove("QUECTO_API_KEY")
+        .env_remove("QUECTO_SYSTEM")
+        .output()
+        .unwrap();
+
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let body = request
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .unwrap();
+    
+    assert!(body.contains("what is this"));
+    assert!(body.contains("data:image/png;base64,"));
+}

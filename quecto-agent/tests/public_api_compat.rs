@@ -1,6 +1,6 @@
 use quecto_agent::{
-    ApprovalSection, AssistantMessage, CompletionTelemetry, Flavor, HttpModel, Message, Model,
-    Provider, ToolCall, ToolsSection, VerifySection,
+    ApprovalSection, AssistantMessage, CompletionTelemetry, ContentPart, Flavor, HttpModel,
+    Message, Model, Provider, ToolCall, ToolsSection, VerifySection,
 };
 
 #[derive(Clone)]
@@ -37,7 +37,7 @@ fn legacy_public_struct_literals_still_compile_and_work() {
     let message = LegacyModel.complete(&[Message::user("hello")], &[]).unwrap();
     let transcript_message = Message {
         role: "assistant".into(),
-        content: "legacy response".into(),
+        content: vec![ContentPart::Text("legacy response".into())],
         tool_calls: Vec::new(),
         tool_call_id: None,
         reasoning_content: None,
@@ -61,7 +61,7 @@ fn legacy_public_struct_literals_still_compile_and_work() {
 
     assert_eq!(model.model, "legacy-model");
     assert_eq!(message.content, "legacy");
-    assert_eq!(transcript_message.content, "legacy response");
+    assert_eq!(transcript_message.text(), "legacy response");
     assert_eq!(flavor.name.as_deref(), Some("legacy"));
     assert_eq!(telemetry, CompletionTelemetry::default());
 }

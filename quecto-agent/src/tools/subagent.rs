@@ -78,13 +78,13 @@ impl RunRecorder for ProgressRecorder {
                 for call in &m.tool_calls {
                     push_progress(&self.buf, format!("called {}({})", call.name, call.arguments));
                 }
-                if m.tool_calls.is_empty() && !m.content.is_empty() {
-                    let snippet: String = m.content.chars().take(160).collect();
+                if m.tool_calls.is_empty() && !m.text().is_empty() {
+                    let snippet: String = m.text().chars().take(160).collect();
                     push_progress(&self.buf, format!("said: {snippet}"));
                 }
             }
             "tool" => {
-                let snippet: String = m.content.chars().take(160).collect();
+                let snippet: String = m.text().chars().take(160).collect();
                 push_progress(&self.buf, format!("-> {snippet}"));
             }
             _ => {}
