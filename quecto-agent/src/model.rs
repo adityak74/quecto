@@ -1,11 +1,23 @@
 use crate::BoxErr;
 use serde_json::{json, Value};
 
+/// A single part of a message's content.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ContentPart {
+    Text(String),
+    Image {
+        /// Raw image bytes (PNG, JPEG, GIF, WebP).
+        data: Vec<u8>,
+        /// MIME type, e.g. "image/png".
+        mime_type: String,
+    },
+}
+
 /// A single chat message in the running transcript.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Message {
     pub role: String,
-    pub content: String,
+    pub content: Vec<ContentPart>,
     pub tool_calls: Vec<ToolCall>,
     pub tool_call_id: Option<String>,
     pub reasoning_content: Option<String>,
@@ -15,7 +27,7 @@ impl Message {
     fn plain(role: &str, content: impl Into<String>) -> Self {
         Message {
             role: role.into(),
-            content: content.into(),
+            content: vec![ContentPart::Text(content.into())],
             tool_calls: Vec::new(),
             tool_call_id: None,
             reasoning_content: None,
@@ -37,7 +49,7 @@ impl Message {
     pub fn assistant_with_calls(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
         Message {
             role: "assistant".into(),
-            content: content.into(),
+            content: vec![ContentPart::Text(content.into())],
             tool_calls,
             tool_call_id: None,
             reasoning_content: None,
@@ -47,11 +59,40 @@ impl Message {
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         Message {
             role: "tool".into(),
-            content: content.into(),
+            content: vec![ContentPart::Text(content.into())],
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             reasoning_content: None,
         }
+    }
+
+    pub fn user_multimodal(parts: Vec<ContentPart>) -> Self {
+        Message {
+            role: "user".into(),
+            content: parts,
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            reasoning_content: None,
+        }
+    }
+
+    /// Concatenate all text parts into a single string.
+    pub fn text(&self) -> String {
+        self.content
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::Text(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    /// Whether this message contains any image parts.
+    pub fn has_images(&self) -> bool {
+        self.content
+            .iter()
+            .any(|p| matches!(p, ContentPart::Image { .. }))
     }
 }
 
@@ -281,10 +322,11 @@ pub fn messages_to_body(model: &str, messages: &[Message]) -> Value {
 fn message_to_json(m: &Message) -> Value {
     let mut obj = serde_json::Map::new();
     obj.insert("role".into(), json!(m.role));
+    let text = m.text();
     let content = if let Some(reasoning) = &m.reasoning_content {
-        format!("<think>\n{}\n</think>\n{}", reasoning, m.content)
+        format!("<think>\n{}\n</think>\n{}", reasoning, text)
     } else {
-        m.content.clone()
+        text
     };
     obj.insert("content".into(), json!(content));
     if !m.tool_calls.is_empty() {
@@ -1224,5 +1266,61 @@ mod tests {
         let m = parse_assistant(&r).unwrap();
         assert_eq!(m.content, "");
         assert_eq!(m.reasoning_content, Some("thinking 789".to_string()));
+    }
+
+    #[test]
+    fn text_helper_concatenates_text_parts() {
+        let m = Message {
+            role: "user".into(),
+            content: vec![
+                ContentPart::Text("hello ".into()),
+                ContentPart::Text("world".into()),
+            ],
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            reasoning_content: None,
+        };
+        assert_eq!(m.text(), "hello world");
+    }
+
+    #[test]
+    fn text_helper_skips_image_parts() {
+        let m = Message {
+            role: "user".into(),
+            content: vec![
+                ContentPart::Text("describe this: ".into()),
+                ContentPart::Image {
+                    data: vec![0x89, 0x50],
+                    mime_type: "image/png".into(),
+                },
+            ],
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            reasoning_content: None,
+        };
+        assert_eq!(m.text(), "describe this: ");
+        assert!(m.has_images());
+    }
+
+    #[test]
+    fn text_only_message_has_no_images() {
+        let m = Message::user("hello");
+        assert!(!m.has_images());
+        assert_eq!(m.text(), "hello");
+    }
+
+    #[test]
+    fn user_multimodal_constructor() {
+        let parts = vec![
+            ContentPart::Text("what is this?".into()),
+            ContentPart::Image {
+                data: vec![1, 2, 3],
+                mime_type: "image/jpeg".into(),
+            },
+        ];
+        let m = Message::user_multimodal(parts);
+        assert_eq!(m.role, "user");
+        assert!(m.has_images());
+        assert_eq!(m.text(), "what is this?");
     }
 }

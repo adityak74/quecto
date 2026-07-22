@@ -239,7 +239,7 @@ impl Agent {
             base_system_prompt: self
                 .messages
                 .first()
-                .map(|m| m.content.clone())
+                .map(|m| m.text())
                 .unwrap_or_default(),
             max_steps: self.max_steps,
             repo_root: self.cx.repo_root.clone(),

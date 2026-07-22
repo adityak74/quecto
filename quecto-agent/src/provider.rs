@@ -55,7 +55,7 @@ pub fn messages_to_anthropic_body(
 
     for m in messages {
         match m.role.as_str() {
-            "system" => system_parts.push(m.content.clone()),
+            "system" => system_parts.push(m.text()),
             "tool" => {
                 let tool_use_id = m.tool_call_id.clone().unwrap_or_default();
                 anthropic_messages.push(json!({
@@ -63,14 +63,14 @@ pub fn messages_to_anthropic_body(
                     "content": [{
                         "type": "tool_result",
                         "tool_use_id": tool_use_id,
-                        "content": m.content,
+                        "content": m.text(),
                     }]
                 }));
             }
             "assistant" if !m.tool_calls.is_empty() => {
                 let mut blocks: Vec<Value> = Vec::new();
-                if !m.content.is_empty() {
-                    blocks.push(json!({"type": "text", "text": m.content}));
+                if !m.text().is_empty() {
+                    blocks.push(json!({"type": "text", "text": m.text()}));
                 }
                 for call in &m.tool_calls {
                     blocks.push(json!({
@@ -83,7 +83,7 @@ pub fn messages_to_anthropic_body(
                 anthropic_messages.push(json!({"role": "assistant", "content": blocks}));
             }
             _ => {
-                anthropic_messages.push(json!({"role": m.role, "content": m.content}));
+                anthropic_messages.push(json!({"role": m.role, "content": m.text()}));
             }
         }
     }

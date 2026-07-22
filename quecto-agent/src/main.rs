@@ -880,7 +880,7 @@ fn handle_chat_command(
                 .messages
                 .iter()
                 .map(|m| {
-                    m.content.len()
+                    m.text().len()
                         + m.tool_calls
                             .iter()
                             .map(|tc| tc.name.len() + tc.arguments.to_string().len())
@@ -1203,14 +1203,16 @@ fn attach_mcp_tools(mut agent: Agent, overrides: &Overrides, add_prompt_addition
         agent = agent.register(Box::new(adapter));
     }
     if add_prompt_additions {
+        use quecto_agent::ContentPart;
+
         for addition in &prompt_additions {
             if let Some(msg) = agent.messages.first_mut() {
-                msg.content.push_str(
-                    "
-
-",
-                );
-                msg.content.push_str(addition);
+                if let Some(ContentPart::Text(text)) = msg.content.last_mut() {
+                    text.push_str("\n\n");
+                    text.push_str(addition);
+                } else {
+                    msg.content.push(ContentPart::Text(format!("\n\n{addition}")));
+                }
             }
         }
     }

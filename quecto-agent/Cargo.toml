@@ -21,6 +21,7 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 sha2 = "0.10"
 ureq = { version = "2", features = ["json"] }
+base64 = "0.22"
 quecto-mcp = { path = "../quecto-mcp", optional = true }
 
 # Optional OpenTelemetry and Tracing Dependencies
@@ -47,4 +48,3 @@ mcp = ["dep:quecto-mcp"]
 
 [dev-dependencies]
 tempfile = "3"
-

@@ -1,4 +1,4 @@
-use crate::model::{Message, MessageMetadata, MessageRecord, ToolCall};
+use crate::model::{ContentPart, Message, MessageMetadata, MessageRecord, ToolCall};
 use crate::tools::FileChange;
 use crate::BoxErr;
 use rusqlite::{Connection, TransactionBehavior};
@@ -288,7 +288,7 @@ impl Store {
                 id,
                 seq,
                 &m.role,
-                &m.content,
+                &m.text(),
                 calls_to_json(&m.tool_calls),
                 &m.tool_call_id,
                 &m.reasoning_content,
@@ -394,7 +394,7 @@ impl Store {
             Ok(MessageRecord {
                 message: Message {
                     role,
-                    content,
+                    content: vec![ContentPart::Text(content)],
                     tool_calls: calls_from_json(tool_calls),
                     tool_call_id,
                     reasoning_content,
@@ -772,4 +772,3 @@ CREATE TABLE file_changes (
         assert_eq!(store.session_reasoning_mode("s1").unwrap(), None);
     }
 }
-
