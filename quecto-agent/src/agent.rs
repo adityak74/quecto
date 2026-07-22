@@ -1,16 +1,16 @@
 use crate::approval::ApprovalMode;
-use crate::model::{Message, MessageMetadata, MessageRecord, Model};
+use crate::model::{ContentPart, Message, MessageMetadata, MessageRecord, Model};
 use crate::policy::{Decision, Policy};
 use crate::render::{stderr_renderer, Renderer};
 use crate::sandbox::CancelToken;
 use crate::tools::{Context, FileChange, Registry, Tool, ToolOutput};
 use crate::verify::Verifier;
 use crate::BoxErr;
-use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::path::PathBuf;
+use std::sync::atomic::Ordering;
 
 #[derive(Serialize, Clone, Default)]
 pub struct TraceIdentity {
@@ -188,7 +188,12 @@ struct RepeatGuard {
 
 impl RepeatGuard {
     fn observe(&mut self, call: &crate::model::ToolCall, result: &str, changes: usize) -> bool {
-        let fingerprint = format!("{}\n{}\n{}", call.name, canonical_to_string(&call.arguments), result);
+        let fingerprint = format!(
+            "{}\n{}\n{}",
+            call.name,
+            canonical_to_string(&call.arguments),
+            result
+        );
         if self.fingerprint.as_deref() == Some(&fingerprint) && self.changes == changes {
             self.streak += 1;
         } else {
@@ -236,11 +241,7 @@ impl Agent {
     pub fn config(&self) -> AgentConfig {
         AgentConfig {
             model: self.model.clone(),
-            base_system_prompt: self
-                .messages
-                .first()
-                .map(|m| m.text())
-                .unwrap_or_default(),
+            base_system_prompt: self.messages.first().map(|m| m.text()).unwrap_or_default(),
             max_steps: self.max_steps,
             repo_root: self.cx.repo_root.clone(),
             cancel: self.cancel.clone(),
@@ -410,9 +411,9 @@ impl Agent {
             self.registry.register(tool);
         }
         let allow = |name: &str| enabled.is_none_or(|list| list.iter().any(|n| n == name));
-        
-        // Only temporary for this branch; invoke_subagent has been replaced with spawn_subagent in subagent.rs 
-        // Wait, no! We replaced InvokeSubagent with SpawnSubagent struct earlier, but the plan 
+
+        // Only temporary for this branch; invoke_subagent has been replaced with spawn_subagent in subagent.rs
+        // Wait, no! We replaced InvokeSubagent with SpawnSubagent struct earlier, but the plan
         // assumes InvokeSubagent was NOT touched!
         // Task 5 said: "Change `InvokeSubagent`... wait, in docs it said 'Change `InvokeSubagent` to `SpawnSubagent`? No, Task 5 step 4 says:
         // "Add to `quecto-agent/src/tools/subagent.rs`: pub struct SpawnSubagent { ... }"
@@ -420,14 +421,17 @@ impl Agent {
         // Let's just restore the code that registers SpawnSubagent for now and fix it later if needed.
         let pool = crate::tools::subagent::SubagentPool::new();
         if allow("spawn_subagent") {
-            self.registry.register(Box::new(crate::tools::subagent::SpawnSubagent::new(
-                self.config(),
-                pool.clone(),
-            )));
+            self.registry
+                .register(Box::new(crate::tools::subagent::SpawnSubagent::new(
+                    self.config(),
+                    pool.clone(),
+                )));
         }
         if allow("monitor_subagents") {
             self.registry
-                .register(Box::new(crate::tools::subagent::MonitorSubagents::new(pool.clone())));
+                .register(Box::new(crate::tools::subagent::MonitorSubagents::new(
+                    pool.clone(),
+                )));
         }
         if allow("cancel_subagent") {
             self.registry
@@ -461,8 +465,21 @@ impl Agent {
     /// any tool calls, feed results back, and finish when the model stops
     /// requesting tools. Unknown tools are reported back as an error observation.
     pub fn run(&mut self, task: &str) -> Outcome {
+        self.run_multimodal(vec![ContentPart::Text(task.to_string())])
+    }
+
+    pub fn run_multimodal(&mut self, parts: Vec<ContentPart>) -> Outcome {
         #[cfg(feature = "otel")]
-        let redacted_task = crate::sandbox::redact_secrets(task);
+        let redacted_task = crate::sandbox::redact_secrets(
+            &parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text(t) => Some(t.as_str()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(""),
+        );
         #[cfg(feature = "otel")]
         let span = tracing::span!(
             tracing::Level::INFO,
@@ -481,7 +498,7 @@ impl Agent {
             identity,
         });
 
-        self.push_message(Message::user(task), MessageMetadata::default());
+        self.push_message(Message::user_multimodal(parts), MessageMetadata::default());
         self.run_loop()
     }
 
@@ -583,7 +600,7 @@ impl Agent {
             };
             let msg = completion.message;
             let telemetry = completion.telemetry;
-            
+
             let usage = telemetry.actual_reasoning_tokens.unwrap_or(0) as u32;
             let seq = self.next_seq();
             let identity = self.trace_identity.clone();
@@ -1032,6 +1049,26 @@ mod tests {
             events.lock().unwrap().clone(),
             vec!["working", "working_done"]
         );
+    }
+
+    #[test]
+    fn run_multimodal_appends_user_message_with_image_parts() {
+        let mut a = agent(Scripted::new(vec![text("done")]));
+        let parts = vec![
+            ContentPart::Text("describe".into()),
+            ContentPart::Image {
+                data: vec![1, 2, 3],
+                mime_type: "image/png".into(),
+            },
+        ];
+
+        match a.run_multimodal(parts) {
+            Outcome::Complete(answer) => assert_eq!(answer, "done"),
+            _ => panic!("expected Complete"),
+        }
+
+        assert_eq!(a.messages[1].text(), "describe");
+        assert!(a.messages[1].has_images());
     }
 
     #[test]
@@ -1921,11 +1958,15 @@ mod tests {
         let trace_path = dir.path().join("trace.jsonl");
         let mut a = agent(Scripted::new(vec![wants_tool("write_file"), text("done")]))
             .register(Box::new(WritesFile))
-            .with_policy(crate::policy::Policy::from_preset(crate::policy::Preset::Editor))
+            .with_policy(crate::policy::Policy::from_preset(
+                crate::policy::Preset::Editor,
+            ))
             .with_trace_file(&trace_path);
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
         let contents = std::fs::read_to_string(&trace_path).unwrap();
-        assert!(contents.lines().any(|l| l.contains("\"mutation\"") && l.contains("foo.txt")));
+        assert!(contents
+            .lines()
+            .any(|l| l.contains("\"mutation\"") && l.contains("foo.txt")));
     }
 
     #[test]
@@ -1934,13 +1975,17 @@ mod tests {
         let trace_path = dir.path().join("trace.jsonl");
         let mut a = agent(Scripted::new(vec![wants_tool("write_file"), text("done")]))
             .register(Box::new(WritesFile))
-            .with_policy(crate::policy::Policy::from_preset(crate::policy::Preset::Editor))
+            .with_policy(crate::policy::Policy::from_preset(
+                crate::policy::Preset::Editor,
+            ))
             .with_verifier(crate::verify::Verifier::new(vec!["true".into()]))
             .with_trace_file(&trace_path);
         assert!(matches!(a.run("hi"), Outcome::Complete(_)));
         let contents = std::fs::read_to_string(&trace_path).unwrap();
         assert!(contents.lines().any(|l| l.contains("\"verifier.start\"")));
-        assert!(contents.lines().any(|l| l.contains("\"verifier.result\"") && l.contains("\"passed\":true")));
+        assert!(contents
+            .lines()
+            .any(|l| l.contains("\"verifier.result\"") && l.contains("\"passed\":true")));
     }
 
     #[test]
@@ -1960,6 +2005,8 @@ mod tests {
         let mut a = agent(Scripted::new(vec![])).with_trace_file(&trace_path);
         assert!(matches!(a.run("hi"), Outcome::Error(_)));
         let contents = std::fs::read_to_string(&trace_path).unwrap();
-        assert!(contents.lines().any(|l| l.contains("\"infrastructure.error\"")));
+        assert!(contents
+            .lines()
+            .any(|l| l.contains("\"infrastructure.error\"")));
     }
 }
