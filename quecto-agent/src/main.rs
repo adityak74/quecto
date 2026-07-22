@@ -237,6 +237,53 @@ fn extract_image_refs(text: &str, cwd: &Path) -> (String, Vec<(Vec<u8>, String)>
     (cleaned.to_string(), images)
 }
 
+enum Segment {
+    Text(String),
+    Paste(String),
+    Image {
+        data: Vec<u8>,
+        mime_type: String,
+        index: usize,
+    },
+}
+
+fn segments_to_parts(segments: &[Segment], cwd: &Path) -> Vec<quecto_agent::ContentPart> {
+    use quecto_agent::ContentPart;
+    let mut parts: Vec<ContentPart> = Vec::new();
+    let mut text_buf = String::new();
+    for seg in segments {
+        match seg {
+            Segment::Text(t) => text_buf.push_str(t),
+            Segment::Paste(s) => text_buf.push_str(s),
+            Segment::Image { data, mime_type, .. } => {
+                if !text_buf.is_empty() {
+                    parts.push(ContentPart::Text(
+                        std::mem::take(&mut text_buf),
+                    ));
+                }
+                parts.push(ContentPart::Image {
+                    data: data.clone(),
+                    mime_type: mime_type.clone(),
+                });
+            }
+        }
+    }
+    // Process @image refs in remaining text
+    if !text_buf.is_empty() {
+        let (cleaned, img_refs) = extract_image_refs(&text_buf, cwd);
+        if !cleaned.trim().is_empty() {
+            parts.push(ContentPart::Text(cleaned));
+        }
+        for (data, mime) in img_refs {
+            parts.push(ContentPart::Image {
+                data,
+                mime_type: mime,
+            });
+        }
+    }
+    parts
+}
+
 fn scaffold(name: &str) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let dir = cwd.join(".quecto").join("flavors");
@@ -773,16 +820,6 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
         return;
     }
 
-    enum Segment {
-        Text(String),
-        Paste(String),
-        Image {
-            data: Vec<u8>,
-            mime_type: String,
-            index: usize,
-        },
-    }
-
     let mut segments = vec![Segment::Text(String::new())];
     let mut image_counter: usize = 0;
     let mut redraw = true;
@@ -841,38 +878,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                             println!("\r");
                             // Convert segments to content parts
                             use quecto_agent::ContentPart;
-                            let mut parts: Vec<ContentPart> = Vec::new();
-                            let mut text_buf = String::new();
-                            for seg in &segments {
-                                match seg {
-                                    Segment::Text(t) => text_buf.push_str(t),
-                                    Segment::Paste(s) => text_buf.push_str(s),
-                                    Segment::Image { data, mime_type, .. } => {
-                                        if !text_buf.is_empty() {
-                                            parts.push(ContentPart::Text(
-                                                std::mem::take(&mut text_buf),
-                                            ));
-                                        }
-                                        parts.push(ContentPart::Image {
-                                            data: data.clone(),
-                                            mime_type: mime_type.clone(),
-                                        });
-                                    }
-                                }
-                            }
-                            // Process @image refs in remaining text
-                            if !text_buf.is_empty() {
-                                let (cleaned, img_refs) = extract_image_refs(&text_buf, &cwd);
-                                if !cleaned.trim().is_empty() {
-                                    parts.push(ContentPart::Text(cleaned));
-                                }
-                                for (data, mime) in img_refs {
-                                    parts.push(ContentPart::Image {
-                                        data,
-                                        mime_type: mime,
-                                    });
-                                }
-                            }
+                            let parts = segments_to_parts(&segments, &cwd);
 
                             segments.clear();
                             segments.push(Segment::Text(String::new()));
@@ -1687,5 +1693,94 @@ mod main_tests {
         // init_otel might return None if a global default subscriber has already been set,
         // but we want to check that if we call it, it doesn't panic.
         let _guard = super::otel_init::init_otel();
+    }
+
+    #[test]
+    fn test_mime_from_extension() {
+        use std::path::Path;
+        assert_eq!(super::mime_from_extension(Path::new("test.png")), "image/png");
+        assert_eq!(super::mime_from_extension(Path::new("test.jpg")), "image/jpeg");
+        assert_eq!(super::mime_from_extension(Path::new("test.jpeg")), "image/jpeg");
+        assert_eq!(super::mime_from_extension(Path::new("test.gif")), "image/gif");
+        assert_eq!(super::mime_from_extension(Path::new("test.webp")), "image/webp");
+        assert_eq!(super::mime_from_extension(Path::new("test.unknown")), "image/png");
+    }
+
+    #[test]
+    fn test_is_image_extension() {
+        use std::path::Path;
+        assert!(super::is_image_extension(Path::new("test.png")));
+        assert!(super::is_image_extension(Path::new("test.jpg")));
+        assert!(super::is_image_extension(Path::new("test.jpeg")));
+        assert!(super::is_image_extension(Path::new("test.gif")));
+        assert!(super::is_image_extension(Path::new("test.webp")));
+        assert!(!super::is_image_extension(Path::new("test.txt")));
+        assert!(!super::is_image_extension(Path::new("test")));
+    }
+
+    #[test]
+    fn test_extract_image_refs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path1 = dir.path().join("img1.png");
+        let path2 = dir.path().join("img2.jpg");
+        std::fs::write(&path1, b"fake png").unwrap();
+        std::fs::write(&path2, b"fake jpg").unwrap();
+
+        let text = "Look at @image img1.png and @img img2.jpg or @image missing.png end";
+        let (cleaned, images) = super::extract_image_refs(text, dir.path());
+
+        assert_eq!(cleaned, "Look at [Image 1] and [Image 2] or @image missing.png end");
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0].0, b"fake png");
+        assert_eq!(images[0].1, "image/png");
+        assert_eq!(images[1].0, b"fake jpg");
+        assert_eq!(images[1].1, "image/jpeg");
+    }
+
+    #[test]
+    fn test_segments_to_parts() {
+        use super::Segment;
+        use quecto_agent::ContentPart;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ref.png");
+        std::fs::write(&path, b"ref_data").unwrap();
+
+        let segments = vec![
+            Segment::Text("Hello ".into()),
+            Segment::Paste("world. ".into()),
+            Segment::Image {
+                data: b"img_data".to_vec(),
+                mime_type: "image/png".into(),
+                index: 1,
+            },
+            Segment::Text("See @image ref.png".into()),
+        ];
+
+        let parts = super::segments_to_parts(&segments, dir.path());
+        assert_eq!(parts.len(), 4);
+        
+        match &parts[0] {
+            ContentPart::Text(t) => assert_eq!(t, "Hello world. "),
+            _ => panic!("Expected text part"),
+        }
+        match &parts[1] {
+            ContentPart::Image { data, mime_type } => {
+                assert_eq!(data, b"img_data");
+                assert_eq!(mime_type, "image/png");
+            }
+            _ => panic!("Expected image part"),
+        }
+        match &parts[2] {
+            ContentPart::Text(t) => assert_eq!(t, "See [Image 1]"),
+            _ => panic!("Expected text part"),
+        }
+        match &parts[3] {
+            ContentPart::Image { data, mime_type } => {
+                assert_eq!(data, b"ref_data");
+                assert_eq!(mime_type, "image/png");
+            }
+            _ => panic!("Expected image part"),
+        }
     }
 }
