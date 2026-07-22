@@ -207,6 +207,36 @@ fn mime_from_extension(path: &Path) -> String {
     .to_string()
 }
 
+fn is_image_extension(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()),
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp")
+    )
+}
+
+/// Parse `@image <path>` or `@img <path>` references from text.
+/// Returns (cleaned_text, vec of (image_data, mime_type)).
+fn extract_image_refs(text: &str, cwd: &Path) -> (String, Vec<(Vec<u8>, String)>) {
+    let re = regex::Regex::new(r"@(?:image|img)\s+(\S+)").unwrap();
+    let mut images = Vec::new();
+    let cleaned = re.replace_all(text, |caps: &regex::Captures| {
+        let raw_path = &caps[1];
+        let path = cwd.join(raw_path);
+        match std::fs::read(&path) {
+            Ok(data) => {
+                let mime = mime_from_extension(&path);
+                images.push((data, mime));
+                format!("[Image {}]", images.len())
+            }
+            Err(e) => {
+                eprintln!("quecto-agent: cannot read {}: {e}", path.display());
+                caps[0].to_string()
+            }
+        }
+    });
+    (cleaned.to_string(), images)
+}
+
 fn scaffold(name: &str) {
     let cwd = std::env::current_dir().unwrap_or_else(|_| ".".into());
     let dir = cwd.join(".quecto").join("flavors");
@@ -739,9 +769,15 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     enum Segment {
         Text(String),
         Paste(String),
+        Image {
+            data: Vec<u8>,
+            mime_type: String,
+            index: usize,
+        },
     }
 
     let mut segments = vec![Segment::Text(String::new())];
+    let mut image_counter: usize = 0;
     let mut redraw = true;
 
     crossterm::terminal::enable_raw_mode().unwrap();
@@ -755,6 +791,9 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                     Segment::Text(t) => prompt.push_str(t),
                     Segment::Paste(s) => {
                         prompt.push_str(&format!("[pasted +{} characters]", s.len()))
+                    }
+                    Segment::Image { index, .. } => {
+                        prompt.push_str(&format!("[Image {}]", index))
                     }
                 }
             }
@@ -791,15 +830,44 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                         }
                         crossterm::event::KeyCode::Enter => {
                             println!("\r");
-                            let mut line = String::new();
+                            // Convert segments to content parts
+                            use quecto_agent::ContentPart;
+                            let mut parts: Vec<ContentPart> = Vec::new();
+                            let mut text_buf = String::new();
                             for seg in &segments {
                                 match seg {
-                                    Segment::Text(t) => line.push_str(t),
-                                    Segment::Paste(s) => line.push_str(s),
+                                    Segment::Text(t) => text_buf.push_str(t),
+                                    Segment::Paste(s) => text_buf.push_str(s),
+                                    Segment::Image { data, mime_type, .. } => {
+                                        if !text_buf.is_empty() {
+                                            parts.push(ContentPart::Text(
+                                                std::mem::take(&mut text_buf),
+                                            ));
+                                        }
+                                        parts.push(ContentPart::Image {
+                                            data: data.clone(),
+                                            mime_type: mime_type.clone(),
+                                        });
+                                    }
                                 }
                             }
+                            // Process @image refs in remaining text
+                            if !text_buf.is_empty() {
+                                let (cleaned, img_refs) = extract_image_refs(&text_buf, &cwd);
+                                if !cleaned.trim().is_empty() {
+                                    parts.push(ContentPart::Text(cleaned));
+                                }
+                                for (data, mime) in img_refs {
+                                    parts.push(ContentPart::Image {
+                                        data,
+                                        mime_type: mime,
+                                    });
+                                }
+                            }
+
                             segments.clear();
                             segments.push(Segment::Text(String::new()));
+                            image_counter = 0;
 
                             let _ = crossterm::execute!(
                                 std::io::stdout(),
@@ -807,18 +875,42 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                             );
                             let _ = crossterm::terminal::disable_raw_mode();
 
-                            let exit = handle_chat_command(
-                                &line,
-                                &mut agent,
-                                &store,
-                                &session_id,
-                                &cwd,
-                                &model_name,
-                                &mut out,
-                            );
+                            // Determine if we have content to send
+                            let has_content = parts.iter().any(|p| match p {
+                                ContentPart::Text(t) => !t.trim().is_empty(),
+                                ContentPart::Image { .. } => true,
+                            });
 
-                            if exit {
-                                break;
+                            if has_content {
+                                // Check if it's a command (first text part)
+                                let first_text = parts.iter().find_map(|p| match p {
+                                    ContentPart::Text(t) => Some(t.as_str()),
+                                    _ => None,
+                                }).unwrap_or("");
+
+                                if first_text.trim_start().starts_with('/') && !parts.iter().any(|p| matches!(p, ContentPart::Image { .. })) {
+                                    // Pure text command — use existing command handler
+                                    let exit = handle_chat_command(
+                                        first_text, &mut agent, &store, &session_id,
+                                        &cwd, &model_name, &mut out,
+                                    );
+                                    if exit { break; }
+                                } else {
+                                    // Multimodal or text message
+                                    match agent.run_multimodal(parts) {
+                                        Outcome::Complete(answer) => out.assistant(&answer),
+                                        Outcome::StepLimit => out.notice("(step limit reached)"),
+                                        Outcome::VerificationFailed { attempts } => out.notice(
+                                            &format!("(verification still failing after {attempts} attempts)"),
+                                        ),
+                                        Outcome::Cancelled => out.notice("(cancelled)"),
+                                        Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
+                                        Outcome::Blocked => out.notice(
+                                            "(stopped: actions denied — use /approve to allow this session)",
+                                        ),
+                                        Outcome::Error(e) => out.notice(&format!("(error: {e})")),
+                                    }
+                                }
                             }
 
                             crossterm::terminal::enable_raw_mode().unwrap();
@@ -840,6 +932,9 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                                         }
                                     }
                                     Segment::Paste(_) => {
+                                        pop_segment = true;
+                                    }
+                                    Segment::Image { .. } => {
                                         pop_segment = true;
                                     }
                                 }
@@ -864,8 +959,26 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                     }
                 }
                 crossterm::event::Event::Paste(s) => {
-                    segments.push(Segment::Paste(s));
-                    segments.push(Segment::Text(String::new()));
+                    let trimmed = s.trim().trim_matches('\'').trim_matches('"');
+                    let path = std::path::Path::new(trimmed);
+                    if path.is_file() && is_image_extension(path) {
+                        if let Ok(data) = std::fs::read(path) {
+                            image_counter += 1;
+                            let mime_type = mime_from_extension(path);
+                            segments.push(Segment::Image {
+                                data,
+                                mime_type,
+                                index: image_counter,
+                            });
+                            segments.push(Segment::Text(String::new()));
+                        } else {
+                            segments.push(Segment::Paste(s));
+                            segments.push(Segment::Text(String::new()));
+                        }
+                    } else {
+                        segments.push(Segment::Paste(s));
+                        segments.push(Segment::Text(String::new()));
+                    }
                     redraw = true;
                 }
                 _ => {}
