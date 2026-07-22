@@ -24,6 +24,7 @@ ureq = { version = "2", features = ["json"] }
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 quecto-mcp = { path = "../quecto-mcp", optional = true }
+arboard = { version = "3", optional = true }
 
 # Optional OpenTelemetry and Tracing Dependencies
 tracing = { version = "0.1", optional = true }
@@ -46,6 +47,7 @@ otel = [
     "dep:tokio"
 ]
 mcp = ["dep:quecto-mcp"]
+clipboard = ["dep:arboard"]
 
 [dev-dependencies]
 tempfile = "3"

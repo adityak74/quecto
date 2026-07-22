@@ -781,6 +781,8 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     let mut redraw = true;
 
     crossterm::terminal::enable_raw_mode().unwrap();
+    #[cfg(feature = "clipboard")]
+    let mut clipboard = arboard::Clipboard::new().ok();
     let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableBracketedPaste);
 
     loop {
@@ -944,6 +946,53 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                             }
                             if segments.is_empty() {
                                 segments.push(Segment::Text(String::new()));
+                            }
+                            redraw = true;
+                        }
+                        #[cfg(feature = "clipboard")]
+                        crossterm::event::KeyCode::Char('v')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL)
+                                || key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::SUPER) =>
+                        {
+                            let mut used_clipboard = false;
+                            if let Some(ref mut cb) = clipboard {
+                                if let Ok(img) = cb.get_image() {
+                                    // Encode RGBA to PNG
+                                    let mut png_buf = Vec::new();
+                                    if let Ok(()) = {
+                                        let encoder = image::codecs::png::PngEncoder::new(
+                                            std::io::Cursor::new(&mut png_buf),
+                                        );
+                                        image::ImageEncoder::write_image(
+                                            encoder,
+                                            &img.bytes,
+                                            img.width as u32,
+                                            img.height as u32,
+                                            image::ExtendedColorType::Rgba8,
+                                        )
+                                    } {
+                                        image_counter += 1;
+                                        segments.push(Segment::Image {
+                                            data: png_buf,
+                                            mime_type: "image/png".into(),
+                                            index: image_counter,
+                                        });
+                                        segments.push(Segment::Text(String::new()));
+                                        used_clipboard = true;
+                                    }
+                                }
+                            }
+                            if !used_clipboard {
+                                // Fall through to normal 'v' character
+                                if let Some(Segment::Text(t)) = segments.last_mut() {
+                                    t.push('v');
+                                } else {
+                                    segments.push(Segment::Text("v".to_string()));
+                                }
                             }
                             redraw = true;
                         }
