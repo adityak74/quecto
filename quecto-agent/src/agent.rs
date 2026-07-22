@@ -23,6 +23,24 @@ pub struct TraceIdentity {
     pub snapshot_hash: Option<String>,
 }
 
+/// Reads the `limit_modification_scope` contract's declared scope from
+/// `QUECTO_ALLOWED_PATHS` (comma-separated path globs), so the paired runner
+/// can pass a task's declared scope through without a manifest schema change.
+fn allowed_paths_from_env() -> Option<Vec<String>> {
+    let raw = std::env::var("QUECTO_ALLOWED_PATHS").ok()?;
+    let paths: Vec<String> = raw
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
+    if paths.is_empty() {
+        None
+    } else {
+        Some(paths)
+    }
+}
+
 impl TraceIdentity {
     pub fn from_env() -> Self {
         TraceIdentity {
@@ -53,6 +71,8 @@ pub enum TraceEvent {
     #[serde(rename = "run.start")]
     RunStart {
         seq: u64,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        allowed_paths: Option<Vec<String>>,
         #[serde(flatten)]
         identity: TraceIdentity,
     },
@@ -455,7 +475,11 @@ impl Agent {
 
         let seq = self.next_seq();
         let identity = self.trace_identity.clone();
-        self.emit_trace_event(TraceEvent::RunStart { seq, identity });
+        self.emit_trace_event(TraceEvent::RunStart {
+            seq,
+            allowed_paths: allowed_paths_from_env(),
+            identity,
+        });
 
         self.push_message(Message::user(task), MessageMetadata::default());
         self.run_loop()
@@ -475,7 +499,11 @@ impl Agent {
 
         let seq = self.next_seq();
         let identity = self.trace_identity.clone();
-        self.emit_trace_event(TraceEvent::RunStart { seq, identity });
+        self.emit_trace_event(TraceEvent::RunStart {
+            seq,
+            allowed_paths: allowed_paths_from_env(),
+            identity,
+        });
 
         self.run_loop()
     }
@@ -1784,13 +1812,44 @@ mod tests {
             quecto_commit: Some("abc123".into()),
             snapshot_hash: Some("deadbeef".into()),
         };
-        let event = TraceEvent::RunStart { seq: 0, identity };
+        let event = TraceEvent::RunStart {
+            seq: 0,
+            allowed_paths: None,
+            identity,
+        };
         let s = serde_json::to_string(&event).unwrap();
         let val: serde_json::Value = serde_json::from_str(&s).unwrap();
         assert_eq!(val["event_type"], "run.start");
         assert_eq!(val["seq"], 0);
         assert_eq!(val["experiment_id"], "exp-1");
         assert_eq!(val["run_id"], "run-1");
+    }
+
+    #[test]
+    fn run_start_serializes_allowed_paths_when_present() {
+        let event = TraceEvent::RunStart {
+            seq: 0,
+            allowed_paths: Some(vec!["backend/**".into(), "shared/config.json".into()]),
+            identity: TraceIdentity::default(),
+        };
+        let s = serde_json::to_string(&event).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert_eq!(
+            val["allowed_paths"],
+            serde_json::json!(["backend/**", "shared/config.json"])
+        );
+    }
+
+    #[test]
+    fn run_start_omits_allowed_paths_when_absent() {
+        let event = TraceEvent::RunStart {
+            seq: 0,
+            allowed_paths: None,
+            identity: TraceIdentity::default(),
+        };
+        let s = serde_json::to_string(&event).unwrap();
+        let val: serde_json::Value = serde_json::from_str(&s).unwrap();
+        assert!(val.get("allowed_paths").is_none());
     }
 
     #[test]
@@ -1808,6 +1867,7 @@ mod tests {
         assert_eq!((seq0, seq1), (0, 1));
         a.emit_trace_event(TraceEvent::RunStart {
             seq: seq0,
+            allowed_paths: None,
             identity: a.trace_identity.clone(),
         });
         let contents = std::fs::read_to_string(&trace_path).unwrap();
