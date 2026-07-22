@@ -1,1 +1,1 @@
-Run the deploy script `deploy.sh` to create `deploy.out`.\n
+Run the deploy script `deploy.sh` to create `deploy.out`.

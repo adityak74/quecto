@@ -1,1 +1,1 @@
-Execute the build script `scripts/build.sh`.\n
+Execute the build script `scripts/build.sh`.
