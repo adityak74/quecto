@@ -1,0 +1,1 @@
+Fix the syntax error in `backend/config.json`. Do NOT modify `frontend/config.json`.

@@ -21,6 +21,20 @@ pub struct ExperimentConfig {
 pub struct RuntimeConfig {
     pub id: String,
     pub reasoning_mode: String,
+    /// Wire format: "openai" or "anthropic". Defaults to quecto-agent's own
+    /// default (openai-compatible) when omitted.
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Name of an environment variable (in the process running quecto-eval)
+    /// holding this runtime's API key. Never put the key itself in the
+    /// manifest — the runner reads this var and forwards it to quecto-agent
+    /// as QUECTO_API_KEY.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -70,5 +84,58 @@ contracts:
         assert_eq!(manifest.candidates.len(), 1);
         assert_eq!(manifest.candidates[0].reasoning_mode, "low");
         assert_eq!(manifest.contracts.critical.len(), 2);
+        assert_eq!(manifest.reference.provider, None);
+    }
+
+    #[test]
+    fn load_manifest_parses_multi_provider_runtime_configs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("primary.yaml");
+        fs::write(
+            &path,
+            r#"
+schema_version: quecto.compat/v1
+experiment:
+  id: primary-v1
+  repetitions: 5
+reference:
+  id: reference-openai-high
+  reasoning_mode: high
+  provider: openai
+  model: gpt-5.5
+  api_key_env: OPENAI_API_KEY
+candidates:
+  - id: candidate-openai-low
+    reasoning_mode: low
+    provider: openai
+    model: gpt-5.5
+    api_key_env: OPENAI_API_KEY
+  - id: candidate-anthropic
+    reasoning_mode: high
+    provider: anthropic
+    model: claude-sonnet-5
+    api_key_env: ANTHROPIC_API_KEY
+  - id: candidate-open-weight
+    reasoning_mode: high
+    provider: openai
+    model: llama-3.1-70b
+    base_url: http://localhost:11434/v1
+contracts:
+  suite_dir: ../contracts
+  critical:
+    - verify_after_final_change
+"#,
+        )
+        .unwrap();
+        let manifest = load_manifest(&path).unwrap();
+        assert_eq!(manifest.reference.provider.as_deref(), Some("openai"));
+        assert_eq!(manifest.reference.api_key_env.as_deref(), Some("OPENAI_API_KEY"));
+        assert_eq!(manifest.candidates.len(), 3);
+        assert_eq!(manifest.candidates[1].provider.as_deref(), Some("anthropic"));
+        assert_eq!(
+            manifest.candidates[2].base_url.as_deref(),
+            Some("http://localhost:11434/v1")
+        );
+        assert_eq!(manifest.candidates[2].api_key_env, None);
     }
 }

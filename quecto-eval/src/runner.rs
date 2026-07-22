@@ -53,6 +53,28 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, ty: &str) -> anyh
     Ok(())
 }
 
+/// Reads a task's declared scope for the `limit_modification_scope` contract
+/// from an optional `scope.txt` file (one path glob per line, `#`-comments
+/// and blank lines ignored), joined as a comma-separated string for
+/// QUECTO_ALLOWED_PATHS. Returns `Ok(None)` when the task declares no scope.
+fn task_allowed_paths(task_dir: &Path) -> anyhow::Result<Option<String>> {
+    let scope_file = task_dir.join("scope.txt");
+    if !scope_file.exists() {
+        return Ok(None);
+    }
+    let contents = fs::read_to_string(&scope_file)?;
+    let paths: Vec<&str> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    if paths.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(paths.join(",")))
+    }
+}
+
 pub fn run_suite(
     manifest_path: &Path,
     tasks_dir: &Path,
@@ -156,6 +178,23 @@ pub fn run_suite(
                     .env("QUECTO_REPETITION", repetition.to_string())
                     .env("QUECTO_SNAPSHOT_HASH", &snapshot_hash)
                     .env("QUECTO_REASONING_MODE", &runtime.reasoning_mode);
+                if let Some(provider) = &runtime.provider {
+                    cmd.env("QUECTO_PROVIDER", provider);
+                }
+                if let Some(model) = &runtime.model {
+                    cmd.env("QUECTO_MODEL", model);
+                }
+                if let Some(base_url) = &runtime.base_url {
+                    cmd.env("QUECTO_BASE_URL", base_url);
+                }
+                if let Some(api_key_env) = &runtime.api_key_env {
+                    if let Ok(api_key) = std::env::var(api_key_env) {
+                        cmd.env("QUECTO_API_KEY", api_key);
+                    }
+                }
+                if let Some(allowed_paths) = task_allowed_paths(&task_dir)? {
+                    cmd.env("QUECTO_ALLOWED_PATHS", allowed_paths);
+                }
                 if verify_script.exists() {
                     // Wires the task's verify.sh into quecto-agent's own
                     // completion-gate verifier, so it emits verifier.start/
@@ -290,6 +329,72 @@ mod tests {
             .unwrap();
         // 1 task * 2 runtimes (reference + 1 candidate) * 2 repetitions = 4 runs.
         assert_eq!(count, 4);
+    }
+
+    #[test]
+    fn task_allowed_paths_returns_none_without_scope_file() {
+        let dir = tempdir().unwrap();
+        assert_eq!(task_allowed_paths(dir.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn task_allowed_paths_parses_scope_file_ignoring_blanks_and_comments() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("scope.txt"),
+            "# only touch these paths\nbackend/**\n\nbackend/config.json\n",
+        )
+        .unwrap();
+        assert_eq!(
+            task_allowed_paths(dir.path()).unwrap(),
+            Some("backend/**,backend/config.json".to_string())
+        );
+    }
+
+    #[test]
+    fn run_suite_passes_provider_model_and_allowed_paths_to_agent() {
+        let root = tempdir().unwrap();
+        let tasks_dir = root.path().join("tasks");
+        let task_dir = tasks_dir.join("tb_scoped");
+        fs::create_dir_all(&task_dir).unwrap();
+        fs::write(task_dir.join("prompt.md"), "do the thing").unwrap();
+        fs::write(task_dir.join("scope.txt"), "backend/**\n").unwrap();
+
+        // A fake agent binary: fails unless it sees the expected runtime env vars.
+        let fake_agent = root.path().join("fake_agent.sh");
+        fs::write(
+            &fake_agent,
+            "#!/bin/sh\n\
+             [ \"$QUECTO_PROVIDER\" = \"anthropic\" ] || { echo BAD_PROVIDER >&2; exit 1; }\n\
+             [ \"$QUECTO_MODEL\" = \"claude-sonnet-5\" ] || { echo BAD_MODEL >&2; exit 1; }\n\
+             [ \"$QUECTO_ALLOWED_PATHS\" = \"backend/**\" ] || { echo BAD_SCOPE >&2; exit 1; }\n\
+             echo '{\"event_type\":\"run.start\",\"seq\":0}' >> \"$QUECTO_TRACE_FILE\"\n\
+             exit 0\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&fake_agent).unwrap().permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&fake_agent, perms).unwrap();
+        }
+
+        let manifest_path = root.path().join("manifest.yaml");
+        fs::write(
+            &manifest_path,
+            "schema_version: quecto.compat/v1\nexperiment:\n  id: test-exp\n  repetitions: 1\nreference:\n  id: reference-anthropic\n  reasoning_mode: high\n  provider: anthropic\n  model: claude-sonnet-5\ncandidates: []\ncontracts:\n  suite_dir: NOT_USED\n  critical: []\n",
+        )
+        .unwrap();
+
+        let db_path = root.path().join("telemetry.db");
+        run_suite(&manifest_path, &tasks_dir, &db_path, &fake_agent).unwrap();
+
+        let conn = Connection::open(&db_path).unwrap();
+        let passed: i64 = conn
+            .query_row("SELECT COUNT(*) FROM runs WHERE passed = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(passed, 1);
     }
 
     #[test]
