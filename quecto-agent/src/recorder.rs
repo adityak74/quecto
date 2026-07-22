@@ -79,7 +79,7 @@ mod tests {
         assert_eq!(verify.message_count("s1").unwrap(), 2);
         assert_eq!(verify.change_count("s1").unwrap(), 1);
         let loaded = verify.load_messages("s1").unwrap();
-        assert_eq!(loaded[0].content, "hi");
-        assert_eq!(loaded[1].content, "there");
+        assert_eq!(loaded[0].text(), "hi");
+        assert_eq!(loaded[1].text(), "there");
     }
 }

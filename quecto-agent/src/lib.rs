@@ -31,7 +31,7 @@ pub use flavor::{
 pub use instructions::load as load_instructions;
 pub use model::{
     messages_to_body, parse_assistant, parse_assistant_completion, AssistantMessage,
-    ConfiguredHttpModel, HttpModel, Message, MessageMetadata, MessageRecord, Model,
+    ConfiguredHttpModel, ContentPart, HttpModel, Message, MessageMetadata, MessageRecord, Model,
     ModelCompletion, ToolCall,
 };
 pub use policy::{Decision, Policy, Preset};
