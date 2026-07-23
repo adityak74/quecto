@@ -2,7 +2,9 @@
 
 Live OpenTelemetry tracing for `quecto-agent`, viewed in Jaeger.
 
-![OTel Demo](./otel-demo.gif)
+<video src="./otel-demo.mov" controls width="720">
+  Your viewer doesn't support inline video — <a href="./otel-demo.mov">download otel-demo.mov</a>.
+</video>
 
 `quecto-agent` ships real span instrumentation behind the optional `otel`
 Cargo feature (`quecto-agent/src/main.rs`, `agent.rs`, `model.rs`). When
