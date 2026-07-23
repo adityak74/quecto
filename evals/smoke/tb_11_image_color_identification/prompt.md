@@ -1,0 +1,1 @@
+Look at the attached image @image swatch.png and identify the dominant color of the swatch. Write the single color name (e.g. "red", "blue", "green") in lowercase to a file called `color.txt`, with no other text.

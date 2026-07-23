@@ -12,7 +12,7 @@
 #   ./evals/run_evals.sh [--llm-judge]
 #
 # Environment variables:
-#   AGENT_MODEL          Model for quecto-agent  (default: qwen3.6:35b-mlx)
+#   AGENT_MODEL          Model for quecto-agent  (default: qwen3.6:35b)
 #   AGENT_URL            OpenAI-compat base URL  (default: http://localhost:11434/v1)
 #   JUDGE_MODEL          Model for LLM judge     (default: google/gemini-2.0-flash-lite-preview-02-05:free)
 #   JUDGE_URL            Judge API base URL      (default: https://openrouter.ai/api/v1)
@@ -21,7 +21,7 @@
 # For Harbor / Terminal-Bench 2.x:
 #   harbor run \
 #     -d terminal-bench/terminal-bench-2 \
-#     -m qwen3.6:35b-mlx \
+#     -m qwen3.6:35b \
 #     --agent evals.harbor.quecto_agent:QuectoAgent
 # =============================================================================
 set -euo pipefail
@@ -31,7 +31,7 @@ if [[ "${1:-}" == "--llm-judge" ]]; then
     USE_LLM_JUDGE=true
 fi
 
-AGENT_MODEL="${AGENT_MODEL:-qwen3.6:35b-mlx}"
+AGENT_MODEL="${AGENT_MODEL:-qwen3.6:35b}"
 AGENT_URL="${AGENT_URL:-http://localhost:11434/v1}"
 JUDGE_MODEL="${JUDGE_MODEL:-google/gemini-2.0-flash-lite-preview-02-05:free}"
 JUDGE_URL="${JUDGE_URL:-https://openrouter.ai/api/v1}"
