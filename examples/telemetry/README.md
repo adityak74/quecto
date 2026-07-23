@@ -2,7 +2,7 @@
 
 Live OpenTelemetry tracing for `quecto-agent`, viewed in Jaeger.
 
-![Demo](./demo.gif)
+![OTel Demo](./otel-demo.gif)
 
 `quecto-agent` ships real span instrumentation behind the optional `otel`
 Cargo feature (`quecto-agent/src/main.rs`, `agent.rs`, `model.rs`). When
