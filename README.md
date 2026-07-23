@@ -11,6 +11,8 @@
 
 [![Small by construction](https://img.shields.io/badge/small%20by%20construction-1.3%20MB%20core%20%C2%B7%203.5%20MB%20agent-2ea44f?style=for-the-badge)](#small-by-construction)
 
+[![quecto release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-v*&label=quecto&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0)
+[![quecto-agent release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-agent-v*&label=quecto-agent&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.1.0)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/core%20dependencies-2-brightgreen?style=flat-square)](#dependencies)
 [![Async](https://img.shields.io/badge/async-zero-black?style=flat-square)](#architecture-principles)
@@ -20,6 +22,8 @@
 [![Status](https://img.shields.io/badge/status-M1--M7b%20shipped-success?style=flat-square)](#status)
 
 </div>
+
+> 📦 **First official releases are out.** [`quecto v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0) and [`quecto-agent v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.1.0) are tagged with prebuilt `aarch64-apple-darwin` binaries — grab them from the Releases page or build from source below.
 
 ---
 
@@ -92,6 +96,8 @@ flowchart LR
 
 ## What's new
 
+- **First official releases:** [`quecto v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0) and [`quecto-agent v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.1.0), tagged with prebuilt macOS (arm64) binaries.
+- **Multimodal input:** `quecto-agent` accepts `--image` for vision-capable models.
 - **Reasoning controls:** session-scoped `none` through `xhigh`, persisted across resume.
 - **Agent telemetry:** OTEL spans for runs, steps, tools, completions, and reasoning traces.
 - **MCP support:** STDIO and Streamable HTTP tool servers.
