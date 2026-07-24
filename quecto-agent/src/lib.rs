@@ -3,6 +3,7 @@
 
 mod agent;
 mod approval;
+mod capsule;
 mod chat;
 mod context;
 mod flavor;
@@ -21,6 +22,7 @@ mod verify;
 
 pub use agent::{Agent, Outcome, RunRecorder};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
+pub use capsule::Capsule;
 pub use chat::{parse_command, ChatCommand, ReasoningCommand};
 pub use context::seed as seed_context;
 pub use flavor::{
