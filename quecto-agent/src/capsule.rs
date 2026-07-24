@@ -51,7 +51,6 @@ impl Capsule {
 }
 
 /// Split `---\n<frontmatter>\n---\n<body>` into `(frontmatter, body)`.
-#[allow(dead_code)]
 fn split_frontmatter(text: &str) -> Result<(String, String), String> {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let rest = text
@@ -69,7 +68,6 @@ fn split_frontmatter(text: &str) -> Result<(String, String), String> {
 
 /// Parse flat `key: value` lines. Not a general YAML parser — capsules only
 /// use flat scalar frontmatter fields (`name`, `description`).
-#[allow(dead_code)]
 fn parse_frontmatter_fields(text: &str) -> Result<BTreeMap<String, String>, String> {
     let mut fields = BTreeMap::new();
     for line in text.lines() {
@@ -125,9 +123,12 @@ impl CapsuleRegistry {
         self.capsules.values().find(|c| c.name.eq_ignore_ascii_case(name))
     }
 
-    /// All discovered capsule names, canonical case.
+    /// All discovered capsule names, in each capsule's originally-declared
+    /// case. Not sorted — iteration order follows the internal map's
+    /// lowercased keys, not the declared-case names; callers that need a
+    /// sorted display (e.g. `/capsules`) sort separately (see `list_display`).
     pub fn names(&self) -> Vec<String> {
-        self.capsules.keys().cloned().collect()
+        self.capsules.values().map(|c| c.name.clone()).collect()
     }
 
     /// All discovered capsules.

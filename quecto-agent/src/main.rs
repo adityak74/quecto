@@ -1698,6 +1698,29 @@ mod main_tests {
     }
 
     #[test]
+    fn clear_does_not_unload_active_capsules() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "demo", "demo capsule", "Follow the demo workflow.");
+        let mut capsules = capsules_from(dir.path());
+        let mut agent = test_agent(None);
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        handle_chat_command(
+            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+        let exit = handle_chat_command(
+            "/clear", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert!(agent.messages[0].text().contains("## Capsule: demo"));
+        assert_eq!(agent.messages.len(), 1);
+    }
+
+    #[test]
     fn capsules_command_marks_active_capsule() {
         let dir = tempfile::tempdir().unwrap();
         write_capsule(dir.path(), "demo", "demo capsule", "body");
