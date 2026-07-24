@@ -1547,6 +1547,7 @@ mod main_tests {
     #[derive(Default)]
     struct TestRenderer {
         notices: Vec<String>,
+        assistant_replies: Vec<String>,
     }
 
     impl Renderer for TestRenderer {
@@ -1555,7 +1556,9 @@ mod main_tests {
         fn notice(&mut self, text: &str) {
             self.notices.push(text.to_string());
         }
-        fn assistant(&mut self, _text: &str) {}
+        fn assistant(&mut self, text: &str) {
+            self.assistant_replies.push(text.to_string());
+        }
     }
 
     fn test_agent(mode: Option<ReasoningMode>) -> Agent {
@@ -1570,6 +1573,43 @@ mod main_tests {
         Agent::new(
             Box::new(model),
             "system".to_string(),
+            4,
+            std::env::current_dir().unwrap(),
+            cancel_token(),
+            ApprovalMode::NonInteractive,
+        )
+    }
+
+    #[derive(Clone)]
+    struct FakeModel {
+        reply: String,
+    }
+
+    impl quecto_agent::Model for FakeModel {
+        fn complete(
+            &self,
+            _messages: &[quecto_agent::Message],
+            _tools: &[serde_json::Value],
+        ) -> Result<quecto_agent::AssistantMessage, quecto_agent::BoxErr> {
+            Ok(quecto_agent::AssistantMessage {
+                content: self.reply.clone(),
+                tool_calls: vec![],
+                finish_reason: "stop".to_string(),
+                reasoning_content: None,
+            })
+        }
+
+        fn clone_box(&self) -> Box<dyn quecto_agent::Model> {
+            Box::new(self.clone())
+        }
+    }
+
+    fn fake_agent(reply: &str) -> Agent {
+        Agent::new(
+            Box::new(FakeModel {
+                reply: reply.to_string(),
+            }),
+            "system",
             4,
             std::env::current_dir().unwrap(),
             cancel_token(),
@@ -1715,6 +1755,46 @@ mod main_tests {
 
         assert!(!exit);
         assert_eq!(out.notices, vec!["demo is not loaded".to_string()]);
+    }
+
+    #[test]
+    fn capsule_session_lifecycle_load_invoke_unload_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "demo", "demo capsule", "Follow the demo workflow.");
+        let mut capsules = capsules_from(dir.path());
+        let mut agent = fake_agent("done!");
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+        assert!(!exit);
+        assert!(agent.messages[0].text().contains("## Capsule: demo"));
+
+        let exit = handle_chat_command(
+            "/demo please help", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+        assert!(!exit);
+        let prompt_after_invoke = agent.messages[0].text();
+        assert_eq!(prompt_after_invoke.matches("## Capsule: demo").count(), 1);
+        assert_eq!(agent.messages.len(), 3);
+        assert_eq!(out.assistant_replies, vec!["done!".to_string()]);
+
+        let exit = handle_chat_command(
+            "/unload demo", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+        assert!(!exit);
+        assert_eq!(agent.messages[0].text(), "system");
+
+        let exit = handle_chat_command(
+            "/exit", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+        assert!(exit);
     }
 
     struct EnvGuard(Vec<(String, Option<String>)>);
