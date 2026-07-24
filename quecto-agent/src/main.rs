@@ -1,10 +1,12 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use quecto_agent::{
-    cancel_token, chat_spinner_renderer, content_hash, join_url, load_instructions, new_session_id,
-    parse_command, parse_spinner_verbs, project_raw, render_assistant_text, render_change_summary,
-    resolve_scoped_configured, seed_context, Agent, ApprovalMode, ChatCommand, ConfiguredFlavor,
-    Flavor, HttpModel, LineRenderer, Outcome, Policy, Preset, Provider, ReasoningCommand, ReasoningMode,
-    Renderer, SqliteRecorder, Store, TrustStore, Verifier,
+    cancel_token, chat_spinner_renderer, content_hash, default_user_capsules_dir,
+    join_url, load_instructions, new_session_id, parse_command, parse_spinner_verbs,
+    project_capsules_dir, project_raw, render_assistant_text, render_change_summary,
+    resolve_scoped_configured, seed_context, Agent, ApprovalMode, CapsuleRegistry, CapsuleState,
+    ChatCommand, ConfiguredFlavor, Flavor, HttpModel, LineRenderer, Message, Outcome, Policy,
+    Preset, Provider, ReasoningCommand, ReasoningMode, Renderer, SqliteRecorder, Store,
+    TrustStore, Verifier,
 };
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -689,6 +691,10 @@ const HELP: &str = "\
 /clear               forget the conversation (keep system prompt)
 /reasoning           show the active session reasoning mode
 /reasoning <mode>    set reasoning mode for future turns in this session
+/capsules            list available and loaded capsules
+/load <name>         load a capsule
+/unload <name>       unload a capsule
+/<capsule_name> [text]  load a capsule (if needed) and optionally send a prompt through it
 
 Images:
   @image <path>      attach an image file to your prompt
@@ -709,6 +715,10 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
     );
     let merged = user_flavor.clone().merge(project_flavor);
     let system = compose_system_with_persona(&cwd, persona(&cwd, &merged).as_deref());
+    let user_capsules_dir = default_user_capsules_dir().unwrap_or_default();
+    let project_capsules_dir_path = project_capsules_dir(&cwd);
+    let capsule_registry = CapsuleRegistry::discover(&user_capsules_dir, &project_capsules_dir_path);
+    let mut capsules = CapsuleState::new(capsule_registry, system.clone());
     let (base_url, model_name) = resolve_host_and_model(overrides, &merged);
     let provider = resolve_provider(overrides, &merged).unwrap_or_else(|e| {
         eprintln!("quecto-agent: {e}");
@@ -807,6 +817,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                 &session_id,
                 &cwd,
                 &model_name,
+                &mut capsules,
                 &mut out,
             );
             if exit {
@@ -907,7 +918,7 @@ fn chat(auto_approve: bool, no_verify: bool, overrides: &Overrides) {
                                     // Pure text command — use existing command handler
                                     let exit = handle_chat_command(
                                         first_text, &mut agent, &store, &session_id,
-                                        &cwd, &model_name, &mut out,
+                                        &cwd, &model_name, &mut capsules, &mut out,
                                     );
                                     if exit { break; }
                                 } else {
@@ -1067,10 +1078,12 @@ fn handle_chat_command(
     session_id: &str,
     cwd: &Path,
     model_name: &str,
+    capsules: &mut CapsuleState,
     out: &mut dyn Renderer,
 ) -> bool {
     let mut exit = false;
-    match parse_command(line) {
+    let capsule_names = capsules.registry().names();
+    match parse_command(line, &capsule_names) {
         ChatCommand::Exit => exit = true,
         ChatCommand::Help => out.notice(HELP),
         ChatCommand::Model => {
@@ -1178,28 +1191,73 @@ fn handle_chat_command(
                 None => out.notice("reasoning turned off"),
             }
         }
+        ChatCommand::Capsules => out.notice(&capsules.list_display()),
+        ChatCommand::LoadCapsule(name) => {
+            if name.is_empty() {
+                out.notice("usage: /load <capsule_name>");
+            } else {
+                match capsules.load(&name) {
+                    Ok(true) => {
+                        agent.messages[0] = Message::system(capsules.render_system_prompt());
+                        out.notice(&format!("loaded {name}"));
+                    }
+                    Ok(false) => out.notice(&format!("{name} already loaded")),
+                    Err(msg) => out.notice(&msg),
+                }
+            }
+        }
+        ChatCommand::UnloadCapsule(name) => {
+            if name.is_empty() {
+                out.notice("usage: /unload <capsule_name>");
+            } else if capsules.unload(&name) {
+                agent.messages[0] = Message::system(capsules.render_system_prompt());
+                out.notice(&format!("unloaded {name}"));
+            } else {
+                out.notice(&format!("{name} is not loaded"));
+            }
+        }
+        ChatCommand::InvokeCapsule { name, prompt } => {
+            match capsules.load(&name) {
+                Ok(true) => {
+                    agent.messages[0] = Message::system(capsules.render_system_prompt());
+                    out.notice(&format!("loaded {name}"));
+                }
+                Ok(false) => {}
+                Err(msg) => {
+                    out.notice(&msg);
+                    return exit;
+                }
+            }
+            if let Some(text) = prompt {
+                run_and_render(agent, &text, out);
+            }
+        }
         ChatCommand::Unknown(name) => {
             out.notice(&format!("unknown command '/{name}' — try /help"));
         }
         ChatCommand::Say(text) => {
             if !text.is_empty() {
-                match agent.run(&text) {
-                    Outcome::Complete(answer) => out.assistant(&answer),
-                    Outcome::StepLimit => out.notice("(step limit reached)"),
-                    Outcome::VerificationFailed { attempts } => out.notice(&format!(
-                        "(verification still failing after {attempts} attempts)"
-                    )),
-                    Outcome::Cancelled => out.notice("(cancelled)"),
-                    Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
-                    Outcome::Blocked => {
-                        out.notice("(stopped: actions denied — use /approve to allow this session)")
-                    }
-                    Outcome::Error(e) => out.notice(&format!("(error: {e})")),
-                }
+                run_and_render(agent, &text, out);
             }
         }
     }
     exit
+}
+
+fn run_and_render(agent: &mut Agent, text: &str, out: &mut dyn Renderer) {
+    match agent.run(text) {
+        Outcome::Complete(answer) => out.assistant(&answer),
+        Outcome::StepLimit => out.notice("(step limit reached)"),
+        Outcome::VerificationFailed { attempts } => out.notice(&format!(
+            "(verification still failing after {attempts} attempts)"
+        )),
+        Outcome::Cancelled => out.notice("(cancelled)"),
+        Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
+        Outcome::Blocked => {
+            out.notice("(stopped: actions denied — use /approve to allow this session)")
+        }
+        Outcome::Error(e) => out.notice(&format!("(error: {e})")),
+    }
 }
 
 fn chat_undo(store: &Option<Store>, session_id: &str, cwd: &Path, out: &mut dyn Renderer) {
@@ -1519,6 +1577,146 @@ mod main_tests {
         )
     }
 
+    fn test_capsules() -> CapsuleState {
+        CapsuleState::new(CapsuleRegistry::default(), "system".to_string())
+    }
+
+    fn write_capsule(root: &Path, name: &str, description: &str, body: &str) {
+        std::fs::create_dir_all(root.join(name)).unwrap();
+        std::fs::write(
+            root.join(name).join("CAPSULE.md"),
+            format!("---\nname: {name}\ndescription: {description}\n---\n{body}"),
+        )
+        .unwrap();
+    }
+
+    fn capsules_from(project_root: &Path) -> CapsuleState {
+        let registry = CapsuleRegistry::discover(Path::new("/does-not-exist-user-dir"), project_root);
+        CapsuleState::new(registry, "system".to_string())
+    }
+
+    #[test]
+    fn load_unknown_capsule_reports_error() {
+        let mut agent = test_agent(None);
+        let mut capsules = test_capsules();
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(
+            out.notices,
+            vec!["no such capsule: demo (see /capsules)".to_string()]
+        );
+    }
+
+    #[test]
+    fn load_capsule_updates_agent_system_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "demo", "demo capsule", "Follow the demo workflow.");
+        let mut capsules = capsules_from(dir.path());
+        let mut agent = test_agent(None);
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(out.notices, vec!["loaded demo".to_string()]);
+        let prompt = agent.messages[0].text();
+        assert!(prompt.contains("## Capsule: demo"));
+        assert!(prompt.contains("Follow the demo workflow."));
+    }
+
+    #[test]
+    fn unload_capsule_reverts_agent_system_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "demo", "demo capsule", "Follow the demo workflow.");
+        let mut capsules = capsules_from(dir.path());
+        let mut agent = test_agent(None);
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        handle_chat_command(
+            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+        let exit = handle_chat_command(
+            "/unload demo", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(agent.messages[0].text(), "system");
+    }
+
+    #[test]
+    fn capsules_command_marks_active_capsule() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "demo", "demo capsule", "body");
+        let mut capsules = capsules_from(dir.path());
+        let mut agent = test_agent(None);
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        handle_chat_command(
+            "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+        out.notices.clear();
+        handle_chat_command(
+            "/capsules", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert_eq!(out.notices, vec!["● demo — demo capsule".to_string()]);
+    }
+
+    #[test]
+    fn bare_capsule_invocation_loads_without_running_a_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "demo", "demo capsule", "body");
+        let mut capsules = capsules_from(dir.path());
+        let mut agent = test_agent(None);
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/demo", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert!(capsules.is_active("demo"));
+        assert_eq!(out.notices, vec!["loaded demo".to_string()]);
+        assert_eq!(agent.messages.len(), 1);
+    }
+
+    #[test]
+    fn unload_not_loaded_capsule_reports_not_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "demo", "demo capsule", "body");
+        let mut capsules = capsules_from(dir.path());
+        let mut agent = test_agent(None);
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/unload demo", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(out.notices, vec!["demo is not loaded".to_string()]);
+    }
+
     struct EnvGuard(Vec<(String, Option<String>)>);
 
     impl EnvGuard {
@@ -1566,6 +1764,7 @@ mod main_tests {
             "s1",
             Path::new("/repo"),
             "test-model",
+            &mut test_capsules(),
             &mut out,
         );
 
@@ -1591,6 +1790,7 @@ mod main_tests {
             "s1",
             Path::new("/repo"),
             "test-model",
+            &mut test_capsules(),
             &mut out,
         );
 
@@ -1631,6 +1831,7 @@ mod main_tests {
             "s1",
             Path::new("/repo"),
             "test-model",
+            &mut test_capsules(),
             &mut out,
         );
 
