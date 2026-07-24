@@ -1702,7 +1702,7 @@ mod main_tests {
         let dir = tempfile::tempdir().unwrap();
         write_capsule(dir.path(), "demo", "demo capsule", "Follow the demo workflow.");
         let mut capsules = capsules_from(dir.path());
-        let mut agent = test_agent(None);
+        let mut agent = fake_agent("done!");
         let store: Option<Store> = None;
         let mut out = TestRenderer::default();
 
@@ -1710,6 +1710,12 @@ mod main_tests {
             "/load demo", &mut agent, &store, "s1", Path::new("/repo"),
             "test-model", &mut capsules, &mut out,
         );
+        handle_chat_command(
+            "hello", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+        assert_eq!(agent.messages.len(), 3); // system, user, assistant
+
         let exit = handle_chat_command(
             "/clear", &mut agent, &store, "s1", Path::new("/repo"),
             "test-model", &mut capsules, &mut out,
