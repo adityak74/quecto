@@ -109,11 +109,13 @@ impl CapsuleRegistry {
     /// merging by name with `project_dir` overriding `user_dir`. Missing
     /// directories are treated as empty. Malformed capsules, reserved-name
     /// collisions, and duplicate names within one scope are skipped with a
-    /// warning on stderr.
+    /// warning on stderr. Name matching is case-insensitive.
     pub fn discover(user_dir: &Path, project_dir: &Path) -> CapsuleRegistry {
         let mut capsules = scan_scope(user_dir);
-        for (name, capsule) in scan_scope(project_dir) {
-            capsules.insert(name, capsule);
+        for (project_key, capsule) in scan_scope(project_dir) {
+            // Normalize the key for case-insensitive merge, but preserve original case
+            let normalized_key = project_key.to_lowercase();
+            capsules.insert(normalized_key, capsule);
         }
         CapsuleRegistry { capsules }
     }
@@ -129,7 +131,6 @@ impl CapsuleRegistry {
     }
 
     /// All discovered capsules.
-    #[allow(dead_code)]
     pub fn iter(&self) -> impl Iterator<Item = &Capsule> {
         self.capsules.values()
     }
@@ -137,6 +138,7 @@ impl CapsuleRegistry {
 
 /// Scan one scope directory for capsule subdirectories, deduping by name
 /// (first by directory scan order wins, with a warning for later duplicates).
+/// Names are matched case-insensitively, but the Capsule's original-case name is preserved.
 fn scan_scope(dir: &Path) -> BTreeMap<String, Capsule> {
     let mut found: BTreeMap<String, Capsule> = BTreeMap::new();
     let Ok(entries) = fs::read_dir(dir) else {
@@ -164,7 +166,8 @@ fn scan_scope(dir: &Path) -> BTreeMap<String, Capsule> {
                     );
                     continue;
                 }
-                if let Some(existing) = found.get(&capsule.name) {
+                let normalized_key = capsule.name.to_lowercase();
+                if let Some(existing) = found.get(&normalized_key) {
                     eprintln!(
                         "quecto-agent: capsule \"{}\" at {} shadowed by {} (duplicate name in scope), skipping",
                         capsule.name,
@@ -173,7 +176,7 @@ fn scan_scope(dir: &Path) -> BTreeMap<String, Capsule> {
                     );
                     continue;
                 }
-                found.insert(capsule.name.clone(), capsule);
+                found.insert(normalized_key, capsule);
             }
             Err(reason) => {
                 eprintln!(
@@ -378,5 +381,40 @@ mod tests {
         write_capsule(project.path(), "Demo", "x", "body");
         let registry = CapsuleRegistry::discover(Path::new("/does/not/exist"), project.path());
         assert_eq!(registry.get("demo").unwrap().name, "Demo");
+    }
+
+    #[test]
+    fn project_scope_overrides_user_scope_even_with_different_case() {
+        let user = tempdir().unwrap();
+        let project = tempdir().unwrap();
+        write_capsule(user.path(), "Demo", "user version", "user body");
+        write_capsule(project.path(), "demo", "project version", "project body");
+
+        let registry = CapsuleRegistry::discover(user.path(), project.path());
+
+        assert_eq!(registry.names().len(), 1);
+        assert_eq!(registry.get("demo").unwrap().description, "project version");
+    }
+
+    #[test]
+    fn duplicate_name_within_one_scope_is_case_insensitive() {
+        let project = tempdir().unwrap();
+        write_capsule(project.path(), "aaa-demo", "first", "body");
+        write_capsule(project.path(), "zzz-demo", "second", "body");
+        fs::write(
+            project.path().join("aaa-demo").join("CAPSULE.md"),
+            "---\nname: Demo\ndescription: first\n---\nbody",
+        )
+        .unwrap();
+        fs::write(
+            project.path().join("zzz-demo").join("CAPSULE.md"),
+            "---\nname: demo\ndescription: second\n---\nbody",
+        )
+        .unwrap();
+
+        let registry = CapsuleRegistry::discover(Path::new("/does/not/exist"), project.path());
+
+        assert_eq!(registry.names().len(), 1);
+        assert_eq!(registry.get("demo").unwrap().description, "first");
     }
 }
