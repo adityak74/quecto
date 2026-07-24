@@ -189,6 +189,98 @@ fn scan_scope(dir: &Path) -> BTreeMap<String, Capsule> {
     found
 }
 
+/// The active (loaded) capsule set for one REPL session, plus the registry of
+/// everything discoverable.
+pub struct CapsuleState {
+    registry: CapsuleRegistry,
+    base_system_prompt: String,
+    active: Vec<String>,
+}
+
+impl CapsuleState {
+    pub fn new(registry: CapsuleRegistry, base_system_prompt: String) -> CapsuleState {
+        CapsuleState {
+            registry,
+            base_system_prompt,
+            active: Vec::new(),
+        }
+    }
+
+    pub fn registry(&self) -> &CapsuleRegistry {
+        &self.registry
+    }
+
+    pub fn is_active(&self, name: &str) -> bool {
+        self.active.iter().any(|n| n.eq_ignore_ascii_case(name))
+    }
+
+    /// Load a capsule by name. `Ok(true)` if newly loaded, `Ok(false)` if it
+    /// was already active, `Err` with a user-facing message if unknown.
+    pub fn load(&mut self, name: &str) -> Result<bool, String> {
+        let Some(capsule) = self.registry.get(name) else {
+            return Err(format!("no such capsule: {name} (see /capsules)"));
+        };
+        if self.is_active(&capsule.name) {
+            return Ok(false);
+        }
+        self.active.push(capsule.name.clone());
+        Ok(true)
+    }
+
+    /// Unload a capsule by name. Returns whether it had been active.
+    pub fn unload(&mut self, name: &str) -> bool {
+        let before = self.active.len();
+        self.active.retain(|n| !n.eq_ignore_ascii_case(name));
+        self.active.len() != before
+    }
+
+    /// The system prompt with every active capsule's instructions folded in,
+    /// in load order.
+    pub fn render_system_prompt(&self) -> String {
+        let mut prompt = self.base_system_prompt.clone();
+        for name in &self.active {
+            if let Some(capsule) = self.registry.get(name) {
+                prompt.push_str("\n\n");
+                prompt.push_str(&capsule.system_prompt_section());
+            }
+        }
+        prompt
+    }
+
+    /// One line per discovered capsule, sorted by name, marking active ones
+    /// with `●`. Used by `/capsules`.
+    pub fn list_display(&self) -> String {
+        let mut capsules: Vec<&Capsule> = self.registry.iter().collect();
+        capsules.sort_by(|a, b| a.name.cmp(&b.name));
+        if capsules.is_empty() {
+            return "no capsules found".to_string();
+        }
+        capsules
+            .iter()
+            .map(|c| {
+                let marker = if self.is_active(&c.name) { "●" } else { " " };
+                if c.description.is_empty() {
+                    format!("{marker} {}", c.name)
+                } else {
+                    format!("{marker} {} — {}", c.name, c.description)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
+/// `~/.quecto/capsules`, the user (personal) capsule scope. `None` if `HOME`
+/// is not set.
+pub fn default_user_capsules_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".quecto").join("capsules"))
+}
+
+/// `<cwd>/.quecto/capsules`, the project capsule scope.
+pub fn project_capsules_dir(cwd: &Path) -> PathBuf {
+    cwd.join(".quecto").join("capsules")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +508,98 @@ mod tests {
 
         assert_eq!(registry.names().len(), 1);
         assert_eq!(registry.get("demo").unwrap().description, "first");
+    }
+
+    fn registry_with(root: &Path, name: &str, description: &str, body: &str) -> CapsuleRegistry {
+        write_capsule(root, name, description, body);
+        CapsuleRegistry::discover(Path::new("/does/not/exist"), root)
+    }
+
+    #[test]
+    fn load_unknown_capsule_errors() {
+        let mut state = CapsuleState::new(CapsuleRegistry::default(), "base".to_string());
+        let err = state.load("demo").unwrap_err();
+        assert_eq!(err, "no such capsule: demo (see /capsules)");
+    }
+
+    #[test]
+    fn load_marks_active_then_is_idempotent() {
+        let dir = tempdir().unwrap();
+        let registry = registry_with(dir.path(), "demo", "d", "body");
+        let mut state = CapsuleState::new(registry, "base".to_string());
+
+        assert_eq!(state.load("demo"), Ok(true));
+        assert!(state.is_active("demo"));
+        assert_eq!(state.load("demo"), Ok(false));
+    }
+
+    #[test]
+    fn unload_reports_whether_it_was_active() {
+        let dir = tempdir().unwrap();
+        let registry = registry_with(dir.path(), "demo", "d", "body");
+        let mut state = CapsuleState::new(registry, "base".to_string());
+
+        assert!(!state.unload("demo"));
+        state.load("demo").unwrap();
+        assert!(state.unload("demo"));
+        assert!(!state.is_active("demo"));
+    }
+
+    #[test]
+    fn render_system_prompt_appends_active_capsules_in_load_order() {
+        let dir = tempdir().unwrap();
+        write_capsule(dir.path(), "first", "d1", "first body");
+        write_capsule(dir.path(), "second", "d2", "second body");
+        let registry = CapsuleRegistry::discover(Path::new("/does/not/exist"), dir.path());
+        let mut state = CapsuleState::new(registry, "base prompt".to_string());
+
+        state.load("second").unwrap();
+        state.load("first").unwrap();
+        let prompt = state.render_system_prompt();
+
+        assert!(prompt.starts_with("base prompt"));
+        let second_at = prompt.find("## Capsule: second").unwrap();
+        let first_at = prompt.find("## Capsule: first").unwrap();
+        assert!(second_at < first_at, "capsules must appear in load order");
+    }
+
+    #[test]
+    fn render_system_prompt_excludes_unloaded_capsules() {
+        let dir = tempdir().unwrap();
+        let registry = registry_with(dir.path(), "demo", "d", "demo body");
+        let mut state = CapsuleState::new(registry, "base".to_string());
+
+        state.load("demo").unwrap();
+        state.unload("demo");
+
+        assert_eq!(state.render_system_prompt(), "base");
+    }
+
+    #[test]
+    fn list_display_reports_when_registry_is_empty() {
+        let state = CapsuleState::new(CapsuleRegistry::default(), "base".to_string());
+        assert_eq!(state.list_display(), "no capsules found");
+    }
+
+    #[test]
+    fn list_display_marks_active_capsules_and_sorts_by_name() {
+        let dir = tempdir().unwrap();
+        write_capsule(dir.path(), "zeta", "last", "body");
+        write_capsule(dir.path(), "alpha", "first", "body");
+        let registry = CapsuleRegistry::discover(Path::new("/does/not/exist"), dir.path());
+        let mut state = CapsuleState::new(registry, "base".to_string());
+        state.load("zeta").unwrap();
+
+        let display = state.list_display();
+        let lines: Vec<&str> = display.lines().collect();
+        assert_eq!(lines, vec!["  alpha — first", "● zeta — last"]);
+    }
+
+    #[test]
+    fn project_capsules_dir_joins_dot_quecto_capsules() {
+        assert_eq!(
+            project_capsules_dir(Path::new("/repo")),
+            PathBuf::from("/repo/.quecto/capsules")
+        );
     }
 }
