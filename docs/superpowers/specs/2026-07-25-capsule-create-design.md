@@ -95,6 +95,7 @@ If step 2–5 fails, nothing is written, nothing is registered — the user can 
 | Missing `<name>` or `<description>` | Usage notice; no model call |
 | `<name>` collides with a reserved built-in (including `capsule-create` itself) | Error notice; no model call |
 | `<name>` already exists in the registry (either scope) | Error notice; no model call |
+| `<name>` is not a single clean path component (contains `/`, is `.`/`..`, or is an absolute path) | Error notice; no model call |
 | Model output has no fenced code block | Error notice: `"capsule draft failed: no fenced code block found in model output"`; nothing written |
 | Fenced block fails `Capsule::parse` | Error notice with the parser's reason; nothing written |
 | Model's `name:` frontmatter field ≠ requested `<name>` | Silently corrected to the requested name before writing (not an error) |
