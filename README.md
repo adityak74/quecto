@@ -4,12 +4,12 @@
 
 ### A minimal, vendor-neutral execution layer for LLM agents.
 
-*One endpoint. Zero async. A 1.3 MB core and a 5.6 MB coding agent.*
+*One endpoint. Zero async. A 1.3 MB core and a 5.5 MB coding agent.*
 *Reasoning controls, tools, verification, persistence, MCP, evaluation, and OpenTelemetry.*
 
 <br/>
 
-[![Small by construction](https://img.shields.io/badge/small%20by%20construction-1.3%20MB%20core%20%C2%B7%205.6%20MB%20agent-2ea44f?style=for-the-badge)](#small-by-construction)
+[![Small by construction](https://img.shields.io/badge/small%20by%20construction-1.3%20MB%20core%20%C2%B7%205.5%20MB%20agent-2ea44f?style=for-the-badge)](#small-by-construction)
 
 [![quecto release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-v*&label=quecto&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0)
 [![quecto-agent release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-agent-v*&label=quecto-agent&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.0)
@@ -32,7 +32,7 @@
 **Two crates, one philosophy:**
 
 - **`quecto`** — the core. Take a prompt, run it through any OpenAI-compatible LLM — cloud (OpenAI) or local (Ollama, LM Studio, vLLM) — and return the output, buffered or streamed. One job, zero opinions.
-- **`quecto-agent`** — a real coding agent, built entirely on top of the core. Multi-step tool use, native reasoning controls, verification gates, session persistence (resume/undo/diff), MCP tool sources, OpenTelemetry tracing, capsules, and a deterministic evaluation suite — all in a **5.6 MB** binary with **no async runtime**.
+- **`quecto-agent`** — a real coding agent, built entirely on top of the core. Multi-step tool use, native reasoning controls, verification gates, session persistence (resume/undo/diff), MCP tool sources, OpenTelemetry tracing, capsules, and a deterministic evaluation suite — all in a **5.5 MB** binary with **no async runtime**.
 
 ---
 
@@ -213,7 +213,7 @@ eval "$(quecto --init)"
 ## `quecto-agent` — the coding agent
 
 ```bash
-cargo build --release -p quecto-agent   # → target/release/quecto-agent (~5.6 MB)
+cargo build --release -p quecto-agent   # → target/release/quecto-agent (~5.5 MB)
 
 # target/release isn't on $PATH by default — either call it directly:
 ./target/release/quecto-agent "add a test for the parse_args function"
@@ -547,7 +547,7 @@ Both binaries are **self-contained** — no runtime, no interpreter, statically-
 | `quecto` — default `--release` | 2.6 MB | ~450 LOC |
 | `quecto` — stripped | 2.3 MB | ~450 LOC |
 | **`quecto` — size-optimized profile (shipped)** | **~1.3 MB** (1,300,896 bytes) | **~450 LOC** |
-| **`quecto-agent` — size-optimized profile (shipped)** | **~5.6 MB** (5,552,128 bytes) | **~14,400 LOC** |
+| **`quecto-agent` — size-optimized profile (shipped)** | **~5.5 MB** (5,535,680 bytes) | **~14,400 LOC** |
 
 Two direct dependencies on the core (`ureq` + `serde_json`), ~30 transitive crates. What that buys, architecturally:
 
@@ -559,7 +559,7 @@ Two direct dependencies on the core (`ureq` + `serde_json`), ~30 transitive crat
 - simple embedding
 - predictable execution model
 
-The agent adds a full tool loop, sandbox, SQLite-backed session store, capsules, and manifest parsing, at **~5.6 MB** — up from ~3.5 MB at the v0.1.0 release as the feature set (image input, native Anthropic provider, Mermaid rendering, capsules) has grown. Still statically linked and dependency-light relative to that surface; "small by construction" describes the core's zero-async, two-dependency design, not a fixed byte budget on the agent.
+The agent adds a full tool loop, sandbox, SQLite-backed session store, capsules, and manifest parsing, at **~5.5 MB** — up from ~3.5 MB at the v0.1.0 release as the feature set (image input, native Anthropic provider, Mermaid rendering, capsules) has grown. Still statically linked and dependency-light relative to that surface; "small by construction" describes the core's zero-async, two-dependency design, not a fixed byte budget on the agent.
 
 ---
 
