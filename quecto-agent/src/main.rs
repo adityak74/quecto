@@ -1,12 +1,12 @@
 use clap::{error::ErrorKind, CommandFactory, Parser, Subcommand};
 use quecto_agent::{
     cancel_token, chat_spinner_renderer, content_hash, default_user_capsules_dir,
-    join_url, load_instructions, new_session_id, parse_command, parse_spinner_verbs,
-    project_capsules_dir, project_raw, render_assistant_text, render_change_summary,
-    resolve_scoped_configured, seed_context, Agent, ApprovalMode, CapsuleRegistry, CapsuleState,
-    ChatCommand, ConfiguredFlavor, Flavor, HttpModel, LineRenderer, Message, Outcome, Policy,
-    Preset, Provider, ReasoningCommand, ReasoningMode, Renderer, SqliteRecorder, Store,
-    TrustStore, Verifier,
+    extract_fenced_block, is_reserved, join_url, load_instructions, new_session_id,
+    parse_command, parse_spinner_verbs, project_capsules_dir, project_raw,
+    render_assistant_text, render_change_summary, resolve_scoped_configured, seed_context, Agent,
+    ApprovalMode, Capsule, CapsuleRegistry, CapsuleState, ChatCommand, ConfiguredFlavor, Flavor,
+    HttpModel, LineRenderer, Message, Outcome, Policy, Preset, Provider, ReasoningCommand,
+    ReasoningMode, Renderer, SqliteRecorder, Store, TrustStore, Verifier,
 };
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -695,6 +695,7 @@ const HELP: &str = "\
 /load <name>         load a capsule
 /unload <name>       unload a capsule
 /<capsule_name> [text]  load a capsule (if needed) and optionally send a prompt through it
+/capsule-create <name> <what it should do>  draft and load a new capsule via the agent
 
 Images:
   @image <path>      attach an image file to your prompt
@@ -1230,6 +1231,79 @@ fn handle_chat_command(
             }
             if let Some(text) = prompt {
                 run_and_render(agent, &text, out);
+            }
+        }
+        ChatCommand::CreateCapsule { name, description } => {
+            if name.is_empty() || description.is_empty() {
+                out.notice("usage: /capsule-create <name> <what it should do>");
+            } else if is_reserved(&name) {
+                out.notice(&format!(
+                    "{name} is a reserved command name, choose another"
+                ));
+            } else if capsules.registry().get(&name).is_some() {
+                out.notice(&format!("capsule {name} already exists (see /capsules)"));
+            } else {
+                let meta_prompt = format!(
+                    "Draft a CAPSULE.md file for a new capsule named `{name}` that does the \
+                     following: {description}. Output ONLY the file content: YAML frontmatter \
+                     with `name: {name}` and a one-line `description:`, followed by a `---` \
+                     closing delimiter and a markdown instructions body. Wrap the entire file \
+                     content in a single fenced code block and output nothing else."
+                );
+                match agent.run(&meta_prompt) {
+                    Outcome::Complete(answer) => {
+                        out.assistant(&answer);
+                        let dir = project_capsules_dir(cwd).join(&name);
+                        let drafted = extract_fenced_block(&answer)
+                            .and_then(|block| Capsule::parse(&block, dir.clone()));
+                        match drafted {
+                            Ok(mut capsule) => {
+                                if !capsule.name.eq_ignore_ascii_case(&name) {
+                                    capsule.name = name.clone();
+                                }
+                                if let Err(e) = std::fs::create_dir_all(&dir) {
+                                    out.notice(&format!(
+                                        "capsule draft failed: could not create {}: {e}",
+                                        dir.display()
+                                    ));
+                                } else {
+                                    let file_text = format!(
+                                        "---\nname: {}\ndescription: {}\n---\n{}\n",
+                                        capsule.name, capsule.description, capsule.instructions
+                                    );
+                                    match std::fs::write(dir.join("CAPSULE.md"), file_text) {
+                                        Ok(()) => {
+                                            let path = dir.join("CAPSULE.md");
+                                            capsules.create_and_load(capsule);
+                                            agent.messages[0] =
+                                                Message::system(capsules.render_system_prompt());
+                                            out.notice(&format!(
+                                                "created and loaded capsule {name} at {}",
+                                                path.display()
+                                            ));
+                                        }
+                                        Err(e) => out.notice(&format!(
+                                            "capsule draft failed: could not write CAPSULE.md: {e}"
+                                        )),
+                                    }
+                                }
+                            }
+                            Err(reason) => {
+                                out.notice(&format!("capsule draft failed: {reason}"));
+                            }
+                        }
+                    }
+                    Outcome::StepLimit => out.notice("(step limit reached)"),
+                    Outcome::VerificationFailed { attempts } => out.notice(&format!(
+                        "(verification still failing after {attempts} attempts)"
+                    )),
+                    Outcome::Cancelled => out.notice("(cancelled)"),
+                    Outcome::RepeatedAction => out.notice("(stopped: repeated action)"),
+                    Outcome::Blocked => out.notice(
+                        "(stopped: actions denied — use /approve to allow this session)",
+                    ),
+                    Outcome::Error(e) => out.notice(&format!("(error: {e})")),
+                }
             }
         }
         ChatCommand::Unknown(name) => {
@@ -1824,6 +1898,141 @@ mod main_tests {
             "test-model", &mut capsules, &mut out,
         );
         assert!(exit);
+    }
+
+    #[test]
+    fn capsule_create_rejects_existing_name_without_calling_the_model() {
+        let dir = tempfile::tempdir().unwrap();
+        write_capsule(dir.path(), "demo", "demo capsule", "body");
+        let mut capsules = capsules_from(dir.path());
+        // fake_agent's FakeModel would return this reply if called; assert it wasn't.
+        let mut agent = fake_agent("```\n---\nname: demo\ndescription: x\n---\nshould not run\n```");
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/capsule-create demo does the thing", &mut agent, &store, "s1", dir.path(),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(
+            out.notices,
+            vec!["capsule demo already exists (see /capsules)".to_string()]
+        );
+        // no model turn means no user/assistant messages were appended
+        assert_eq!(agent.messages.len(), 1);
+    }
+
+    #[test]
+    fn capsule_create_rejects_missing_arguments() {
+        let mut capsules = test_capsules();
+        let mut agent = test_agent(None);
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/capsule-create", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(
+            out.notices,
+            vec!["usage: /capsule-create <name> <what it should do>".to_string()]
+        );
+    }
+
+    #[test]
+    fn capsule_create_rejects_reserved_name() {
+        let mut capsules = test_capsules();
+        let mut agent = test_agent(None);
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/capsule-create load does the thing", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(
+            out.notices,
+            vec!["load is a reserved command name, choose another".to_string()]
+        );
+    }
+
+    #[test]
+    fn capsule_create_drafts_writes_and_loads_a_new_capsule() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut capsules = capsules_from(dir.path());
+        let mut agent = fake_agent(
+            "Sure, here's the capsule:\n```\n---\nname: demo\ndescription: demo capsule\n\
+             ---\nFollow the demo workflow.\n```\n",
+        );
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/capsule-create demo draft a demo workflow", &mut agent, &store, "s1", dir.path(),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert!(capsules.is_active("demo"));
+        let written = std::fs::read_to_string(
+            dir.path().join(".quecto").join("capsules").join("demo").join("CAPSULE.md"),
+        )
+        .unwrap();
+        assert!(written.contains("name: demo"));
+        assert!(written.contains("Follow the demo workflow."));
+        let prompt = agent.messages[0].text();
+        assert!(prompt.contains("## Capsule: demo"));
+        assert!(prompt.contains("Follow the demo workflow."));
+        assert!(out
+            .notices
+            .iter()
+            .any(|n| n.starts_with("created and loaded capsule demo at")));
+    }
+
+    #[test]
+    fn capsule_create_reconciles_mismatched_model_provided_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut capsules = capsules_from(dir.path());
+        let mut agent = fake_agent(
+            "```\n---\nname: wrong-name\ndescription: demo capsule\n---\nbody\n```",
+        );
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        handle_chat_command(
+            "/capsule-create demo do the thing", &mut agent, &store, "s1", dir.path(),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(capsules.is_active("demo"));
+        assert!(!capsules.is_active("wrong-name"));
+    }
+
+    #[test]
+    fn capsule_create_reports_error_when_model_output_has_no_fence() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut capsules = capsules_from(dir.path());
+        let mut agent = fake_agent("sorry, I won't wrap this in a code block");
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        handle_chat_command(
+            "/capsule-create demo do the thing", &mut agent, &store, "s1", dir.path(),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!capsules.is_active("demo"));
+        assert!(out
+            .notices
+            .iter()
+            .any(|n| n == "capsule draft failed: no fenced code block found in model output"));
+        assert!(!dir.path().join(".quecto").join("capsules").join("demo").exists());
     }
 
     struct EnvGuard(Vec<(String, Option<String>)>);
