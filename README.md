@@ -253,6 +253,11 @@ Interactive chat with the rotating loading verbs:
 | `/clear` | — | Forget the conversation (keeps the system prompt) |
 | `/reasoning` | — | Show the active session reasoning mode |
 | `/reasoning <mode>` | `/reasoning off` | Set or clear the reasoning default for future turns in this chat session |
+| `/capsules` | — | List available and loaded capsules |
+| `/load <name>` | — | Load a capsule into the active set |
+| `/unload <name>` | — | Unload a capsule from the active set |
+| `/<capsule_name> [text]` | — | Invoke a loaded capsule; optionally with a prompt |
+| `/capsule-create <name> <description>` | — | Draft and load a new capsule via the agent, written to `<cwd>/.quecto/capsules/<name>/CAPSULE.md` |
 | `/exit` | `/quit`, `/q` | Leave chat |
 
 **What's in it:** multi-step tool use (file read/write/patch, search, git, shell, background processes, `.qkb` notes, subagent delegation), edits gated by an approval preset, a hard-denylist sandbox (blocks `sudo`, `rm -rf /`, `git push`, etc. even under `--yes`), configurable verification commands, SQLite-backed session persistence, named flavor manifests (`.quecto/flavors/*.toml`) with content-hash trust-on-first-use, session-scoped reasoning defaults, interactive markdown rendering, and inline Mermaid rendering for fenced `mermaid` code blocks in TTY chat.
