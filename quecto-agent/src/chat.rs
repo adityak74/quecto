@@ -23,6 +23,7 @@ pub enum ChatCommand {
     LoadCapsule(String),
     UnloadCapsule(String),
     InvokeCapsule { name: String, prompt: Option<String> },
+    CreateCapsule { name: String, description: String },
     Say(String),
     Unknown(String),
 }
@@ -66,6 +67,15 @@ pub fn parse_command(line: &str, capsule_names: &[String]) -> ChatCommand {
         "capsules" => ChatCommand::Capsules,
         "load" => ChatCommand::LoadCapsule(remainder.to_string()),
         "unload" => ChatCommand::UnloadCapsule(remainder.to_string()),
+        "capsule-create" => {
+            let mut parts = remainder.splitn(2, char::is_whitespace);
+            let cap_name = parts.next().unwrap_or("").to_string();
+            let description = parts.next().unwrap_or("").trim().to_string();
+            ChatCommand::CreateCapsule {
+                name: cap_name,
+                description,
+            }
+        }
         other => match capsule_names.iter().find(|n| n.eq_ignore_ascii_case(other)) {
             Some(matched) => ChatCommand::InvokeCapsule {
                 name: matched.clone(),
@@ -220,6 +230,50 @@ mod tests {
         assert_eq!(
             parse_command("/frobnicate", &["foo".to_string()]),
             ChatCommand::Unknown("frobnicate".to_string())
+        );
+    }
+
+    #[test]
+    fn capsule_create_with_name_and_description() {
+        assert_eq!(
+            parse_command("/capsule-create foo does the thing", &[]),
+            ChatCommand::CreateCapsule {
+                name: "foo".to_string(),
+                description: "does the thing".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn capsule_create_with_name_but_no_description() {
+        assert_eq!(
+            parse_command("/capsule-create foo", &[]),
+            ChatCommand::CreateCapsule {
+                name: "foo".to_string(),
+                description: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn capsule_create_with_no_args() {
+        assert_eq!(
+            parse_command("/capsule-create", &[]),
+            ChatCommand::CreateCapsule {
+                name: String::new(),
+                description: String::new()
+            }
+        );
+    }
+
+    #[test]
+    fn capsule_create_trims_extra_whitespace_around_description() {
+        assert_eq!(
+            parse_command("/capsule-create foo   does the thing  ", &[]),
+            ChatCommand::CreateCapsule {
+                name: "foo".to_string(),
+                description: "does the thing".to_string()
+            }
         );
     }
 }
