@@ -1240,6 +1240,15 @@ fn handle_chat_command(
                 out.notice(&format!(
                     "{name} is a reserved command name, choose another"
                 ));
+            } else if std::path::Path::new(&name).components().count() != 1
+                || !matches!(
+                    std::path::Path::new(&name).components().next(),
+                    Some(std::path::Component::Normal(_))
+                )
+            {
+                out.notice(&format!(
+                    "{name} is not a valid capsule name (must be a single path component, no '/' or '..')"
+                ));
             } else if capsules.registry().get(&name).is_some() {
                 out.notice(&format!("capsule {name} already exists (see /capsules)"));
             } else {
@@ -1960,6 +1969,40 @@ mod main_tests {
             out.notices,
             vec!["load is a reserved command name, choose another".to_string()]
         );
+    }
+
+    #[test]
+    fn capsule_create_rejects_path_traversal_name() {
+        let mut capsules = test_capsules();
+        let mut agent = test_agent(None);
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/capsule-create ../../evil do the thing", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(agent.messages.len(), 1); // no model call was made
+        assert!(out.notices[0].contains("not a valid capsule name"));
+    }
+
+    #[test]
+    fn capsule_create_rejects_absolute_path_name() {
+        let mut capsules = test_capsules();
+        let mut agent = test_agent(None);
+        let store: Option<Store> = None;
+        let mut out = TestRenderer::default();
+
+        let exit = handle_chat_command(
+            "/capsule-create /tmp/evil do the thing", &mut agent, &store, "s1", Path::new("/repo"),
+            "test-model", &mut capsules, &mut out,
+        );
+
+        assert!(!exit);
+        assert_eq!(agent.messages.len(), 1); // no model call was made
+        assert!(out.notices[0].contains("not a valid capsule name"));
     }
 
     #[test]
