@@ -23,8 +23,8 @@ mod verify;
 pub use agent::{Agent, Outcome, RunRecorder};
 pub use approval::{ApprovalMode, Approver, TerminalApprover};
 pub use capsule::{
-    default_user_capsules_dir, is_reserved, project_capsules_dir, Capsule, CapsuleRegistry,
-    CapsuleState, RESERVED_NAMES,
+    default_user_capsules_dir, extract_fenced_block, is_reserved, project_capsules_dir, Capsule,
+    CapsuleRegistry, CapsuleState, RESERVED_NAMES,
 };
 pub use chat::{parse_command, ChatCommand, ReasoningCommand};
 pub use context::seed as seed_context;
