@@ -2,6 +2,20 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Pull the contents of the first fenced code block (```` ``` ````...```` ``` ````,
+/// optional language tag on the opening fence ignored) out of `text`. Used by
+/// `/capsule-create` to extract the drafted `CAPSULE.md` body from the model's
+/// reply.
+pub fn extract_fenced_block(text: &str) -> Result<String, String> {
+    const ERR: &str = "no fenced code block found in model output";
+    let start = text.find("```").ok_or_else(|| ERR.to_string())?;
+    let after_start = &text[start + 3..];
+    let content_start = after_start.find('\n').map(|i| i + 1).unwrap_or(0);
+    let rest = &after_start[content_start..];
+    let end = rest.find("```").ok_or_else(|| ERR.to_string())?;
+    Ok(rest[..end].trim_end().to_string())
+}
+
 /// One capsule: instructions (and optionally scripts) parsed from a `CAPSULE.md`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Capsule {
@@ -12,9 +26,10 @@ pub struct Capsule {
 }
 
 impl Capsule {
-    /// Parse a `CAPSULE.md` file's contents. `dir` is the capsule's directory
-    /// (the parent of the `CAPSULE.md` file), used for `scripts_dir`.
-    fn parse(text: &str, dir: PathBuf) -> Result<Capsule, String> {
+    /// Parse a `CAPSULE.md` file's contents into a `Capsule`. Public so
+    /// `/capsule-create` can validate a model-drafted capsule body before
+    /// writing it to disk, reusing the exact same validation discovery uses.
+    pub fn parse(text: &str, dir: PathBuf) -> Result<Capsule, String> {
         let (frontmatter, body) = split_frontmatter(text)?;
         let fields = parse_frontmatter_fields(&frontmatter)?;
         let name = fields
@@ -88,6 +103,7 @@ fn parse_frontmatter_fields(text: &str) -> Result<BTreeMap<String, String>, Stri
 pub const RESERVED_NAMES: &[&str] = &[
     "help", "h", "?", "model", "context", "diff", "status", "undo", "approve", "deny", "clear",
     "exit", "quit", "q", "reasoning", "tools", "commands", "capsules", "load", "unload",
+    "capsule-create",
 ];
 
 /// Whether `name` collides with a reserved built-in command (case-insensitive).
@@ -134,6 +150,14 @@ impl CapsuleRegistry {
     /// All discovered capsules.
     pub fn iter(&self) -> impl Iterator<Item = &Capsule> {
         self.capsules.values()
+    }
+
+    /// Insert or replace a capsule in the registry (case-insensitive key).
+    /// Used by `/capsule-create` to register a freshly drafted capsule
+    /// without a full re-scan of disk.
+    pub fn insert(&mut self, capsule: Capsule) {
+        let key = capsule.name.to_lowercase();
+        self.capsules.insert(key, capsule);
     }
 }
 
@@ -233,6 +257,16 @@ impl CapsuleState {
         let before = self.active.len();
         self.active.retain(|n| !n.eq_ignore_ascii_case(name));
         self.active.len() != before
+    }
+
+    /// Register `capsule` in the live registry and immediately mark it
+    /// active. Used by `/capsule-create` right after writing a freshly
+    /// drafted `CAPSULE.md` to disk — the capsule is usable on the very
+    /// next turn without a separate `/load`.
+    pub fn create_and_load(&mut self, capsule: Capsule) {
+        let name = capsule.name.clone();
+        self.registry.insert(capsule);
+        self.active.push(name);
     }
 
     /// The system prompt with every active capsule's instructions folded in,
@@ -594,6 +628,94 @@ mod tests {
         let display = state.list_display();
         let lines: Vec<&str> = display.lines().collect();
         assert_eq!(lines, vec!["  alpha — first", "● zeta — last"]);
+    }
+
+    #[test]
+    fn extract_fenced_block_returns_plain_fence_contents() {
+        let text = "here you go:\n```\n---\nname: demo\n---\nbody\n```\nhope that helps";
+        let block = extract_fenced_block(text).unwrap();
+        assert_eq!(block, "---\nname: demo\n---\nbody");
+    }
+
+    #[test]
+    fn extract_fenced_block_strips_language_tag() {
+        let text = "```markdown\n---\nname: demo\n---\nbody\n```";
+        let block = extract_fenced_block(text).unwrap();
+        assert_eq!(block, "---\nname: demo\n---\nbody");
+    }
+
+    #[test]
+    fn extract_fenced_block_uses_first_fence_when_multiple_present() {
+        let text = "```\nfirst\n```\nand another:\n```\nsecond\n```";
+        let block = extract_fenced_block(text).unwrap();
+        assert_eq!(block, "first");
+    }
+
+    #[test]
+    fn extract_fenced_block_errors_when_no_fence_present() {
+        let err = extract_fenced_block("just plain text, no fences here").unwrap_err();
+        assert_eq!(err, "no fenced code block found in model output");
+    }
+
+    #[test]
+    fn extract_fenced_block_errors_when_fence_never_closes() {
+        let err = extract_fenced_block("```\nname: demo\nno closing fence").unwrap_err();
+        assert_eq!(err, "no fenced code block found in model output");
+    }
+
+    #[test]
+    fn registry_insert_adds_a_capsule_findable_by_name() {
+        let mut registry = CapsuleRegistry::default();
+        registry.insert(Capsule {
+            name: "demo".to_string(),
+            description: "d".to_string(),
+            instructions: "body".to_string(),
+            dir: PathBuf::from("/capsules/demo"),
+        });
+        assert_eq!(registry.get("demo").unwrap().description, "d");
+        assert_eq!(registry.names(), vec!["demo".to_string()]);
+    }
+
+    #[test]
+    fn registry_insert_overwrites_existing_entry_of_same_name() {
+        let mut registry = CapsuleRegistry::default();
+        registry.insert(Capsule {
+            name: "demo".to_string(),
+            description: "old".to_string(),
+            instructions: "body".to_string(),
+            dir: PathBuf::from("/capsules/demo"),
+        });
+        registry.insert(Capsule {
+            name: "demo".to_string(),
+            description: "new".to_string(),
+            instructions: "body".to_string(),
+            dir: PathBuf::from("/capsules/demo"),
+        });
+        assert_eq!(registry.get("demo").unwrap().description, "new");
+        assert_eq!(registry.names().len(), 1);
+    }
+
+    #[test]
+    fn create_and_load_registers_and_activates_the_capsule() {
+        let mut state = CapsuleState::new(CapsuleRegistry::default(), "base".to_string());
+        state.create_and_load(Capsule {
+            name: "demo".to_string(),
+            description: "d".to_string(),
+            instructions: "Follow the demo workflow.".to_string(),
+            dir: PathBuf::from("/capsules/demo"),
+        });
+
+        assert!(state.is_active("demo"));
+        assert!(state.registry().get("demo").is_some());
+        assert!(state
+            .render_system_prompt()
+            .contains("Follow the demo workflow."));
+    }
+
+    #[test]
+    fn capsule_create_is_a_reserved_name() {
+        assert!(is_reserved("capsule-create"));
+        assert!(is_reserved("Capsule-Create"));
     }
 
     #[test]
