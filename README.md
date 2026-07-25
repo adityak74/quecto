@@ -12,7 +12,7 @@
 [![Small by construction](https://img.shields.io/badge/small%20by%20construction-1.3%20MB%20core%20%C2%B7%203.5%20MB%20agent-2ea44f?style=for-the-badge)](#small-by-construction)
 
 [![quecto release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-v*&label=quecto&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0)
-[![quecto-agent release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-agent-v*&label=quecto-agent&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.1.0)
+[![quecto-agent release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-agent-v*&label=quecto-agent&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.0)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/core%20dependencies-2-brightgreen?style=flat-square)](#dependencies)
 [![Async](https://img.shields.io/badge/async-zero-black?style=flat-square)](#architecture-principles)
@@ -23,7 +23,7 @@
 
 </div>
 
-> 📦 **First official releases are out.** [`quecto v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0) and [`quecto-agent v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.1.0) are tagged with prebuilt `aarch64-apple-darwin` binaries — grab them from the Releases page or build from source below.
+> 📦 **Latest: [`quecto-agent v0.2.0`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.0) adds Capsules** — a Claude-Code-Skills-like extensibility system for the chat REPL, including `/capsule-create` to draft a new capsule via the agent itself. [`quecto v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0) core is unchanged. Prebuilt `aarch64-apple-darwin` binaries on the Releases page.
 
 ---
 
@@ -96,6 +96,7 @@ flowchart LR
 
 ## What's new
 
+- **Capsules ([`quecto-agent v0.2.0`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.0)):** a Claude-Code-Skills-like extensibility system for the chat REPL — reusable instruction bundles loaded via `/load`, `/unload`, `/<capsule_name>`, listed with `/capsules`, and authored on the fly with `/capsule-create <name> <what it should do>`, which has the agent draft the capsule for you.
 - **First official releases:** [`quecto v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0) and [`quecto-agent v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.1.0), tagged with prebuilt macOS (arm64) binaries.
 - **Multimodal input:** `quecto-agent` accepts `--image` for vision-capable models.
 - **Reasoning controls:** session-scoped `none` through `xhigh`, persisted across resume.
