@@ -266,7 +266,9 @@ impl CapsuleState {
     pub fn create_and_load(&mut self, capsule: Capsule) {
         let name = capsule.name.clone();
         self.registry.insert(capsule);
-        self.active.push(name);
+        if !self.is_active(&name) {
+            self.active.push(name);
+        }
     }
 
     /// The system prompt with every active capsule's instructions folded in,
@@ -710,6 +712,24 @@ mod tests {
         assert!(state
             .render_system_prompt()
             .contains("Follow the demo workflow."));
+    }
+
+    #[test]
+    fn create_and_load_is_idempotent_for_the_active_set() {
+        let mut state = CapsuleState::new(CapsuleRegistry::default(), "base".to_string());
+        let capsule = Capsule {
+            name: "demo".to_string(),
+            description: "d".to_string(),
+            instructions: "Follow the demo workflow.".to_string(),
+            dir: PathBuf::from("/capsules/demo"),
+        };
+        state.create_and_load(capsule.clone());
+        state.create_and_load(capsule);
+
+        // demo's instructions must appear exactly once in the rendered prompt,
+        // not duplicated by a second entry in the active set.
+        let prompt = state.render_system_prompt();
+        assert_eq!(prompt.matches("Follow the demo workflow.").count(), 1);
     }
 
     #[test]
