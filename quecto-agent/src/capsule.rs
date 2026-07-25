@@ -23,6 +23,14 @@ pub struct Capsule {
     pub description: String,
     pub instructions: String,
     pub dir: PathBuf,
+    /// Session state keys this capsule declares it writes, from the optional
+    /// `writes:` frontmatter field (comma-separated). Empty for capsules that
+    /// only inject instructions, which is every capsule today — no capsule
+    /// capability writes shared session state yet. Declared purely so two
+    /// capsules that claim the same key can be caught at `/load` time before
+    /// either one runs, rather than surfacing as unexplained cross-capsule
+    /// behavior later.
+    pub writes: Vec<String>,
 }
 
 impl Capsule {
@@ -38,11 +46,21 @@ impl Capsule {
             .filter(|s| !s.is_empty())
             .ok_or_else(|| "missing 'name' in frontmatter".to_string())?;
         let description = fields.get("description").cloned().unwrap_or_default();
+        let writes = fields
+            .get("writes")
+            .map(|raw| {
+                raw.split(',')
+                    .map(|key| key.trim().to_string())
+                    .filter(|key| !key.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(Capsule {
             name,
             description,
             instructions: body.trim().to_string(),
             dir,
+            writes,
         })
     }
 
@@ -240,7 +258,9 @@ impl CapsuleState {
     }
 
     /// Load a capsule by name. `Ok(true)` if newly loaded, `Ok(false)` if it
-    /// was already active, `Err` with a user-facing message if unknown.
+    /// was already active, `Err` with a user-facing message if unknown or if
+    /// its declared `writes` surface conflicts with an already-active
+    /// capsule's.
     pub fn load(&mut self, name: &str) -> Result<bool, String> {
         let Some(capsule) = self.registry.get(name) else {
             return Err(format!("no such capsule: {name} (see /capsules)"));
@@ -248,8 +268,31 @@ impl CapsuleState {
         if self.is_active(&capsule.name) {
             return Ok(false);
         }
+        if let Some((key, other)) = self.write_conflict(capsule) {
+            return Err(format!(
+                "cannot load {}: write key \"{key}\" is already claimed by active capsule {other}",
+                capsule.name
+            ));
+        }
         self.active.push(capsule.name.clone());
         Ok(true)
+    }
+
+    /// The first session-state key `candidate` declares writing that some
+    /// already-active capsule also declares writing, plus that capsule's
+    /// name. `None` if there's no overlap.
+    fn write_conflict(&self, candidate: &Capsule) -> Option<(String, String)> {
+        for active_name in &self.active {
+            let Some(active_capsule) = self.registry.get(active_name) else {
+                continue;
+            };
+            for key in &candidate.writes {
+                if active_capsule.writes.contains(key) {
+                    return Some((key.clone(), active_capsule.name.clone()));
+                }
+            }
+        }
+        None
     }
 
     /// Unload a capsule by name. Returns whether it had been active.
@@ -344,6 +387,22 @@ mod tests {
     }
 
     #[test]
+    fn writes_defaults_to_empty_when_missing() {
+        let capsule = Capsule::parse("---\nname: demo\n---\nbody", PathBuf::from(".")).unwrap();
+        assert!(capsule.writes.is_empty());
+    }
+
+    #[test]
+    fn writes_parses_comma_separated_keys() {
+        let capsule = Capsule::parse(
+            "---\nname: demo\nwrites: theme, active_branch\n---\nbody",
+            PathBuf::from("."),
+        )
+        .unwrap();
+        assert_eq!(capsule.writes, vec!["theme".to_string(), "active_branch".to_string()]);
+    }
+
+    #[test]
     fn errors_when_name_missing() {
         let err = Capsule::parse("---\ndescription: no name\n---\nbody", PathBuf::from(".")).unwrap_err();
         assert!(err.contains("name"));
@@ -369,6 +428,7 @@ mod tests {
             description: String::new(),
             instructions: String::new(),
             dir: dir.path().to_path_buf(),
+            writes: Vec::new(),
         };
         assert_eq!(capsule.scripts_dir(), None);
     }
@@ -382,6 +442,7 @@ mod tests {
             description: String::new(),
             instructions: String::new(),
             dir: dir.path().to_path_buf(),
+            writes: Vec::new(),
         };
         assert_eq!(capsule.scripts_dir(), Some(dir.path().join("scripts")));
     }
@@ -393,6 +454,7 @@ mod tests {
             description: String::new(),
             instructions: "Follow the demo workflow.".to_string(),
             dir: PathBuf::from("/nonexistent"),
+            writes: Vec::new(),
         };
         let section = capsule.system_prompt_section();
         assert!(section.contains("## Capsule: demo"));
@@ -408,6 +470,7 @@ mod tests {
             description: String::new(),
             instructions: "body".to_string(),
             dir: dir.path().to_path_buf(),
+            writes: Vec::new(),
         };
         let section = capsule.system_prompt_section();
         assert!(section.contains(&dir.path().join("scripts").display().to_string()));
@@ -571,6 +634,55 @@ mod tests {
     }
 
     #[test]
+    fn load_rejects_a_capsule_whose_write_key_is_already_claimed() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("alpha")).unwrap();
+        fs::write(
+            dir.path().join("alpha").join("CAPSULE.md"),
+            "---\nname: alpha\nwrites: theme\n---\nbody",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("beta")).unwrap();
+        fs::write(
+            dir.path().join("beta").join("CAPSULE.md"),
+            "---\nname: beta\nwrites: theme\n---\nbody",
+        )
+        .unwrap();
+        let registry = CapsuleRegistry::discover(Path::new("/does/not/exist"), dir.path());
+        let mut state = CapsuleState::new(registry, "base".to_string());
+
+        assert_eq!(state.load("alpha"), Ok(true));
+        let err = state.load("beta").unwrap_err();
+        assert!(err.contains("theme"));
+        assert!(err.contains("alpha"));
+        assert!(!state.is_active("beta"));
+    }
+
+    #[test]
+    fn load_allows_capsules_with_disjoint_write_keys() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("alpha")).unwrap();
+        fs::write(
+            dir.path().join("alpha").join("CAPSULE.md"),
+            "---\nname: alpha\nwrites: theme\n---\nbody",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("beta")).unwrap();
+        fs::write(
+            dir.path().join("beta").join("CAPSULE.md"),
+            "---\nname: beta\nwrites: layout\n---\nbody",
+        )
+        .unwrap();
+        let registry = CapsuleRegistry::discover(Path::new("/does/not/exist"), dir.path());
+        let mut state = CapsuleState::new(registry, "base".to_string());
+
+        assert_eq!(state.load("alpha"), Ok(true));
+        assert_eq!(state.load("beta"), Ok(true));
+        assert!(state.is_active("alpha"));
+        assert!(state.is_active("beta"));
+    }
+
+    #[test]
     fn unload_reports_whether_it_was_active() {
         let dir = tempdir().unwrap();
         let registry = registry_with(dir.path(), "demo", "d", "body");
@@ -673,6 +785,7 @@ mod tests {
             description: "d".to_string(),
             instructions: "body".to_string(),
             dir: PathBuf::from("/capsules/demo"),
+            writes: Vec::new(),
         });
         assert_eq!(registry.get("demo").unwrap().description, "d");
         assert_eq!(registry.names(), vec!["demo".to_string()]);
@@ -686,12 +799,14 @@ mod tests {
             description: "old".to_string(),
             instructions: "body".to_string(),
             dir: PathBuf::from("/capsules/demo"),
+            writes: Vec::new(),
         });
         registry.insert(Capsule {
             name: "demo".to_string(),
             description: "new".to_string(),
             instructions: "body".to_string(),
             dir: PathBuf::from("/capsules/demo"),
+            writes: Vec::new(),
         });
         assert_eq!(registry.get("demo").unwrap().description, "new");
         assert_eq!(registry.names().len(), 1);
@@ -705,6 +820,7 @@ mod tests {
             description: "d".to_string(),
             instructions: "Follow the demo workflow.".to_string(),
             dir: PathBuf::from("/capsules/demo"),
+            writes: Vec::new(),
         });
 
         assert!(state.is_active("demo"));
@@ -722,6 +838,7 @@ mod tests {
             description: "d".to_string(),
             instructions: "Follow the demo workflow.".to_string(),
             dir: PathBuf::from("/capsules/demo"),
+            writes: Vec::new(),
         };
         state.create_and_load(capsule.clone());
         state.create_and_load(capsule);

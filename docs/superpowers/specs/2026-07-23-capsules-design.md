@@ -59,6 +59,14 @@ files; the capsule's own instructions are responsible for telling the model when
 them. There is no manifest entry for scripts and no sandboxing beyond what `run_command`
 already enforces.
 
+An optional `writes:` frontmatter field declares the session-state keys this capsule intends
+to write, comma-separated (e.g. `writes: theme, active_branch`). No capsule capability writes
+shared session state today — v1's only shared state is the system prompt string, which is
+fully recomputed on every load/unload — so this field currently has no effect beyond one
+thing: `/load` rejects activating a capsule whose declared `writes` overlaps with an
+already-active capsule's, surfacing the conflict before either capsule runs rather than after.
+See "Design constraint" below for why this exists ahead of any feature that needs it.
+
 `name` in frontmatter should match the directory name; if they differ, the frontmatter `name`
 is authoritative for matching against slash commands, but the directory name is used as a
 fallback label when frontmatter is missing/malformed enough to skip parsing `name`.
@@ -154,6 +162,7 @@ plain input (same path as `ChatCommand::Say`).
 | Duplicate name within one scope | First by scan order wins; stderr warning for the shadowed one |
 | Duplicate name across scopes | Project wins silently (documented, not an error) |
 | `/load <unknown>` | REPL notice: `"no such capsule: <name> (see /capsules)"` |
+| `/load` where the capsule's declared `writes` overlaps an active capsule's | REPL notice: `"cannot load <name>: write key \"<key>\" is already claimed by active capsule <other>"`; capsule is not activated |
 | `/unload <not-loaded>` | REPL notice: `"<name> is not loaded"` |
 | `/<name>` where name matches neither built-in nor capsule | Falls through to existing `Unknown` handling, unchanged |
 | Capsule has no `scripts/` dir | Not an error; injected instructions omit any scripts path |
@@ -183,3 +192,60 @@ plain input (same path as `ChatCommand::Say`).
 - Capsule marketplaces, remote installation, or versioning.
 - New tool-schema entries for capsule scripts — they run through the existing shell tool.
 - Persisting the active-capsule set across REPL restarts/sessions.
+
+## Design constraint: no shared mutable session state (v1 and beyond)
+
+v1's active set touches exactly one piece of shared state: the system prompt string, and that
+string is fully recomputed from `active` + the registry on every `load`/`unload`
+(`render_system_prompt`, see `capsule.rs`). There is nothing left behind when a capsule is
+unloaded — no residual keys, no partial writes. This is deliberate, not incidental, and it must
+hold for any future extension:
+
+**If a later capsule capability writes into any state that outlives the capsule's own
+`system_prompt_section()` block — environment variables, a shared config/key-value store,
+cached tool state, files a script writes for other capsules to read — that capability may not
+ship without three things:**
+
+1. **A declared read/write surface.** The capsule's frontmatter must enumerate the session keys
+   it reads and the session keys it writes, up front, before any of that state is touched.
+   Undeclared writes are a bug, not a grey area — the runtime should reject or loudly warn on a
+   write outside the declared surface rather than silently allow it, since a stale manifest is
+   otherwise indistinguishable from a correct one until something breaks downstream.
+
+   **Implemented**: `Capsule` parses an optional `writes:` frontmatter field (comma-separated
+   keys) into `Capsule::writes: Vec<String>`. No capsule capability writes actual session state
+   yet, so this is currently declaration-only — there is nothing to enforce a write against.
+   Enforcing "no undeclared write" requires either routing state writes through a Rust API the
+   runtime can check, or sandboxing capsule scripts (out of scope, see above); the field exists
+   now so the day a state-writing capability ships, it has a surface to declare against instead
+   of retrofitting one.
+
+2. **A load-time conflict check.** Before activating a capsule, its declared write-keys are
+   checked against the write-keys of every other currently-active capsule. An overlap is
+   surfaced as a conflict at `/load` time — before the capsule runs — not discovered later as
+   unexplained ("ghost") behavior in a different capsule that happens to read the same key.
+
+   **Implemented**: `CapsuleState::load` (`capsule.rs`) rejects loading a capsule whose declared
+   `writes` intersects any currently-active capsule's declared `writes`, returning
+   `Err("cannot load <name>: write key \"<key>\" is already claimed by active capsule <other>")`
+   before either capsule's instructions are added to the system prompt. Capsules with no
+   declared `writes` (i.e. every capsule today) never conflict. See
+   `load_rejects_a_capsule_whose_write_key_is_already_claimed` and
+   `load_allows_capsules_with_disjoint_write_keys` in `capsule.rs`'s test module.
+
+3. **A defined unload contract.** `/unload` must scope-clear exactly the keys a capsule declared
+   (never a blanket reset), and the ownership model for those keys must be decided explicitly:
+   either a key is exclusive to the capsule that holds it for as long as it's loaded (writes
+   from elsewhere while it's active are rejected/warned), or unload restores the key's
+   pre-load value rather than merely clearing it. Silently clearing a key that the user or
+   another capsule wrote to *after* load is itself a ghost-behavior bug, just in the opposite
+   direction.
+
+   **Not yet implemented** — there is no session-state store for `/unload` to clear from. This
+   remains blocked on the same prerequisite as point 1: a concrete feature that needs capsules
+   to write shared state, at which point the ownership model above must be decided as part of
+   that feature's design, not bolted on after.
+
+No feature that adds shared session-state writes to capsules may ship without satisfying all
+three points above — points 1 and 2 have a starting implementation now; point 3 is designed but
+intentionally not built until there's real state for it to act on.
