@@ -183,3 +183,37 @@ plain input (same path as `ChatCommand::Say`).
 - Capsule marketplaces, remote installation, or versioning.
 - New tool-schema entries for capsule scripts — they run through the existing shell tool.
 - Persisting the active-capsule set across REPL restarts/sessions.
+
+## Design constraint: no shared mutable session state (v1 and beyond)
+
+v1's active set touches exactly one piece of shared state: the system prompt string, and that
+string is fully recomputed from `active` + the registry on every `load`/`unload`
+(`render_system_prompt`, see `capsule.rs`). There is nothing left behind when a capsule is
+unloaded — no residual keys, no partial writes. This is deliberate, not incidental, and it must
+hold for any future extension:
+
+**If a later capsule capability writes into any state that outlives the capsule's own
+`system_prompt_section()` block — environment variables, a shared config/key-value store,
+cached tool state, files a script writes for other capsules to read — that capability may not
+ship without three things:**
+
+1. **A declared read/write surface.** The capsule's frontmatter must enumerate the session keys
+   it reads and the session keys it writes, up front, before any of that state is touched.
+   Undeclared writes are a bug, not a grey area — the runtime should reject or loudly warn on a
+   write outside the declared surface rather than silently allow it, since a stale manifest is
+   otherwise indistinguishable from a correct one until something breaks downstream.
+2. **A load-time conflict check.** Before activating a capsule, its declared write-keys are
+   checked against the write-keys of every other currently-active capsule. An overlap is
+   surfaced as a conflict at `/load` time — before the capsule runs — not discovered later as
+   unexplained ("ghost") behavior in a different capsule that happens to read the same key.
+3. **A defined unload contract.** `/unload` must scope-clear exactly the keys a capsule declared
+   (never a blanket reset), and the ownership model for those keys must be decided explicitly:
+   either a key is exclusive to the capsule that holds it for as long as it's loaded (writes
+   from elsewhere while it's active are rejected/warned), or unload restores the key's
+   pre-load value rather than merely clearing it. Silently clearing a key that the user or
+   another capsule wrote to *after* load is itself a ghost-behavior bug, just in the opposite
+   direction.
+
+Until a concrete feature needs shared session state, none of this needs to be built — but no
+such feature may be added by simply bolting state onto `CapsuleState` without satisfying all
+three points above first.
