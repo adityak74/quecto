@@ -552,7 +552,10 @@ impl Agent {
     }
 
     fn run_loop(&mut self) -> Outcome {
+        // Schema never changes during a run — generate once and reuse.
         let schemas = self.registry.schemas();
+        // The identity is constant for the entire run; pre-clone once.
+        let run_identity = self.trace_identity.clone();
         let mut step = 0;
         let mut repeats = RepeatGuard::default();
         let mut failed_verify_changes: Option<usize> = None;
@@ -589,11 +592,10 @@ impl Agent {
                 Ok(completion) => completion,
                 Err(e) => {
                     let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
                     self.emit_trace_event(TraceEvent::InfrastructureError {
                         seq,
                         message: e.to_string(),
-                        identity,
+                        identity: run_identity.clone(),
                     });
                     break Outcome::Error(e);
                 }
@@ -603,12 +605,11 @@ impl Agent {
 
             let usage = telemetry.actual_reasoning_tokens.unwrap_or(0) as u32;
             let seq = self.next_seq();
-            let identity = self.trace_identity.clone();
             self.emit_trace_event(TraceEvent::Turn {
                 seq,
                 tokens_used: usage,
                 duration_ms: duration,
-                identity,
+                identity: run_identity.clone(),
             });
 
             let mut assistant_msg =
@@ -625,8 +626,10 @@ impl Agent {
                     && !self.cx.changes().is_empty()
                 {
                     let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
-                    self.emit_trace_event(TraceEvent::VerifierStart { seq, identity });
+                    self.emit_trace_event(TraceEvent::VerifierStart {
+                        seq,
+                        identity: run_identity.clone(),
+                    });
 
                     let report = self.verifier.as_ref().unwrap().run(&self.cx);
                     for r in &report.results {
@@ -634,11 +637,10 @@ impl Agent {
                     }
 
                     let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
                     self.emit_trace_event(TraceEvent::VerifierResult {
                         seq,
                         passed: report.all_passed(),
-                        identity,
+                        identity: run_identity.clone(),
                     });
 
                     if !report.all_passed() {
@@ -664,11 +666,10 @@ impl Agent {
                 }
                 {
                     let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
                     self.emit_trace_event(TraceEvent::AssistantClaim {
                         seq,
                         content_length: msg.content.len(),
-                        identity,
+                        identity: run_identity.clone(),
                     });
                 }
                 break Outcome::Complete(msg.content);
@@ -697,11 +698,10 @@ impl Agent {
 
                 {
                     let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
                     self.emit_trace_event(TraceEvent::ToolCall {
                         seq,
                         tool_name: call.name.clone(),
-                        identity,
+                        identity: run_identity.clone(),
                     });
                 }
 
@@ -721,22 +721,20 @@ impl Agent {
                 }
                 {
                     let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
                     self.emit_trace_event(TraceEvent::ToolResult {
                         seq,
                         tool_name: call.name.clone(),
                         success: out.summary != "denied",
-                        identity,
+                        identity: run_identity.clone(),
                     });
                 }
                 while self.trace_emitted_changes < self.cx.changes().len() {
                     let change = self.cx.changes()[self.trace_emitted_changes].clone();
                     let seq = self.next_seq();
-                    let identity = self.trace_identity.clone();
                     self.emit_trace_event(TraceEvent::Mutation {
                         seq,
                         path: change.path,
-                        identity,
+                        identity: run_identity.clone(),
                     });
                     self.trace_emitted_changes += 1;
                 }
@@ -795,15 +793,16 @@ impl Agent {
             Outcome::Error(_) => "error",
         };
         let seq = self.next_seq();
-        let identity = self.trace_identity.clone();
         self.emit_trace_event(TraceEvent::Termination {
             seq,
             reason: reason.to_string(),
-            identity,
+            identity: run_identity.clone(),
         });
         let seq = self.next_seq();
-        let identity = self.trace_identity.clone();
-        self.emit_trace_event(TraceEvent::RunEnd { seq, identity });
+        self.emit_trace_event(TraceEvent::RunEnd {
+            seq,
+            identity: run_identity.clone(),
+        });
         outcome
     }
 }
