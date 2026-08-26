@@ -11,8 +11,8 @@
 
 [![Small by construction](https://img.shields.io/badge/small%20by%20construction-1.3%20MB%20core%20%C2%B7%205.5%20MB%20agent-2ea44f?style=for-the-badge)](#small-by-construction)
 
-[![quecto release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-v*&label=quecto&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0)
-[![quecto-agent release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-agent-v*&label=quecto-agent&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.1)
+[![quecto release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-v*&label=quecto&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.1)
+[![quecto-agent release](https://img.shields.io/github/v/release/adityak74/quecto?filter=quecto-agent-v*&label=quecto-agent&style=flat-square)](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.2)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Dependencies](https://img.shields.io/badge/core%20dependencies-2-brightgreen?style=flat-square)](#dependencies)
 [![Async](https://img.shields.io/badge/async-zero-black?style=flat-square)](#architecture-principles)
@@ -23,7 +23,7 @@
 
 </div>
 
-> 📦 **Latest: [`quecto-agent v0.2.1`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.1) hardens Capsules** — `/load` now rejects two capsules that declare the same session-state write key, catching a conflict before either one runs instead of surfacing as unexplained cross-capsule behavior later. [`quecto v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0) core is unchanged. Prebuilt `aarch64-apple-darwin` binaries on the Releases page.
+> 📦 **Latest: [`quecto v0.1.1`](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.1) and [`quecto-agent v0.2.2`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.2) — harness performance.** Shared HTTP agent for connection reuse, `BTreeMap`-backed tool dispatch, and `Rc`-backed trace identity so tracing no longer deep-clones per event. No behavior changes. Prebuilt `aarch64-apple-darwin` binaries on the Releases page.
 
 ---
 
@@ -96,6 +96,7 @@ flowchart LR
 
 ## What's new
 
+- **Harness performance ([`quecto v0.1.1`](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.1) + [`quecto-agent v0.2.2`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.2)):** a single shared `ureq::Agent` reused across every LLM call for persistent HTTP connections, `BTreeMap`-backed tool dispatch instead of a linear scan, and `Rc`-backed trace identity so telemetry events no longer deep-clone per event. No behavior changes.
 - **Capsules ([`quecto-agent v0.2.0`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.0)):** a Claude-Code-Skills-like extensibility system for the chat REPL — reusable instruction bundles loaded via `/load`, `/unload`, `/<capsule_name>`, listed with `/capsules`, and authored on the fly with `/capsule-create <name> <what it should do>`, which has the agent draft the capsule for you. A capsule can optionally declare `writes:` in its frontmatter — session-state keys it intends to write — and `/load` rejects activating a capsule whose declared keys conflict with an already-active one ([`v0.2.1`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.1)).
 - **First official releases:** [`quecto v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.0) and [`quecto-agent v0.1.0`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.1.0), tagged with prebuilt macOS (arm64) binaries.
 - **Multimodal input:** `quecto-agent` accepts `--image` for vision-capable models.
