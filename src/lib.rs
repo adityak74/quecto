@@ -4,6 +4,7 @@
 //! binary and future companion crates.
 
 use serde_json::{json, Value};
+use std::sync::LazyLock;
 use std::time::Duration;
 
 /// Shared boxed error: every fallible fn returns this. Both ureq::Error and
@@ -54,18 +55,21 @@ pub(crate) fn parse_sse_delta(data: &str) -> Option<Value> {
     chunk.get("choices")?.get(0)?.get("delta").cloned()
 }
 
-fn agent() -> ureq::Agent {
+/// A single shared ureq Agent with configured timeouts, built once at first use.
+/// This enables HTTP connection reuse across all requests (every LLM call,
+/// every streaming chunk). Built lazily so the cost is paid only once.
+static SHARED_AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(60))
         .timeout_read(Duration::from_secs(60))
         .build()
-}
+});
 
 /// Buffered primitive: POST an arbitrary JSON body to an arbitrary URL with
 /// arbitrary headers; return the full parsed response. No path/auth/shape opinions.
 /// `ureq` returns `Err` on non-2xx status, so no explicit status check is needed.
 pub fn quecto_raw(url: &str, headers: &[(&str, &str)], body: Value) -> Result<Value, BoxErr> {
-    let mut req = agent().post(url);
+    let mut req = SHARED_AGENT.post(url);
     for (k, v) in headers {
         req = req.set(k, v);
     }
@@ -130,7 +134,7 @@ pub fn quecto_stream(
     if let Some(obj) = body.as_object_mut() {
         obj.insert("stream".to_string(), Value::Bool(true));
     }
-    let mut req = agent().post(url);
+    let mut req = SHARED_AGENT.post(url);
     for (k, v) in headers {
         req = req.set(k, v);
     }

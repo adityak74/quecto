@@ -9,7 +9,7 @@ pub mod notes;
 use crate::model::ToolCall;
 use crate::sandbox::{CancelToken, CommandOutput, Sandbox};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::process::Child;
 use std::path::PathBuf;
 
@@ -223,16 +223,18 @@ impl Context {
 }
 
 pub struct Registry {
-    tools: Vec<Box<dyn Tool>>,
+    tools: BTreeMap<String, Box<dyn Tool>>,
 }
 
 impl Registry {
     pub fn new() -> Self {
-        Registry { tools: Vec::new() }
+        Registry {
+            tools: BTreeMap::new(),
+        }
     }
 
     pub fn register(&mut self, tool: Box<dyn Tool>) {
-        self.tools.push(tool);
+        self.tools.insert(tool.name().to_string(), tool);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -240,17 +242,17 @@ impl Registry {
     }
 
     pub fn has_tool(&self, name: &str) -> bool {
-        self.tools.iter().any(|t| t.name() == name)
+        self.tools.contains_key(name)
     }
 
     /// Return the names of all registered tools.
     pub fn tool_names(&self) -> Vec<String> {
-        self.tools.iter().map(|t| t.name().to_string()).collect()
+        self.tools.keys().cloned().collect()
     }
 
     pub fn schemas(&self) -> Vec<Value> {
         self.tools
-            .iter()
+            .values()
             .map(|t| {
                 json!({
                     "type": "function",
@@ -265,7 +267,7 @@ impl Registry {
     }
 
     pub fn dispatch(&self, call: &ToolCall, cx: &mut Context) -> ToolOutput {
-        match self.tools.iter().find(|t| t.name() == call.name) {
+        match self.tools.get(&call.name) {
             None => ToolOutput::new(
                 format!("error: tool '{}' is not available", call.name),
                 "unknown tool",
