@@ -10,6 +10,7 @@ use serde::Serialize;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::Ordering;
 
 #[derive(Serialize, Clone, Default)]
@@ -66,7 +67,7 @@ pub enum TraceEvent {
         tokens_used: u32,
         duration_ms: u64,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
     #[serde(rename = "run.start")]
     RunStart {
@@ -74,20 +75,20 @@ pub enum TraceEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         allowed_paths: Option<Vec<String>>,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
     #[serde(rename = "run.end")]
     RunEnd {
         seq: u64,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
     #[serde(rename = "tool.call")]
     ToolCall {
         seq: u64,
         tool_name: String,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
     #[serde(rename = "tool.result")]
     ToolResult {
@@ -95,48 +96,48 @@ pub enum TraceEvent {
         tool_name: String,
         success: bool,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
     #[serde(rename = "mutation")]
     Mutation {
         seq: u64,
         path: String,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
     #[serde(rename = "verifier.start")]
     VerifierStart {
         seq: u64,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
     #[serde(rename = "verifier.result")]
     VerifierResult {
         seq: u64,
         passed: bool,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
     #[serde(rename = "assistant.claim")]
     AssistantClaim {
         seq: u64,
         content_length: usize,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
     #[serde(rename = "termination")]
     Termination {
         seq: u64,
         reason: String,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
     #[serde(rename = "infrastructure.error")]
     InfrastructureError {
         seq: u64,
         message: String,
         #[serde(flatten)]
-        identity: TraceIdentity,
+        identity: Rc<TraceIdentity>,
     },
 }
 
@@ -491,7 +492,7 @@ impl Agent {
         let _guard = span.enter();
 
         let seq = self.next_seq();
-        let identity = self.trace_identity.clone();
+        let identity = Rc::new(self.trace_identity.clone());
         self.emit_trace_event(TraceEvent::RunStart {
             seq,
             allowed_paths: allowed_paths_from_env(),
@@ -515,7 +516,7 @@ impl Agent {
         let _guard = span.enter();
 
         let seq = self.next_seq();
-        let identity = self.trace_identity.clone();
+        let identity = Rc::new(self.trace_identity.clone());
         self.emit_trace_event(TraceEvent::RunStart {
             seq,
             allowed_paths: allowed_paths_from_env(),
@@ -555,7 +556,7 @@ impl Agent {
         // Schema never changes during a run — generate once and reuse.
         let schemas = self.registry.schemas();
         // The identity is constant for the entire run; pre-clone once.
-        let run_identity = self.trace_identity.clone();
+        let run_identity = Rc::new(self.trace_identity.clone());
         let mut step = 0;
         let mut repeats = RepeatGuard::default();
         let mut failed_verify_changes: Option<usize> = None;
@@ -1825,7 +1826,7 @@ mod tests {
             seq: 0,
             tokens_used: 150,
             duration_ms: 1000,
-            identity: TraceIdentity::default(),
+            identity: Rc::new(TraceIdentity::default()),
         };
         let s = serde_json::to_string(&event).unwrap();
         let val: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -1850,7 +1851,7 @@ mod tests {
         let event = TraceEvent::RunStart {
             seq: 0,
             allowed_paths: None,
-            identity,
+            identity: Rc::new(identity),
         };
         let s = serde_json::to_string(&event).unwrap();
         let val: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -1865,7 +1866,7 @@ mod tests {
         let event = TraceEvent::RunStart {
             seq: 0,
             allowed_paths: Some(vec!["backend/**".into(), "shared/config.json".into()]),
-            identity: TraceIdentity::default(),
+            identity: Rc::new(TraceIdentity::default()),
         };
         let s = serde_json::to_string(&event).unwrap();
         let val: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -1880,7 +1881,7 @@ mod tests {
         let event = TraceEvent::RunStart {
             seq: 0,
             allowed_paths: None,
-            identity: TraceIdentity::default(),
+            identity: Rc::new(TraceIdentity::default()),
         };
         let s = serde_json::to_string(&event).unwrap();
         let val: serde_json::Value = serde_json::from_str(&s).unwrap();
@@ -1903,7 +1904,7 @@ mod tests {
         a.emit_trace_event(TraceEvent::RunStart {
             seq: seq0,
             allowed_paths: None,
-            identity: a.trace_identity.clone(),
+            identity: Rc::new(a.trace_identity.clone()),
         });
         let contents = std::fs::read_to_string(&trace_path).unwrap();
         assert!(contents.contains("\"run.start\""));
