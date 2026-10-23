@@ -2,10 +2,13 @@
 
 # quecto
 
-### A minimal, vendor-neutral execution layer for LLM agents.
+### The experimental harness for AI coding agents.
 
-*One endpoint. Zero async. A 1.3 MB core and a 5.5 MB coding agent.*
-*Reasoning controls, tools, verification, persistence, MCP, evaluation, and OpenTelemetry.*
+**Measure what your harness actually changes.**
+
+*A minimal, synchronous Rust harness for building, inspecting, and evaluating AI agents. Control reasoning, execute tools, verify outcomes, and trace every step—all in a compact, vendor-neutral runtime.*
+
+**Small by design. Observable by default. Measurable by experiment.**
 
 <br/>
 
@@ -24,6 +27,18 @@
 </div>
 
 > 📦 **Latest: [`quecto v0.1.1`](https://github.com/adityak74/quecto/releases/tag/quecto-v0.1.1) and [`quecto-agent v0.2.2`](https://github.com/adityak74/quecto/releases/tag/quecto-agent-v0.2.2) — harness performance.** Shared HTTP agent for connection reuse, `BTreeMap`-backed tool dispatch, and `Rc`-backed trace identity so tracing no longer deep-clones per event. No behavior changes. Prebuilt `aarch64-apple-darwin` binaries on the Releases page.
+
+---
+
+- **Minimal runtime:** A 1.3 MB core and 5.5 MB coding agent, with no async runtime.
+- **Full control:** Reasoning settings, tool execution, verification, and persistent sessions.
+- **End-to-end observability:** OpenTelemetry traces across agent runs, model calls, tools, and verification.
+- **Reproducible evaluation:** Compare configurations to understand the trade-offs between task success, reliability, latency, and cost.
+- **Vendor-neutral:** Work with local and cloud models through OpenAI-compatible endpoints.
+
+QuECTO makes the harness itself inspectable—and gives you the tools to discover which parts actually matter.
+
+**Build less harness. Understand more.**
 
 ---
 
