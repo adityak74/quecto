@@ -2,11 +2,11 @@
 
 # quecto
 
-### The experimental harness for AI coding agents.
+### Find out what makes your coding agent better.
 
-**Measure what your harness actually changes.**
+**QuECTO Eval** — an open-source toolkit for controlled coding-agent experiments. Fix the model, task, budget, and environment; change one harness mechanism at a time; compare success, cost, failures, and traces.
 
-*A minimal, synchronous Rust harness for building, inspecting, and evaluating AI agents. Control reasoning, execute tools, verify outcomes, and trace every step—all in a compact, vendor-neutral runtime.*
+*Built on `quecto-agent`: a minimal, synchronous Rust harness for local and cloud LLMs — small enough to inspect, instrumented enough to measure.*
 
 **Small by design. Observable by default. Measurable by experiment.**
 
@@ -30,11 +30,11 @@
 
 ---
 
-- **Minimal runtime:** A 1.3 MB core and 5.5 MB coding agent, with no async runtime.
-- **Full control:** Reasoning settings, tool execution, verification, and persistent sessions.
-- **End-to-end observability:** OpenTelemetry traces across agent runs, model calls, tools, and verification.
-- **Reproducible evaluation:** Compare configurations to understand the trade-offs between task success, reliability, latency, and cost.
-- **Vendor-neutral:** Work with local and cloud models through OpenAI-compatible endpoints.
+- **Controlled experiments:** Named harness configurations (verification, persistent state, reasoning, context) run against the same tasks, model, and budget.
+- **Local first:** Runs against Ollama and any OpenAI-compatible endpoint; no API spend required.
+- **Understand failures:** OpenTelemetry traces and trace files across runs, model calls, tools, and verification.
+- **Reproducible results:** Deterministic verifiers, pinned configs, and raw result files alongside every report.
+- **Minimal reference harness:** A 1.3 MB core and 5.5 MB coding agent, with no async runtime. *Adapters for other agents are on the roadmap.*
 
 QuECTO makes the harness itself inspectable—and gives you the tools to discover which parts actually matter.
 
