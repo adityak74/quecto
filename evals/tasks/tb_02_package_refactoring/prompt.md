@@ -1,0 +1,1 @@
+Refactor this project into a Python package named 'app'. Move main.py into app/cli.py. Move utils.py and config.py into app/core/. Fix all the relative imports. Create an __init__.py file so that 'python3 -m app.cli' runs without ImportErrors.

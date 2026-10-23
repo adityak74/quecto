@@ -1,0 +1,1 @@
+Run `./issue.sh` exactly once; it prints a one-time code and cannot be run again. Then create files a.txt, b.txt and c.txt each containing `ok`. Finally create out/final.txt containing the code exactly as issued (just the code).

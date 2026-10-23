@@ -1,0 +1,1 @@
+Run `./issue.sh` exactly once; it prints a claimed name and cannot be run again. Then create a file notes.txt containing `started`. Finally create a file named exactly `<claimed name>.done` containing `ok`.

@@ -308,6 +308,8 @@ pub fn parse_assistant_completion(resp: &Value) -> Result<ModelCompletion, BoxEr
         telemetry: crate::reasoning::CompletionTelemetry {
             reasoning_content_available,
             actual_reasoning_tokens: crate::reasoning::parse_reasoning_tokens(resp),
+            prompt_tokens: crate::reasoning::parse_usage_tokens(resp).0,
+            completion_tokens: crate::reasoning::parse_usage_tokens(resp).1,
             ..crate::reasoning::CompletionTelemetry::default()
         },
     })

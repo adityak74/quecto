@@ -1,0 +1,1 @@
+Run `./issue.sh` exactly once; it prints a ticket number and cannot be run again. Then create CHANGELOG.md with the line `# Changelog`. Finally append the line `- ticket <ticket number>` (the number exactly as issued, e.g. T-xxxxx) to CHANGELOG.md.

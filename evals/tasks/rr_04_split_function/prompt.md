@@ -1,0 +1,1 @@
+Refactor `summarize` in report.py: extract `parse_line(line)` returning a `(name, int_value)` tuple for a line like `alice:3`, and `aggregate(pairs)` returning a dict of summed values per name. `summarize(lines)` must keep returning the same result by using them.

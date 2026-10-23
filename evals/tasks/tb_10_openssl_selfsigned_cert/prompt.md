@@ -1,0 +1,1 @@
+The file `certs/` directory should contain a self-signed TLS certificate and private key for the domain `eval.local` valid for 365 days. Generate them using `openssl req` (non-interactive, with `-subj`). Save the certificate as `certs/cert.pem` and the key as `certs/key.pem`. Then verify the certificate subject contains `eval.local`.
