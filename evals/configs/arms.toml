@@ -1,0 +1,44 @@
+# Harness ablation arms (sketch). Everything not listed is held constant across
+# arms: model, base_url, system prompt, tool allow-list, approval (--yes),
+# max_steps, sandbox/policy. A runner applies `args` and `env` per run.
+#
+# Arm A is the floor: every switchable mechanism is off. B-E each enable
+# exactly one mechanism on top of A; F enables all of them.
+#
+# Open items:
+#  - E ("context policy") is only seed-context on/off today; there is no
+#    history trimming/compaction to vary.
+#  - C ("persistent state") needs tasks that span `resume`; the session switch
+#    alone does nothing for single-shot tasks.
+#  - REASONING_FIXED must be chosen once per model and used in D and F.
+#  - VERIFY_CMD is task-specific (the task's own test command).
+
+[arm.A]
+name = "minimal"
+args = ["--no-verify", "--no-seed-context", "--no-session"]
+env  = { QUECTO_REASONING_MODE = "none" }
+
+[arm.B]
+name = "+verification"
+args = ["--no-seed-context", "--no-session"]
+env  = { QUECTO_REASONING_MODE = "none", QUECTO_VERIFY = "$VERIFY_CMD" }
+
+[arm.C]
+name = "+persistent state"
+args = ["--no-verify", "--no-seed-context"]
+env  = { QUECTO_REASONING_MODE = "none" }
+
+[arm.D]
+name = "+reasoning"
+args = ["--no-verify", "--no-seed-context", "--no-session"]
+env  = { QUECTO_REASONING_MODE = "$REASONING_FIXED" }
+
+[arm.E]
+name = "+context policy"
+args = ["--no-verify", "--no-session"]
+env  = { QUECTO_REASONING_MODE = "none" }
+
+[arm.F]
+name = "full"
+args = []
+env  = { QUECTO_REASONING_MODE = "$REASONING_FIXED", QUECTO_VERIFY = "$VERIFY_CMD" }
