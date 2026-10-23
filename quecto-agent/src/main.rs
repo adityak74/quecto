@@ -10,7 +10,7 @@ use quecto_agent::{
 };
 use std::io::{BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(feature = "otel")]
 mod otel_init {
@@ -66,6 +66,12 @@ struct Cli {
     /// Skip configured verification commands.
     #[arg(long, global = true)]
     no_verify: bool,
+    /// Skip the repo file tree / git status / git diff injected into the system prompt.
+    #[arg(long, global = true)]
+    no_seed_context: bool,
+    /// Do not open or write the session store (no persistence, no resume/undo).
+    #[arg(long, global = true)]
+    no_session: bool,
     /// Select a named flavor profile.
     #[arg(long, global = true)]
     flavor: Option<String>,
@@ -136,6 +142,8 @@ fn main() {
         Some(Command::Chat) | Some(Command::Resume { .. }) | None => otel_init::init_otel(),
         _ => None,
     };
+    NO_SEED_CONTEXT.store(cli.no_seed_context, Ordering::SeqCst);
+    NO_SESSION.store(cli.no_session, Ordering::SeqCst);
     let overrides = Overrides {
         flavor: cli.flavor.clone(),
         model: cli.model.clone(),
@@ -306,7 +314,13 @@ fn scaffold(name: &str) {
     println!("created {}", path.display());
 }
 
+static NO_SEED_CONTEXT: AtomicBool = AtomicBool::new(false);
+static NO_SESSION: AtomicBool = AtomicBool::new(false);
+
 fn open_store() -> Option<Store> {
+    if NO_SESSION.load(Ordering::SeqCst) {
+        return None;
+    }
     match Store::open_default() {
         Ok(s) => Some(s),
         Err(e) => {
@@ -333,7 +347,9 @@ fn compose_system(cwd: &Path) -> String {
         system.push_str(&rules);
     }
     system.push_str("\n\n");
-    system.push_str(&seed_context(cwd));
+    if !NO_SEED_CONTEXT.load(Ordering::SeqCst) {
+        system.push_str(&seed_context(cwd));
+    }
     system
 }
 
