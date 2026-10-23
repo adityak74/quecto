@@ -2,10 +2,10 @@
 
 # quecto
 
-### A minimal, vendor-neutral execution layer for LLM agents.
+### The 5.5 MB coding agent you can actually inspect.
 
-*One endpoint. Zero async. A 1.3 MB core and a 5.5 MB coding agent.*
-*Reasoning controls, tools, verification, persistence, MCP, evaluation, and OpenTelemetry.*
+*A minimal, synchronous Rust harness for local and cloud LLMs. Reasoning controls, tool execution, verification, resumable sessions, and OpenTelemetry—with no async runtime.*
+*1.3 MB core · 5.5 MB agent · one endpoint · zero async.*
 
 <br/>
 
