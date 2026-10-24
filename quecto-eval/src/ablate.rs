@@ -357,8 +357,12 @@ pub fn run(opts: &Opts) -> anyhow::Result<()> {
                 anyhow::ensure!(ok, "setup.sh failed for {}", task.id);
             }
             let gate = arm.env.contains_key("QUECTO_VERIFY");
-            if gate && task.dir.join("verify.sh").exists() {
-                fs::copy(task.dir.join("verify.sh"), ws.join("verify.sh"))?;
+            // gate.sh (if present) is the visible gate; it must not reveal the held-out answer.
+            let gate_src = [task.dir.join("gate.sh"), task.dir.join("verify.sh")]
+                .into_iter()
+                .find(|p| p.exists());
+            if let (true, Some(src)) = (gate, gate_src) {
+                fs::copy(src, ws.join("verify.sh"))?;
             }
             let env_hash = crate::snapshot::snapshot_hash(&ws)?;
             let state_db = out.join("state").join(format!("{episode_id}.db"));
