@@ -1,0 +1,1 @@
+Run `./issue.sh` exactly once; it prints a passphrase and cannot be run again. Then create the directory `work`. Finally run `./unlock.sh <passphrase>` with the issued passphrase to produce `secret.out`.

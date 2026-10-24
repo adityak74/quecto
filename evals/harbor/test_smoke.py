@@ -1,161 +1,93 @@
 #!/usr/bin/env python3
 """
-Smoke test for evals/harbor/quecto_agent.py
+Smoke test for evals/harbor/quecto_agent.py (Harbor >= 0.22).
 
-Tests the adapter logic without requiring the real Harbor SDK or a live
-quecto-agent by stubbing both dependencies.
+Needs Harbor importable. If you installed it with `uv tool install harbor`:
 
-Run from the repo root:
-    python evals/harbor/test_smoke.py
+    PYTHONPATH=. ~/.local/share/uv/tools/harbor/bin/python evals/harbor/test_smoke.py
+
+It exercises install() and run() against a fake environment; no container,
+model, or real quecto-agent binary is involved.
 """
 from __future__ import annotations
 
+import asyncio
 import os
-import sys
-import shutil
 import tempfile
-import subprocess
-import types
 import unittest
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from types import SimpleNamespace
+from unittest.mock import patch
 
-# ── Stub the Harbor SDK so import succeeds without `pip install harbor` ──────
-_harbor_stub = types.ModuleType("harbor")
-_base_stub = types.ModuleType("harbor.agents")
-_installed_stub = types.ModuleType("harbor.agents.installed")
-_base_module = types.ModuleType("harbor.agents.installed.base")
+from harbor.agents.installed.base import BaseInstalledAgent
 
-class _BaseInstalledAgent:
-    name: str = ""
-    description: str = ""
-    def install(self) -> None: ...
-    def run(self, task, **kwargs) -> str: ...
+import evals.harbor.quecto_agent as adapter
 
-class _TaskEnvironment:
-    def __init__(self, instruction: str, workdir: str):
-        self.instruction = instruction
-        self.workdir = workdir
 
-_base_module.BaseInstalledAgent = _BaseInstalledAgent
-_base_module.TaskEnvironment = _TaskEnvironment
-sys.modules["harbor"] = _harbor_stub
-sys.modules["harbor.agents"] = _base_stub
-sys.modules["harbor.agents.installed"] = _installed_stub
-sys.modules["harbor.agents.installed.base"] = _base_module
+class FakeEnv:
+    default_user = None
 
-# Now we can import the adapter safely
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-import importlib
-import evals.harbor.quecto_agent as adapter_module
+    def __init__(self):
+        self.uploads = []
 
-AGENT_BIN = str(
-    Path(__file__).resolve().parents[2] / "target" / "release" / "quecto-agent"
-)
+    async def upload_file(self, source, target):
+        self.uploads.append((str(source), target))
+
+
+def make_agent():
+    agent = adapter.QuectoAgent.__new__(adapter.QuectoAgent)
+    agent.calls = []
+
+    async def fake_root(environment, command, **kw):
+        agent.calls.append(("root", command, kw))
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    async def fake_agent(environment, command, **kw):
+        agent.calls.append(("agent", command, kw))
+        return SimpleNamespace(return_code=0, stdout="", stderr="")
+
+    agent.exec_as_root = fake_root
+    agent.exec_as_agent = fake_agent
+    return agent
+
 
 class TestQuectoAgentAdapter(unittest.TestCase):
+    def test_is_a_harbor_installed_agent(self):
+        self.assertTrue(issubclass(adapter.QuectoAgent, BaseInstalledAgent))
+        self.assertEqual(adapter.QuectoAgent.name(), "quecto-agent")
 
-    # ── install() ─────────────────────────────────────────────────────────────
-
-    def test_install_raises_when_binary_missing(self):
-        """install() should raise FileNotFoundError if the binary is absent."""
-        agent = adapter_module.QuectoAgent()
-        with patch.object(adapter_module, "QUECTO_AGENT_BIN", "/nonexistent/quecto-agent"):
+    def test_install_requires_binary(self):
+        with patch.dict(os.environ, {"QUECTO_AGENT_BIN": "/nonexistent/quecto"}):
             with self.assertRaises(FileNotFoundError):
-                agent.install()
+                asyncio.run(make_agent().install(FakeEnv()))
 
-    def test_install_succeeds_when_binary_exists(self):
-        """install() should pass silently when the binary is present."""
-        agent = adapter_module.QuectoAgent()
-        # Use any real executable as a stand-in
-        real_bin = shutil.which("bash") or "/bin/bash"
-        with patch.object(adapter_module, "QUECTO_AGENT_BIN", real_bin):
-            agent.install()   # must not raise
+    def test_install_uploads_and_installs_binary(self):
+        with tempfile.NamedTemporaryFile() as f, patch.dict(
+            os.environ, {"QUECTO_AGENT_BIN": f.name}
+        ):
+            agent, env = make_agent(), FakeEnv()
+            asyncio.run(agent.install(env))
+            self.assertEqual(env.uploads, [(str(Path(f.name)), "/tmp/quecto-agent")])
+            self.assertIn(adapter.REMOTE_BIN, agent.calls[0][1])
 
-    # ── run() ─────────────────────────────────────────────────────────────────
-
-    def test_run_returns_stdout_on_success(self):
-        """run() should return the agent's stdout when it exits 0."""
-        agent = adapter_module.QuectoAgent()
-        task = _TaskEnvironment(
-            instruction="Write hello.txt containing the word 'hello'.",
-            workdir=tempfile.mkdtemp(),
-        )
-        fake_result = MagicMock()
-        fake_result.returncode = 0
-        fake_result.stdout = "Agent ran successfully.\n"
-        fake_result.stderr = ""
-
-        with patch("subprocess.run", return_value=fake_result) as mock_run:
-            with patch.object(adapter_module, "QUECTO_AGENT_BIN", "/fake/quecto-agent"):
-                output = agent.run(task)
-
-        self.assertEqual(output, "Agent ran successfully.\n")
-        mock_run.assert_called_once()
-        call_args = mock_run.call_args
-        self.assertIn("--yes", call_args[0][0])
-        self.assertIn(task.instruction, call_args[0][0])
-        self.assertEqual(call_args[1]["cwd"], task.workdir)
-
-    def test_run_returns_stderr_on_failure(self):
-        """run() should surface stderr when the agent exits non-zero."""
-        agent = adapter_module.QuectoAgent()
-        task = _TaskEnvironment(instruction="Fail please.", workdir=tempfile.mkdtemp())
-        fake_result = MagicMock()
-        fake_result.returncode = 1
-        fake_result.stdout = ""
-        fake_result.stderr = "some error from agent\n"
-
-        with patch("subprocess.run", return_value=fake_result):
-            with patch.object(adapter_module, "QUECTO_AGENT_BIN", "/fake/quecto-agent"):
-                output = agent.run(task)
-
-        self.assertIn("[quecto-agent exited 1]", output)
-        self.assertIn("some error from agent", output)
-
-    def test_run_sets_env_vars(self):
-        """run() must forward QUECTO_MODEL and QUECTO_BASE_URL."""
-        agent = adapter_module.QuectoAgent()
-        task = _TaskEnvironment(instruction="test", workdir=tempfile.mkdtemp())
-        fake_result = MagicMock(returncode=0, stdout="ok", stderr="")
-
-        env_override = {
-            "QUECTO_MODEL": "phi4:latest",
-            "QUECTO_BASE_URL": "http://custom:8080/v1",
+    def test_run_forwards_env_flags_and_quotes_instruction(self):
+        env_vars = {
+            "QUECTO_MODEL": "m",
+            "QUECTO_BASE_URL": "http://h/v1",
+            "QUECTO_AGENT_ARGS": "--no-verify --no-session",
         }
-        with patch.dict(os.environ, env_override, clear=False):
-            with patch("subprocess.run", return_value=fake_result) as mock_run:
-                with patch.object(adapter_module, "QUECTO_AGENT_BIN", "/fake/quecto-agent"):
-                    agent.run(task)
-
-        passed_env = mock_run.call_args[1]["env"]
-        self.assertEqual(passed_env["QUECTO_MODEL"], "phi4:latest")
-        self.assertEqual(passed_env["QUECTO_BASE_URL"], "http://custom:8080/v1")
-
-    # ── Integration: adapter against real binary (skipped if binary absent) ──
-
-    @unittest.skipUnless(Path(AGENT_BIN).is_file(), "quecto-agent binary not built")
-    def test_integration_real_binary(self):
-        """
-        Integration smoke test: adapter invokes real quecto-agent --yes.
-        Uses a simple prompt that should complete quickly.
-        """
-        agent = adapter_module.QuectoAgent()
-        workdir = tempfile.mkdtemp()
-        task = _TaskEnvironment(
-            instruction="Create a file named integration_test.txt containing the text 'smoke-ok'.",
-            workdir=workdir,
-        )
-        with patch.object(adapter_module, "QUECTO_AGENT_BIN", AGENT_BIN):
-            output = agent.run(task)
-
-        result_file = Path(workdir) / "integration_test.txt"
-        self.assertTrue(
-            result_file.exists(),
-            f"Expected integration_test.txt in {workdir}. Agent output:\n{output}",
-        )
-        self.assertIn("smoke-ok", result_file.read_text())
+        with patch.dict(os.environ, env_vars):
+            agent = make_agent()
+            agent._prompt_template_path = None
+            asyncio.run(agent.run("fix 'it'", FakeEnv(), SimpleNamespace()))
+        who, cmd, kw = agent.calls[0]
+        self.assertEqual(who, "agent")
+        self.assertIn("--yes --no-verify --no-session", cmd)
+        self.assertIn("QUECTO_TRACE_FILE=/logs/agent/trace.jsonl", cmd)
+        self.assertEqual(kw["env"]["QUECTO_MODEL"], "m")
+        self.assertEqual(kw["env"]["QUECTO_BASE_URL"], "http://h/v1")
+        self.assertNotIn("QUECTO_API_KEY", kw["env"])
 
 
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    unittest.main()

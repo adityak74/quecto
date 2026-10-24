@@ -58,10 +58,16 @@ pub(crate) fn parse_sse_delta(data: &str) -> Option<Value> {
 /// A single shared ureq Agent with configured timeouts, built once at first use.
 /// This enables HTTP connection reuse across all requests (every LLM call,
 /// every streaming chunk). Built lazily so the cost is paid only once.
+/// The read timeout defaults to 60s; local models on long prompts can need more,
+/// so `QUECTO_READ_TIMEOUT_SECS` overrides it.
 static SHARED_AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| {
+    let read_secs = std::env::var("QUECTO_READ_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(60);
     ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(60))
-        .timeout_read(Duration::from_secs(60))
+        .timeout_read(Duration::from_secs(read_secs))
         .build()
 });
 

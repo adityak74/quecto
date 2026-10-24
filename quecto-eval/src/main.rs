@@ -21,6 +21,17 @@ async fn main() -> anyhow::Result<()> {
             runner::run_suite(&manifest, &tasks_dir, &db, &agent_binary)?;
             println!("Compatibility experiment complete. Results in {}", db.display());
         }
+        cli::Command::Ablate {
+            arms_file, tasks_dir, out, agent_binary, model, base_url, reasoning_fixed,
+            arms, tasks, repeats, seed, timeout_secs, max_steps, retry_infra,
+        } => quecto_eval::ablate::run(&quecto_eval::ablate::Opts {
+            arms_file, tasks_dir, out_dir: out, agent_binary, model, base_url,
+            reasoning_fixed, arms, tasks, repeats, seed, timeout_secs, max_steps, retry_infra,
+        })?,
+        cli::Command::Report { episodes, out } => {
+            quecto_eval::report::report(&episodes, &out)?;
+            println!("Report written to {}", out.display());
+        }
     }
     Ok(())
 }

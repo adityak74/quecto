@@ -68,6 +68,27 @@ pub struct CompletionTelemetry {
     pub reasoning_parameters_sent: bool,
     pub reasoning_content_available: bool,
     pub actual_reasoning_tokens: Option<u64>,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+}
+
+/// Provider-reported `(prompt, completion)` token counts. Handles the OpenAI
+/// (`prompt_tokens`/`completion_tokens`) and Anthropic (`input_tokens`/
+/// `output_tokens`) field names.
+pub fn parse_usage_tokens(resp: &Value) -> (Option<u64>, Option<u64>) {
+    let Some(usage) = resp.get("usage") else {
+        return (None, None);
+    };
+    let pick = |a: &str, b: &str| {
+        usage
+            .get(a)
+            .or_else(|| usage.get(b))
+            .and_then(Value::as_u64)
+    };
+    (
+        pick("prompt_tokens", "input_tokens"),
+        pick("completion_tokens", "output_tokens"),
+    )
 }
 
 pub fn apply_reasoning_mode(
@@ -138,6 +159,15 @@ pub fn parse_reasoning_tokens(resp: &Value) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parses_usage_tokens_for_openai_and_anthropic_shapes() {
+        let openai = json!({"usage": {"prompt_tokens": 24, "completion_tokens": 3}});
+        assert_eq!(parse_usage_tokens(&openai), (Some(24), Some(3)));
+        let anthropic = json!({"usage": {"input_tokens": 10, "output_tokens": 5}});
+        assert_eq!(parse_usage_tokens(&anthropic), (Some(10), Some(5)));
+        assert_eq!(parse_usage_tokens(&json!({})), (None, None));
+    }
+
     use super::*;
 
     #[test]

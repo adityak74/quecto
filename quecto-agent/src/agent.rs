@@ -65,6 +65,10 @@ pub enum TraceEvent {
     Turn {
         seq: u64,
         tokens_used: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        prompt_tokens: Option<u64>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        completion_tokens: Option<u64>,
         duration_ms: u64,
         #[serde(flatten)]
         identity: Rc<TraceIdentity>,
@@ -609,6 +613,8 @@ impl Agent {
             self.emit_trace_event(TraceEvent::Turn {
                 seq,
                 tokens_used: usage,
+                prompt_tokens: telemetry.prompt_tokens,
+                completion_tokens: telemetry.completion_tokens,
                 duration_ms: duration,
                 identity: run_identity.clone(),
             });
@@ -1767,6 +1773,7 @@ mod tests {
                 reasoning_parameters_sent: true,
                 reasoning_content_available: true,
                 actual_reasoning_tokens: Some(17),
+                ..Default::default()
             },
         }]);
         let mut a = configured_agent(model, ApprovalMode::NonInteractive);
@@ -1825,6 +1832,8 @@ mod tests {
         let event = TraceEvent::Turn {
             seq: 0,
             tokens_used: 150,
+            prompt_tokens: Some(40),
+            completion_tokens: Some(110),
             duration_ms: 1000,
             identity: Rc::new(TraceIdentity::default()),
         };
@@ -1835,6 +1844,8 @@ mod tests {
         assert_eq!(val["seq"], 0);
         assert_eq!(val["duration_ms"].as_u64(), Some(1000));
         assert_eq!(val["tokens_used"].as_u64(), Some(150));
+        assert_eq!(val["prompt_tokens"].as_u64(), Some(40));
+        assert_eq!(val["completion_tokens"].as_u64(), Some(110));
     }
 
     #[test]

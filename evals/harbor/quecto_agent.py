@@ -1,94 +1,106 @@
 """
-QuECTO Harbor Agent Adapter
-===========================
-Wraps `quecto-agent` as a Harbor-compatible BaseInstalledAgent so that
-Terminal-Bench tasks can be evaluated against QuECTO through the Harbor
-framework (https://harborframework.com).
+QuECTO Harbor Agent Adapter (Harbor >= 0.22)
+============================================
+Installs a Linux build of `quecto-agent` into the task container and runs it
+non-interactively against an OpenAI-compatible endpoint (local Ollama by
+default).
 
 Usage:
-    pip install harbor
-    harbor run \
-      -d terminal-bench/terminal-bench-2 \
-      -m qwen3.6:35b-mlx \
-      --agent evals.harbor.quecto_agent:QuectoAgent
+    QUECTO_AGENT_BIN=/path/to/quecto-agent-linux \\
+    QUECTO_MODEL=qwen3.6:35b-a3b-coding-mxfp8 \\
+    QUECTO_BASE_URL=http://<ollama-host>:11434/v1 \\
+    harbor run -d terminal-bench/terminal-bench-2 \\
+      --agent-import-path evals.harbor.quecto_agent:QuectoAgent
 
-Requirements:
-    pip install harbor            # Harbor SDK
-    # quecto-agent binary must be on PATH or set QUECTO_AGENT_BIN env var
+The binary must match the container architecture (Linux). Build one with:
+    docker run --rm -v "$PWD":/src -w /src rust:1-bookworm \\
+        cargo build --release -p quecto-agent
+
+Ablation switches are forwarded from the environment so arms can be run
+through Harbor as well:
+    QUECTO_AGENT_ARGS="--no-verify --no-seed-context --no-session"
+    QUECTO_REASONING_MODE=none
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
-import shutil
+import shlex
 from pathlib import Path
-from typing import Any
+from typing import override
 
-# Harbor SDK — install via `pip install harbor`
-try:
-    from harbor.agents.installed.base import BaseInstalledAgent, TaskEnvironment
-except ImportError:
-    raise ImportError(
-        "Harbor SDK not installed. Run: pip install harbor"
-    )
+from harbor.agents.installed.base import BaseInstalledAgent, with_prompt_template
+from harbor.environments.base import BaseEnvironment
+from harbor.models.agent.context import AgentContext
 
-# Path to quecto-agent binary — override with QUECTO_AGENT_BIN env var
-_DEFAULT_BIN = str(
-    Path(__file__).resolve().parents[2] / "target" / "release" / "quecto-agent"
+REMOTE_BIN = "/usr/local/bin/quecto-agent"
+
+# Environment variables forwarded into the container (names only; values are
+# read from the process running `harbor`, never hard-coded).
+FORWARDED_ENV = (
+    "QUECTO_MODEL",
+    "QUECTO_BASE_URL",
+    "QUECTO_API_KEY",
+    "QUECTO_PROVIDER",
+    "QUECTO_REASONING_MODE",
+    "QUECTO_MAX_STEPS",
+    "QUECTO_VERIFY",
 )
-QUECTO_AGENT_BIN = os.environ.get("QUECTO_AGENT_BIN", _DEFAULT_BIN)
 
 
 class QuectoAgent(BaseInstalledAgent):
-    """
-    Harbor agent adapter for quecto-agent.
+    """Harbor adapter for quecto-agent."""
 
-    The agent binary is run non-interactively (--yes) inside the task's
-    working directory. Model and endpoint are configurable via environment
-    variables that `quecto-agent` already reads natively:
+    SUPPORTS_RESUME: bool = False
 
-        QUECTO_MODEL        — model identifier (default: qwen3.6:35b-mlx)
-        QUECTO_BASE_URL     — OpenAI-compat API base URL (default: http://localhost:11434/v1)
-        QUECTO_API_KEY      — API key if required
+    @staticmethod
+    @override
+    def name() -> str:
+        return "quecto-agent"
 
-    Harbor passes the task instruction as `task.instruction` and the
-    working directory as `task.workdir`.
-    """
+    @override
+    def get_version_command(self) -> str | None:
+        return f"{REMOTE_BIN} --version"
 
-    name = "quecto-agent"
-    description = (
-        "QuECTO coding agent — a 3.5 MB statically-linked harness "
-        "that routes to any OpenAI-compatible local or remote model."
-    )
+    @override
+    def parse_version(self, stdout: str) -> str:
+        return stdout.strip().removeprefix("quecto-agent").strip()
 
-    def install(self) -> None:
-        """Verify the binary exists and is executable."""
-        if not shutil.which(QUECTO_AGENT_BIN) and not Path(QUECTO_AGENT_BIN).is_file():
+    @override
+    async def install(self, environment: BaseEnvironment) -> None:
+        binary = Path(os.environ.get("QUECTO_AGENT_BIN", "")).expanduser()
+        if not binary.is_file():
             raise FileNotFoundError(
-                f"quecto-agent binary not found at {QUECTO_AGENT_BIN}. "
-                "Build it with: cargo build --release -p quecto-agent"
+                "Set QUECTO_AGENT_BIN to a Linux build of quecto-agent "
+                f"(got {str(binary)!r})."
             )
-
-    def run(self, task: TaskEnvironment, **kwargs: Any) -> str:
-        """
-        Execute quecto-agent with the task instruction in the task workdir.
-        Returns the agent's stdout as the trajectory string.
-        """
-        env = {**os.environ}
-        env["QUECTO_MODEL"] = os.environ.get("QUECTO_MODEL", "qwen3.6:35b-mlx")
-        env["QUECTO_BASE_URL"] = os.environ.get("QUECTO_BASE_URL", "http://localhost:11434/v1")
-
-        result = subprocess.run(
-            [QUECTO_AGENT_BIN, "--yes", task.instruction],
-            cwd=task.workdir,
-            env=env,
-            capture_output=True,
-            text=True,
+        await environment.upload_file(binary, "/tmp/quecto-agent")
+        await self.exec_as_root(
+            environment,
+            command=f"install -m 0755 /tmp/quecto-agent {REMOTE_BIN} && {REMOTE_BIN} --version",
         )
 
-        if result.returncode != 0:
-            # Return stderr so Harbor can surface failure details
-            return f"[quecto-agent exited {result.returncode}]\n{result.stderr}"
+    @override
+    def populate_context_post_run(self, context: AgentContext) -> None:
+        pass
 
-        return result.stdout
+    @override
+    @with_prompt_template
+    async def run(
+        self,
+        instruction: str,
+        environment: BaseEnvironment,
+        context: AgentContext,
+    ) -> None:
+        env = {k: os.environ[k] for k in FORWARDED_ENV if k in os.environ}
+        extra = os.environ.get("QUECTO_AGENT_ARGS", "")
+        await self.exec_as_agent(
+            environment,
+            command=(
+                "mkdir -p /logs/agent; "
+                f"QUECTO_TRACE_FILE=/logs/agent/trace.jsonl "
+                f"{REMOTE_BIN} --yes {extra} {shlex.quote(instruction)} "
+                "2>&1 | tee /logs/agent/quecto.txt"
+            ),
+            env=env,
+        )

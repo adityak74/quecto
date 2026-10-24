@@ -1,0 +1,1 @@
+The file `crasher.c` compiles but segfaults when run. Use `gdb` or `valgrind` (or any debugging tool available) to identify the root cause. Fix the bug in `crasher.c`, recompile it with `gcc crasher.c -o crasher -g`, and verify the fixed binary runs without errors and prints `OK`.

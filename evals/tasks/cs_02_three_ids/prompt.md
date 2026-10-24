@@ -1,0 +1,1 @@
+Run `./issue.sh` exactly once; it prints three IDs and cannot be run again. Then create the empty directories `stage1` and `stage2`. Finally create one empty directory per issued ID under `ids/` (named exactly by the ID).
