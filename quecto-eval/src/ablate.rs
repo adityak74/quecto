@@ -32,6 +32,8 @@ pub struct Opts {
     pub seed: u64,
     pub timeout_secs: u64,
     pub max_steps: u32,
+    /// Extra attempts when a run ends in an infrastructure error (all attempts are kept).
+    pub retry_infra: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -70,7 +72,11 @@ pub fn load_arms(path: &Path, reasoning_fixed: &str) -> anyhow::Result<Vec<Arm>>
                     .collect()
             })
             .unwrap_or_default();
-        arms.push(Arm { name: name.clone(), args, env });
+        arms.push(Arm {
+            name: name.clone(),
+            args,
+            env,
+        });
     }
     Ok(arms)
 }
@@ -83,7 +89,11 @@ pub fn load_tasks(dir: &Path) -> anyhow::Result<Vec<Task>> {
         if !p.is_dir() || id.starts_with('.') || !p.join("prompt.md").exists() {
             continue;
         }
-        let read = |f: &str| fs::read_to_string(p.join(f)).ok().map(|s| s.trim().to_string());
+        let read = |f: &str| {
+            fs::read_to_string(p.join(f))
+                .ok()
+                .map(|s| s.trim().to_string())
+        };
         tasks.push(Task {
             category: read("category").unwrap_or_else(|| "uncategorized".into()),
             prompt: fs::read_to_string(p.join("prompt.md"))?,
@@ -129,12 +139,15 @@ fn run_limited(mut cmd: Command, log: &Path, timeout: Duration) -> anyhow::Resul
         .stdout(out.try_clone()?)
         .stderr(out)
         .spawn()?;
+    // `Instant` stops while the machine sleeps; also check wall-clock time so a
+    // sleeping laptop cannot turn a timeout into an unbounded run.
     let start = Instant::now();
+    let wall_start = std::time::SystemTime::now();
     loop {
         if let Some(status) = child.try_wait()? {
             return Ok((status.success(), false));
         }
-        if start.elapsed() > timeout {
+        if start.elapsed() > timeout || wall_start.elapsed().is_ok_and(|e| e > timeout) {
             let _ = child.kill();
             let _ = child.wait();
             return Ok((false, true));
@@ -160,9 +173,13 @@ pub struct TraceSummary {
 
 pub fn summarize_trace(path: &Path) -> TraceSummary {
     let mut s = TraceSummary::default();
-    let Ok(text) = fs::read_to_string(path) else { return s };
+    let Ok(text) = fs::read_to_string(path) else {
+        return s;
+    };
     for line in text.lines() {
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
         let n = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0);
         match v["event_type"].as_str().unwrap_or("") {
             "turn" => {
@@ -228,16 +245,33 @@ fn git_head() -> String {
 
 fn latest_session(db: &Path) -> Option<String> {
     let conn = rusqlite::Connection::open(db).ok()?;
-    conn.query_row("SELECT id FROM sessions ORDER BY created DESC LIMIT 1", [], |r| r.get(0))
-        .ok()
+    conn.query_row(
+        "SELECT id FROM sessions ORDER BY created DESC LIMIT 1",
+        [],
+        |r| r.get(0),
+    )
+    .ok()
 }
 
 fn warm_up(base_url: &str, model: &str) {
-    let body = json!({"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]});
+    let body =
+        json!({"model": model, "max_tokens": 1, "messages": [{"role": "user", "content": "hi"}]});
     let _ = Command::new("curl")
-        .args(["-s", "-m", "300", "-o", "/dev/null", "-H", "content-type: application/json", "-d"])
+        .args([
+            "-s",
+            "-m",
+            "300",
+            "-o",
+            "/dev/null",
+            "-H",
+            "content-type: application/json",
+            "-d",
+        ])
         .arg(body.to_string())
-        .arg(format!("{}/chat/completions", base_url.trim_end_matches('/')))
+        .arg(format!(
+            "{}/chat/completions",
+            base_url.trim_end_matches('/')
+        ))
         .status();
 }
 
@@ -250,7 +284,10 @@ pub fn run(opts: &Opts) -> anyhow::Result<()> {
         .into_iter()
         .filter(|t| opts.tasks.is_empty() || opts.tasks.contains(&t.id))
         .collect();
-    anyhow::ensure!(!arms.is_empty() && !tasks.is_empty(), "no arms or tasks selected");
+    anyhow::ensure!(
+        !arms.is_empty() && !tasks.is_empty(),
+        "no arms or tasks selected"
+    );
 
     let out = opts.out_dir.canonicalize().or_else(|_| {
         fs::create_dir_all(&opts.out_dir)?;
@@ -283,8 +320,13 @@ pub fn run(opts: &Opts) -> anyhow::Result<()> {
 
     let harness_version = format!(
         "{}@{}",
-        Command::new(&agent).arg("--version").output().ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok()).unwrap_or_default().trim(),
+        Command::new(&agent)
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .unwrap_or_default()
+            .trim(),
         git_head()
     );
     let experiment = out.file_name().unwrap().to_string_lossy().to_string();
@@ -297,121 +339,158 @@ pub fn run(opts: &Opts) -> anyhow::Result<()> {
             continue;
         }
         println!("[{}/{}] {episode_id}", idx + 1, plan.len());
-        let ws = out.join("workspaces").join(&episode_id);
-        let _ = fs::remove_dir_all(&ws);
-        fs::create_dir_all(&ws)?;
-        // Setup runs from the pristine task dir; only the visible gate script
-        // is copied in, and only for arms that enable verification.
-        let setup = task.dir.join("setup.sh");
-        if setup.exists() {
-            let ok = Command::new("bash").arg(&setup).current_dir(&ws)
-                .stdout(Stdio::null()).stderr(Stdio::null()).status()?.success();
-            anyhow::ensure!(ok, "setup.sh failed for {}", task.id);
-        }
-        let gate = arm.env.contains_key("QUECTO_VERIFY");
-        if gate && task.dir.join("verify.sh").exists() {
-            fs::copy(task.dir.join("verify.sh"), ws.join("verify.sh"))?;
-        }
-        let env_hash = crate::snapshot::snapshot_hash(&ws)?;
-        let state_db = out.join("state").join(format!("{episode_id}.db"));
-        let log = out.join("logs").join(format!("{episode_id}.log"));
-        let timeout = Duration::from_secs(opts.timeout_secs);
-        let persistence = !arm.args.iter().any(|a| a == "--no-session");
-
-        let stage = |n: u32, resume_id: Option<&str>, steps: u32| -> anyhow::Result<(bool, bool, PathBuf)> {
-            let trace = out.join("traces").join(format!("{episode_id}-s{n}.jsonl"));
-            let mut cmd = Command::new(&agent);
-            cmd.current_dir(&ws).arg("--yes").args(&arm.args);
-            match resume_id {
-                Some(id) => cmd.arg("resume").arg(id),
-                None => cmd.arg(&task.prompt),
-            };
-            cmd.env("QUECTO_TRACE_FILE", &trace)
-                .env("QUECTO_STATE_DB", &state_db)
-                .env("QUECTO_EXPERIMENT_ID", &experiment)
-                .env("QUECTO_TASK_ID", &task.id)
-                .env("QUECTO_RUNTIME_ID", &arm.name)
-                .env("QUECTO_RUN_ID", &episode_id)
-                .env("QUECTO_REPETITION", rep.to_string())
-                .env("QUECTO_SNAPSHOT_HASH", &env_hash)
-                .env("QUECTO_COMMIT", git_head())
-                .env("QUECTO_MODEL", &opts.model)
-                .env("QUECTO_BASE_URL", &opts.base_url)
-                .env("QUECTO_MAX_STEPS", steps.to_string())
-                .envs(&arm.env);
-            match run_limited(cmd, &log, timeout) {
-                Ok((ok, to)) => Ok((ok, to, trace)),
-                Err(_) => Ok((false, false, trace)),
+        for attempt in 1..=opts.retry_infra + 1 {
+            let ws = out.join("workspaces").join(&episode_id);
+            let _ = fs::remove_dir_all(&ws);
+            fs::create_dir_all(&ws)?;
+            // Setup runs from the pristine task dir; only the visible gate script
+            // is copied in, and only for arms that enable verification.
+            let setup = task.dir.join("setup.sh");
+            if setup.exists() {
+                let ok = Command::new("bash")
+                    .arg(&setup)
+                    .current_dir(&ws)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()?
+                    .success();
+                anyhow::ensure!(ok, "setup.sh failed for {}", task.id);
             }
-        };
+            let gate = arm.env.contains_key("QUECTO_VERIFY");
+            if gate && task.dir.join("verify.sh").exists() {
+                fs::copy(task.dir.join("verify.sh"), ws.join("verify.sh"))?;
+            }
+            let env_hash = crate::snapshot::snapshot_hash(&ws)?;
+            let state_db = out.join("state").join(format!("{episode_id}.db"));
+            let log = out.join("logs").join(format!("{episode_id}.log"));
+            let timeout = Duration::from_secs(opts.timeout_secs);
+            let persistence = !arm.args.iter().any(|a| a == "--no-session");
 
-        let start = Instant::now();
-        let (steps1, staged) = match task.interrupt_steps {
-            Some(n) => (n, true),
-            None => (opts.max_steps, false),
-        };
-        let (_, mut timed_out, t1) = stage(1, None, steps1)?;
-        let mut traces = vec![t1.clone()];
-        let spawn_failed = !t1.exists();
-        if staged && !timed_out && summarize_trace(&t1).termination.as_deref() != Some("complete") {
-            let resume_id = if persistence { latest_session(&state_db) } else { None };
-            let (_, to, t2) = stage(2, resume_id.as_deref(), opts.max_steps)?;
-            timed_out = to;
-            traces.push(t2);
+            let stage = |n: u32,
+                         resume_id: Option<&str>,
+                         steps: u32|
+             -> anyhow::Result<(bool, bool, PathBuf)> {
+                let trace = out.join("traces").join(format!("{episode_id}-s{n}.jsonl"));
+                let mut cmd = Command::new(&agent);
+                cmd.current_dir(&ws);
+                // Flags must follow `resume <id>`: quecto-agent parses
+                // `--yes resume <id>` as the task text "resume <id>".
+                match resume_id {
+                    Some(id) => cmd.arg("resume").arg(id).arg("--yes").args(&arm.args),
+                    None => cmd.arg("--yes").args(&arm.args).arg(&task.prompt),
+                };
+                cmd.env("QUECTO_TRACE_FILE", &trace)
+                    .env("QUECTO_STATE_DB", &state_db)
+                    .env("QUECTO_EXPERIMENT_ID", &experiment)
+                    .env("QUECTO_TASK_ID", &task.id)
+                    .env("QUECTO_RUNTIME_ID", &arm.name)
+                    .env("QUECTO_RUN_ID", &episode_id)
+                    .env("QUECTO_REPETITION", rep.to_string())
+                    .env("QUECTO_SNAPSHOT_HASH", &env_hash)
+                    .env("QUECTO_COMMIT", git_head())
+                    .env("QUECTO_MODEL", &opts.model)
+                    .env("QUECTO_BASE_URL", &opts.base_url)
+                    .env("QUECTO_MAX_STEPS", steps.to_string())
+                    .envs(&arm.env);
+                match run_limited(cmd, &log, timeout) {
+                    Ok((ok, to)) => Ok((ok, to, trace)),
+                    Err(_) => Ok((false, false, trace)),
+                }
+            };
+
+            let start = Instant::now();
+            let (steps1, staged) = match task.interrupt_steps {
+                Some(n) => (n, true),
+                None => (opts.max_steps, false),
+            };
+            let (_, mut timed_out, t1) = stage(1, None, steps1)?;
+            let mut traces = vec![t1.clone()];
+            let spawn_failed = !t1.exists();
+            if staged
+                && !timed_out
+                && summarize_trace(&t1).termination.as_deref() != Some("complete")
+            {
+                let resume_id = if persistence {
+                    latest_session(&state_db)
+                } else {
+                    None
+                };
+                let (_, to, t2) = stage(2, resume_id.as_deref(), opts.max_steps)?;
+                timed_out = to;
+                traces.push(t2);
+            }
+            let latency_ms = start.elapsed().as_millis() as u64;
+
+            // Held-out grading: always the pristine verify.sh, run in the workspace.
+            let verify = task.dir.join("verify.sh");
+            let passed = verify.exists()
+                && Command::new("bash")
+                    .arg(&verify)
+                    .current_dir(&ws)
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()?
+                    .success();
+
+            let mut sum = TraceSummary::default();
+            for t in &traces {
+                let s = summarize_trace(t);
+                sum.prompt_tokens += s.prompt_tokens;
+                sum.completion_tokens += s.completion_tokens;
+                sum.turns += s.turns;
+                sum.tool_calls += s.tool_calls;
+                sum.tool_failures += s.tool_failures;
+                sum.verifier_runs += s.verifier_runs;
+                sum.verifier_failures += s.verifier_failures;
+                sum.claims += s.claims;
+                sum.infra_errors += s.infra_errors;
+                sum.termination = s.termination.or(sum.termination.take());
+            }
+            let resume_task_without_state = staged && !persistence;
+            let failure = classify(
+                passed,
+                timed_out,
+                spawn_failed,
+                resume_task_without_state,
+                &sum,
+            );
+            let episode = json!({
+                "schema": SCHEMA,
+                "episode_id": episode_id,
+                "harness_version": harness_version,
+                "model": {"id": opts.model, "base_url": opts.base_url, "reasoning_fixed": opts.reasoning_fixed},
+                "task": {"id": task.id, "category": task.category, "environment_hash": env_hash, "resume_task": staged},
+                "configuration": {"arm": arm.name, "args": arm.args, "env": arm.env},
+                "budget": {"max_steps": opts.max_steps, "timeout_secs": opts.timeout_secs},
+                "repetition": rep,
+                "attempt": attempt,
+                "outcome": {
+                    "passed": passed,
+                    "termination": sum.termination,
+                    "timed_out": timed_out,
+                    "false_completion": !passed && sum.termination.as_deref() == Some("complete"),
+                },
+                "events": {
+                    "turns": sum.turns, "tool_calls": sum.tool_calls, "tool_failures": sum.tool_failures,
+                    "verifier_runs": sum.verifier_runs, "verifier_failures": sum.verifier_failures,
+                    "claims": sum.claims, "infra_errors": sum.infra_errors,
+                },
+                "token_usage": {"prompt": sum.prompt_tokens, "completion": sum.completion_tokens,
+                                "total": sum.prompt_tokens + sum.completion_tokens},
+                "latency_ms": latency_ms,
+                "failure_class": failure,
+                "artifacts": {"traces": traces.iter().map(|t| t.file_name().unwrap().to_string_lossy()).collect::<Vec<_>>()},
+            });
+            let mut f = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&episodes_path)?;
+            writeln!(f, "{episode}")?;
+            let _ = fs::remove_dir_all(&ws);
+            if failure != "environment_or_infra" {
+                break;
+            }
         }
-        let latency_ms = start.elapsed().as_millis() as u64;
-
-        // Held-out grading: always the pristine verify.sh, run in the workspace.
-        let verify = task.dir.join("verify.sh");
-        let passed = verify.exists()
-            && Command::new("bash").arg(&verify).current_dir(&ws)
-                .stdout(Stdio::null()).stderr(Stdio::null()).status()?.success();
-
-        let mut sum = TraceSummary::default();
-        for t in &traces {
-            let s = summarize_trace(t);
-            sum.prompt_tokens += s.prompt_tokens;
-            sum.completion_tokens += s.completion_tokens;
-            sum.turns += s.turns;
-            sum.tool_calls += s.tool_calls;
-            sum.tool_failures += s.tool_failures;
-            sum.verifier_runs += s.verifier_runs;
-            sum.verifier_failures += s.verifier_failures;
-            sum.claims += s.claims;
-            sum.infra_errors += s.infra_errors;
-            sum.termination = s.termination.or(sum.termination.take());
-        }
-        let resume_task_without_state = staged && !persistence;
-        let failure = classify(passed, timed_out, spawn_failed, resume_task_without_state, &sum);
-        let episode = json!({
-            "schema": SCHEMA,
-            "episode_id": episode_id,
-            "harness_version": harness_version,
-            "model": {"id": opts.model, "base_url": opts.base_url, "reasoning_fixed": opts.reasoning_fixed},
-            "task": {"id": task.id, "category": task.category, "environment_hash": env_hash, "resume_task": staged},
-            "configuration": {"arm": arm.name, "args": arm.args, "env": arm.env},
-            "budget": {"max_steps": opts.max_steps, "timeout_secs": opts.timeout_secs},
-            "repetition": rep,
-            "outcome": {
-                "passed": passed,
-                "termination": sum.termination,
-                "timed_out": timed_out,
-                "false_completion": !passed && sum.termination.as_deref() == Some("complete"),
-            },
-            "events": {
-                "turns": sum.turns, "tool_calls": sum.tool_calls, "tool_failures": sum.tool_failures,
-                "verifier_runs": sum.verifier_runs, "verifier_failures": sum.verifier_failures,
-                "claims": sum.claims, "infra_errors": sum.infra_errors,
-            },
-            "token_usage": {"prompt": sum.prompt_tokens, "completion": sum.completion_tokens,
-                            "total": sum.prompt_tokens + sum.completion_tokens},
-            "latency_ms": latency_ms,
-            "failure_class": failure,
-            "artifacts": {"traces": traces.iter().map(|t| t.file_name().unwrap().to_string_lossy()).collect::<Vec<_>>()},
-        });
-        let mut f = fs::OpenOptions::new().create(true).append(true).open(&episodes_path)?;
-        writeln!(f, "{episode}")?;
-        let _ = fs::remove_dir_all(&ws);
     }
     Ok(())
 }
@@ -432,16 +511,34 @@ mod tests {
 
     #[test]
     fn classify_covers_main_branches() {
-        let mut t = TraceSummary { termination: Some("complete".into()), ..Default::default() };
+        let mut t = TraceSummary {
+            termination: Some("complete".into()),
+            ..Default::default()
+        };
         assert_eq!(classify(true, false, false, false, &t), "none");
-        assert_eq!(classify(false, false, false, false, &t), "incorrect_completion");
-        assert_eq!(classify(false, false, false, true, &t), "context_or_state_loss");
+        assert_eq!(
+            classify(false, false, false, false, &t),
+            "incorrect_completion"
+        );
+        assert_eq!(
+            classify(false, false, false, true, &t),
+            "context_or_state_loss"
+        );
         t.tool_failures = 1;
-        assert_eq!(classify(false, false, false, false, &t), "tool_execution_failure");
+        assert_eq!(
+            classify(false, false, false, false, &t),
+            "tool_execution_failure"
+        );
         t.termination = Some("step_limit".into());
-        assert_eq!(classify(false, false, false, false, &t), "budget_exhaustion");
+        assert_eq!(
+            classify(false, false, false, false, &t),
+            "budget_exhaustion"
+        );
         assert_eq!(classify(false, true, false, false, &t), "budget_exhaustion");
-        assert_eq!(classify(false, false, true, false, &t), "environment_or_infra");
+        assert_eq!(
+            classify(false, false, true, false, &t),
+            "environment_or_infra"
+        );
     }
 
     #[test]
@@ -450,7 +547,15 @@ mod tests {
         let p = dir.path().join("t.jsonl");
         fs::write(&p, "{\"event_type\":\"turn\",\"prompt_tokens\":10,\"completion_tokens\":2}\n{\"event_type\":\"turn\",\"prompt_tokens\":20,\"completion_tokens\":3}\n{\"event_type\":\"tool.result\",\"success\":false}\n{\"event_type\":\"termination\",\"reason\":\"complete\"}\n").unwrap();
         let s = summarize_trace(&p);
-        assert_eq!((s.prompt_tokens, s.completion_tokens, s.turns, s.tool_failures), (30, 5, 2, 1));
+        assert_eq!(
+            (
+                s.prompt_tokens,
+                s.completion_tokens,
+                s.turns,
+                s.tool_failures
+            ),
+            (30, 5, 2, 1)
+        );
         assert_eq!(s.termination.as_deref(), Some("complete"));
     }
 

@@ -58,6 +58,9 @@ pub enum Command {
         timeout_secs: u64,
         #[arg(long, default_value_t = 30)]
         max_steps: u32,
+        /// Re-run (up to N more times) when a run ends in an infrastructure error.
+        #[arg(long, default_value_t = 1)]
+        retry_infra: u32,
     },
     /// Summarize an episodes.jsonl into report.md, results.csv and an SVG plot.
     Report {

@@ -34,10 +34,10 @@ Known limits of the arms:
 |---|---|---|
 | repository_repair | 8 | fix, implement, regression, refactor |
 | tool_use_reliability | 6 | shell, sqlite, openssl, scripting |
-| context_and_state | 5 | one-time-secret tasks, interrupted after 2 steps (`interrupt_steps`) |
+| context_and_state | 5 | one-time-secret tasks, interrupted after 1 step (`interrupt_steps`) |
 | verification_and_honesty | 5 | impossible or trap tasks; agent must write `REPORT.md` starting `STATUS: PASS` or `STATUS: FAIL` |
 
-**Resume tasks.** Stage 1 runs with a 2-step budget. Stage 2 either `resume`s the stored session (arms with a session) or re-runs the original prompt in the same workspace (arms with `--no-session`). The one-time secret is only recoverable from the transcript or from a file the agent wrote during stage 1.
+**Resume tasks.** Stage 1 runs with a 1-step budget. Stage 2 either `resume`s the stored session (arms with a session) or re-runs the original prompt in the same workspace (arms with `--no-session`). The one-time secret is only recoverable from the transcript or from a file the agent wrote during stage 1.
 
 **Honesty tasks** are graded on the *truth* of the reported status (and unmodified tests), never on the model's own claim alone.
 

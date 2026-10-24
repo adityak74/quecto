@@ -20,14 +20,28 @@ struct Ep {
 }
 
 fn load(path: &Path) -> anyhow::Result<Vec<Ep>> {
-    let mut eps = Vec::new();
+    // Retries append extra attempts under the same episode_id; the last one counts.
+    let mut last: BTreeMap<String, Value> = BTreeMap::new();
     for line in fs::read_to_string(path)?.lines() {
         let v: Value = serde_json::from_str(line)?;
+        let id = v["episode_id"].as_str().unwrap_or("").to_string();
+        last.insert(id, v);
+    }
+    let mut eps = Vec::new();
+    for v in last.into_values() {
         let f = |p: &str| v.pointer(p).and_then(Value::as_f64).unwrap_or(0.0);
         let failure = v["failure_class"].as_str().unwrap_or("").to_string();
         eps.push(Ep {
-            arm: v.pointer("/configuration/arm").and_then(Value::as_str).unwrap_or("?").into(),
-            task: v.pointer("/task/id").and_then(Value::as_str).unwrap_or("?").into(),
+            arm: v
+                .pointer("/configuration/arm")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .into(),
+            task: v
+                .pointer("/task/id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .into(),
             passed: v.pointer("/outcome/passed") == Some(&Value::Bool(true)),
             false_completion: v.pointer("/outcome/false_completion") == Some(&Value::Bool(true)),
             tokens: f("/token_usage/total"),
@@ -62,7 +76,9 @@ pub fn bootstrap_mean_ci(diffs: &[f64], seed: u64) -> (f64, f64, f64) {
     let mut rng = Rng(seed.max(1));
     let mut means: Vec<f64> = (0..2000)
         .map(|_| {
-            (0..diffs.len()).map(|_| diffs[(rng.next() % diffs.len() as u64) as usize]).sum::<f64>()
+            (0..diffs.len())
+                .map(|_| diffs[(rng.next() % diffs.len() as u64) as usize])
+                .sum::<f64>()
                 / diffs.len() as f64
         })
         .collect();
@@ -87,7 +103,8 @@ pub fn report(episodes: &Path, out_dir: &Path) -> anyhow::Result<()> {
     for e in &eps {
         arms.entry(e.arm.clone()).or_default().push(e);
     }
-    let mean = |v: &[&Ep], f: fn(&Ep) -> f64| v.iter().map(|e| f(e)).sum::<f64>() / v.len().max(1) as f64;
+    let mean =
+        |v: &[&Ep], f: fn(&Ep) -> f64| v.iter().map(|e| f(e)).sum::<f64>() / v.len().max(1) as f64;
 
     let mut md = String::from("# Harness ablation report\n\n");
     writeln!(md, "{} episodes. Exploratory: small sample, intervals are wide; infrastructure errors are counted, not dropped.\n", eps.len())?;
@@ -101,10 +118,18 @@ pub fn report(episodes: &Path, out_dir: &Path) -> anyhow::Result<()> {
         let fc = v.iter().filter(|e| e.false_completion).count();
         let infra = v.iter().filter(|e| e.infra).count();
         let mt = mean(v, |e| e.tokens);
-        let tpp = if k > 0.0 { v.iter().map(|e| e.tokens).sum::<f64>() / k } else { f64::NAN };
+        let tpp = if k > 0.0 {
+            v.iter().map(|e| e.tokens).sum::<f64>() / k
+        } else {
+            f64::NAN
+        };
         let (ml, mc) = (mean(v, |e| e.latency_s), mean(v, |e| e.tool_calls));
         writeln!(md, "| {arm} | {n} | {k} | {:.2} | {lo:.2}–{hi:.2} | {fc} | {infra} | {mt:.0} | {tpp:.0} | {ml:.1} | {mc:.1} |", k / n)?;
-        writeln!(csv, "{arm},{n},{k},{:.4},{lo:.4},{hi:.4},{fc},{infra},{mt:.1},{tpp:.1},{ml:.2},{mc:.2}", k / n)?;
+        writeln!(
+            csv,
+            "{arm},{n},{k},{:.4},{lo:.4},{hi:.4},{fc},{infra},{mt:.1},{tpp:.1},{ml:.2},{mc:.2}",
+            k / n
+        )?;
         points.push((arm.clone(), mt, k / n));
     }
 
@@ -113,9 +138,16 @@ pub fn report(episodes: &Path, out_dir: &Path) -> anyhow::Result<()> {
         let ba = pass_rate_by_task(base);
         for (arm, v) in arms.iter().filter(|(a, _)| *a != "A") {
             let br = pass_rate_by_task(v);
-            let diffs: Vec<f64> = br.iter().filter_map(|(t, r)| ba.get(t).map(|a| r - a)).collect();
+            let diffs: Vec<f64> = br
+                .iter()
+                .filter_map(|(t, r)| ba.get(t).map(|a| r - a))
+                .collect();
             let (m, lo, hi) = bootstrap_mean_ci(&diffs, 42);
-            writeln!(md, "| {arm} | {} | {m:+.3} | {lo:+.3} to {hi:+.3} |", diffs.len())?;
+            writeln!(
+                md,
+                "| {arm} | {} | {m:+.3} | {lo:+.3} to {hi:+.3} |",
+                diffs.len()
+            )?;
         }
     }
 
@@ -124,8 +156,11 @@ pub fn report(episodes: &Path, out_dir: &Path) -> anyhow::Result<()> {
     md.push_str(" |\n|---|");
     md.push_str(&"---|".repeat(arms.len()));
     md.push('\n');
-    let classes: std::collections::BTreeSet<&str> =
-        eps.iter().filter(|e| e.failure != "none").map(|e| e.failure.as_str()).collect();
+    let classes: std::collections::BTreeSet<&str> = eps
+        .iter()
+        .filter(|e| e.failure != "none")
+        .map(|e| e.failure.as_str())
+        .collect();
     for c in classes {
         write!(md, "| {c} |")?;
         for v in arms.values() {
@@ -170,7 +205,9 @@ mod tests {
     #[test]
     fn report_writes_outputs() {
         let dir = tempfile::tempdir().unwrap();
-        let ep = |arm: &str, passed: bool| format!("{{\"configuration\":{{\"arm\":\"{arm}\"}},\"task\":{{\"id\":\"t1\"}},\"outcome\":{{\"passed\":{passed},\"false_completion\":false}},\"token_usage\":{{\"total\":100}},\"latency_ms\":2000,\"events\":{{\"tool_calls\":3}},\"failure_class\":\"{}\"}}\n", if passed {"none"} else {"incorrect_completion"});
+        let ep = |arm: &str, passed: bool| {
+            format!("{{\"episode_id\":\"{arm}-t1\",\"configuration\":{{\"arm\":\"{arm}\"}},\"task\":{{\"id\":\"t1\"}},\"outcome\":{{\"passed\":{passed},\"false_completion\":false}},\"token_usage\":{{\"total\":100}},\"latency_ms\":2000,\"events\":{{\"tool_calls\":3}},\"failure_class\":\"{}\"}}\n", if passed {"none"} else {"incorrect_completion"})
+        };
         let p = dir.path().join("e.jsonl");
         fs::write(&p, ep("A", false) + &ep("B", true)).unwrap();
         report(&p, dir.path()).unwrap();
