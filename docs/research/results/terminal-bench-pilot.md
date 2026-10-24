@@ -30,8 +30,9 @@ Arm A: `--no-verify --no-seed-context --no-session`, reasoning none. Arm F: defa
 
 ## Caveats
 - Task selection was by name from the 89-task set, not random; 1 attempt each.
-- Many failures are harness-limit exits, not wrong answers: `NonZeroAgentExitCodeError` was mostly 'step limit reached' at 40 steps (too low for TB), and some runs stopped on 'several actions were denied' despite `--yes`. Both arms share the limit, but it caps what either can show.
+- Many failures are harness-limit exits, not wrong answers: `NonZeroAgentExitCodeError` was step limit at 40 steps and policy denials despite `--yes` (counts below). Both arms share the limit, but it caps what either can show.
 - `extract-elf` in arm F passed the verifier despite a nonzero agent exit.
 - One ApiRateLimitError appeared in arm A (`nginx-request-logging`).
 - Reasoning mode and tool/verify settings differ together between A and F; this cannot attribute the gap to one feature.
-- Direction agrees with the internal pilot (full harness >= minimal) but both are small and the internal result has a known verifier-leak confound.
+- Direction agrees with the corrected internal results (full harness >= minimal), but both are small. The earlier internal verifier leak has been fixed and rerun (see `FINDINGS.md`); it does not affect this external check.
+- Last line of each agent log, per arm (A / F): "step limit reached" 4 / 3, "several actions were denied" 5 / 4, timed out 1 / 3, none of these 10 / 10. So about half of each arm's runs ended on a harness limit or a policy denial rather than a model decision to stop. Not resolved: whether the denials (commands such as `git push` refused even with `--yes`) are intended policy or a bug, and how many of those tasks would pass without them.

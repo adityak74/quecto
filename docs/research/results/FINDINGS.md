@@ -26,4 +26,4 @@ gemma4:26b (n=30/arm, 10 tasks): A 0.37, B 0.33, C 0.70, F 0.73. Paired vs A: C 
 - repository_repair and tool_use_reliability are at ceiling for qwen and cannot separate arms. The second model was run only on the two categories that can.
 - Tasks are author-written and the state/honesty tasks are designed around the features tested; arm E is not a real context-policy arm.
 - Few repeats, two models, the gemma run is a subset; intervals are wide. Not a benchmark claim.
-- Terminal-Bench result is n=1 on 20 hand-picked tasks, confounded by a 40-step cap.
+- Terminal-Bench result is n=1 on 20 hand-picked tasks, roughly half of runs per arm ended on the 40-step cap, a policy denial, or a timeout (see that file).
