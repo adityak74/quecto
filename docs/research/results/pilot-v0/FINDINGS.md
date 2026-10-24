@@ -1,3 +1,5 @@
+> **Superseded.** The B/F context_and_state cells in this pilot were inflated by a verifier leak; see ../FINDINGS.md and ../pilot-v0-corrected/.
+
 # Pilot v0 findings (exploratory)
 
 Model `qwen3.6:35b-a3b-coding-mxfp8` (local Ollama), 6 arms x 24 tasks x 3 repeats = 432 episodes, seed 20261024,
